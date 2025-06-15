@@ -1,0 +1,1048 @@
+from tkinter import *
+from tkinter.ttk import *
+import cv2
+import numpy as np
+import time
+import screeninfo
+import sys
+import winsound
+import pycrafter9000
+import libs
+import timeit
+import threading # <--- Add this line
+from zaber_motion import Library
+from zaber_motion.ascii import Connection
+from zaber_motion import Units
+import csv
+import os
+import datetime
+import queue
+import traceback
+from tkinter import messagebox
+from SensorDataWindow import SensorDataWindow
+from AutoHomeRoutine import AutoHomer
+
+
+class MyWindow:
+    def __init__(self, win):
+        instruction = '''
+Check List:\n
+1. Ensure DLP is in pattern on the fly. \n
+2. Check that DLP is not on standby and is plugged in. \n
+1. Close DLP Lightcrafter GUI.\n
+2. Make sure the Zaber GUI is closed.\n
+3. Do not open any window on the second screen!!!!!\n
+6. Delete any file in your sliced file that is not the slices\n 
+or the .txt file! Chitubox makes extra files.\n
+
+'''
+        credit = '''
+Professor Cheng Sun
+Boyuan Sun, boyuansun2026@u.northwestern.edu
+Evan Jones, evanjones2026@u.northwestern.edu
+'''
+        self.reference = 0
+
+        # Initialize attributes for data loaded from instruction file
+        self.image_list = []
+        self.exposure_time = []  # This will store exposure_time_list
+        self.thickness = []      # This will store thickness_list
+        self.step_speed_list = []
+        self.overstep_distance_list = []
+        self.step_type_list = []  # Corresponds to 'Acceleration' from the file
+        self.pause_list = []
+        self.intensity_list = []
+
+        # Ensure self.p1 (ttk.Progressbar) is initialized - THIS WILL BE OUR MAIN PROGRESS BAR
+        self.p1 = Progressbar(win, orient=HORIZONTAL, length=400, mode='determinate') # Increased length a bit
+        # Move p1 to the old progress bar's position
+        self.p1.place(x=50, y=430) # Old y was 430
+
+        # Ensure self.current_layer_num_var (StringVar for layer display) is initialized
+        self.current_layer_num_var = StringVar()
+        self.current_layer_num_var.set("Layer: 0/0")
+        self.lbl_current_layer = Label(win, textvariable=self.current_layer_num_var, font='Helvetica 10') # Added font
+        # Move lbl_current_layer to where the old "Printing Progress" label was, or similarly above p1
+        self.lbl_current_layer.place(x=50, y=400) # Old lbl7 y was 400
+
+        self.win = win
+        self.flag = False
+        self.flag2 = False
+        self.offset = -20
+        self.pause_flag = False # Ensure pause_flag is initialized
+
+        # --- Define status_message_var and related label (t8) EARLY ---
+        self.status_message_var = StringVar() 
+        self.status_message_var.set("System Initializing...") 
+
+        self.b_open_sensor_window = Button(win, text="Open Sensor Panel", command=self.open_sensor_panel)
+        self.b_open_sensor_window.place(x=750, y=200) 
+        self.sensor_data_window_instance = None
+        self.auto_home_thread = None
+
+        self.cache_clear_layer = 100000
+        self.time1 = 1000
+
+        # --- Existing Canvases and Labels (adjust placement if they conflict with new frames) ---
+        self.canvas1 = Canvas(win, height=200, width=270, bg="#FFEFD5")
+        self.canvas1.place(x=70, y=520) # Original: x=70, y=520
+        
+        self.canvas2 = Canvas(win, height=200, width=500, bg="#FFEFD5")
+        self.canvas2.place(x=370, y=520) # Original: x=370, y=520
+
+        self.lbl0 = Label(win, text='Prince', font='Helvetica 50 bold')
+        self.lbl1 = Label(win, text='Directory of Images')
+        self.lbl4 = Label(win, text='Z Axis Position')
+        self.lbl5 = Label(win, text=instruction, font='Helvetica 8', foreground='purple', justify=LEFT)
+        self.lbl6 = Label(win, text=credit, font='Helvetica 7')
+        self.lbl7 = Label(win, text='Printing Progress')
+        self.lbl8 = Label(win, text='System Message:') # Label for the status message
+        # Define self.t8 (the status display Label) here, tied to status_message_var
+        self.t8 = Label(win, textvariable=self.status_message_var, width=70, relief="sunken", anchor="w", justify=LEFT)
+        self.lbl9 = Label(win, text='Move distance(mm)')
+        self.lbl10 = Label(win, text='Layer thickness(um)')
+        self.lbl11 = Label(win, text='Exposure time(s)')
+        self.lbl11_2 = Label(win, text='Base curing time(s)')
+        self.lbl12 = Label(win, text='Stage Control', font='Helvetica 12 bold')
+        self.lbl13 = Label(win, text='Print Parameters', font='Helvetica 12 bold')
+        self.lbl14 = Label(win, text='LED Current(0-255)')
+        self.lbl15 = Label(win, text='Estimate Time: ∞ min') # This label might be updated by old logic, review if needed
+        
+        # REMOVE Redundant progress bar and its label from old file
+        # self.progress = Progressbar(win, orient=HORIZONTAL, length=500, mode='determinate')
+        # self.progress.place(x=50, y=430)
+        # self.lbl7 = Label(win, text='Printing Progress')
+        # self.lbl7.place(x=250, y=400)
+
+
+        self.lbl16 = Label(win, text='Step Speed (um/s)', background="#FFEFD5") 
+        self.lbl17 = Label(win, text='Pause (s)', background="#FFEFD5") 
+        self.lbl19 = Label(win, text='Overstep (µm)', background="#FFEFD5")
+        self.lbl21 = Label(win, text='Acceleration (mm/s²)', background="#FFEFD5")  # UNIT CHANGED to mm/s²
+
+        column2_x = 550
+        self.lbl16.place(x=column2_x, y=550)
+        self.t16 = Entry(win)
+        self.t16.place(x=column2_x, y=570)
+        self.t16.insert(END, "1000.0") # Default Step Speed
+        
+        self.lbl19.place(x=column2_x, y=590)
+        self.t19 = Entry(win)
+        self.t19.place(x=column2_x, y=610)
+        self.t19.insert(END, "500") # Default Overstep in µm
+        
+        self.lbl17.place(x=column2_x, y=630)
+        self.t17 = Entry(win)
+        self.t17.place(x=column2_x, y=650)
+        self.t17.insert(END, "0.0") # Default Pause
+        
+        column3_x = 700
+        self.lbl21.place(x=column3_x, y=550)
+        self.t21 = Entry(win)
+        self.t21.place(x=column3_x, y=570)
+        self.t21.insert(END, "5.0") # Default Acceleration in mm/s² (e.g., 5.0 mm/s²)
+
+        # --- Auto-Home Control Box ---
+        frame_auto_home_y_start = 730 # Adjust this Y-coordinate as needed
+        frame_auto_home_width = 750 # Define width for re-use
+        self.frame_auto_home = LabelFrame(win, text="Auto-Home Control", padding=(10, 10))
+        self.frame_auto_home.place(x=50, y=frame_auto_home_y_start, width=frame_auto_home_width) # Adjust width as needed
+
+        self.lbl_auto_home_guess = Label(self.frame_auto_home, text='Guess (mm):')
+        self.lbl_auto_home_guess.grid(row=0, column=0, padx=2, pady=2, sticky=W)
+        self.t_auto_home_guess = Entry(self.frame_auto_home, width=8)
+        self.t_auto_home_guess.grid(row=0, column=1, padx=2, pady=2)
+        self.t_auto_home_guess.insert(END, "10.0") # Default initial guess is 10.0 mm
+
+        self.lbl_contact_threshold_abs = Label(self.frame_auto_home, text='Abs. Force (N):')
+        self.lbl_contact_threshold_abs.grid(row=0, column=2, padx=2, pady=2, sticky=W)
+        self.t_contact_threshold_abs = Entry(self.frame_auto_home, width=8)
+        self.t_contact_threshold_abs.grid(row=0, column=3, padx=2, pady=2)
+        self.t_contact_threshold_abs.insert(END, "0.1")
+
+        self.lbl_contact_threshold_delta = Label(self.frame_auto_home, text='Delta Force (N):')
+        self.lbl_contact_threshold_delta.grid(row=0, column=4, padx=2, pady=2, sticky=W)
+        self.t_contact_threshold_delta = Entry(self.frame_auto_home, width=8)
+        self.t_contact_threshold_delta.grid(row=0, column=5, padx=2, pady=2)
+        self.t_contact_threshold_delta.insert(END, "0.02")
+
+        self.b_auto_home = Button(self.frame_auto_home, text="Auto-Home Surface", command=self.start_auto_home_sequence, state=DISABLED)
+        self.b_auto_home.grid(row=0, column=6, padx=10, pady=2)
+
+        # --- Existing Layer Logger instantiation removed ---
+        
+        # --- Define Entry Widgets (including t1) ---
+        self.t1 = Entry(width=160)
+        self.t4 = Entry()
+        # self.t8 = Entry() # This comment is now misleading as t8 is a Label. Can be removed.
+        self.t9 = Entry()
+        self.t10 = Entry()
+        self.t11 = Entry()
+        self.t11_2 = Entry()
+        self.t14 = Entry()
+
+        # --- Place Entry Widgets and Labels ---
+        self.lbl0.place(x=550, y=50)
+        self.lbl1.place(x=50, y=150)
+        self.t1.place(x=180, y=150) # t1 is now defined before _check_default_logging_windows_file
+
+        self.lbl4.place(x=50, y=260)
+        self.t4.place(x=50, y=280)
+        self.lbl5.place(x=710, y=270)
+        self.lbl6.place(x=950, y=0)
+        # self.t8.place(x=500, y=280) # This line will now work as self.t8 is defined
+        self.lbl8.place(x=500, y=260) # "System Message:"
+        # Ensure self.t8 is placed AFTER self.lbl8 if that's the visual intention
+        self.t8.place(x=500, y=280) # Place the actual status message display
+        self.t9.place(x=140, y=580)
+        self.lbl9.place(x=140, y=560)
+        self.t10.place(x=400, y=570)
+        self.lbl10.place(x=400, y=550)
+        self.t11.place(x=400, y=610)
+        self.lbl11.place(x=400, y=590)
+        self.t11_2.place(x=400, y=650)
+        self.lbl11_2.place(x=400, y=630)
+        self.lbl12.place(x=150, y=500)
+        self.lbl13.place(x=410, y=500)
+        self.t14.place(x=240, y=280)
+        self.lbl14.place(x=240, y=260)
+        self.lbl15.place(x=250, y=460) # This label should not overlap now
+
+        # self.lbl_current_layer_display = Label(win, textvariable=self.current_layer_num_var, font='Helvetica 10')
+        # self.lbl_current_layer_display.place(x=400, y=400) # This was a duplicate, ensure it's removed or commented
+
+        # self.progress = Progressbar(win, orient=HORIZONTAL, length=500, mode='determinate') # This is already commented out
+        # self.progress.place(x=50, y=430) # This is already commented out
+
+        self.b1 = Button(win, text='Run-Cont.', command=self.run_Continuous)
+        self.b10 = Button(win, text='Run-Step', command=self.run_Stepped)
+        self.b2 = Button(win, text='Set Home', command=self.set_home)
+        self.b3 = Button(win, text='Get Position', command=self.get_position)
+        self.b4 = Button(win, text='Stop', command=self.stop)
+        self.b5 = Button(win, text='Move Down', command=self.movedown)
+        self.b6 = Button(win, text='Move Up', command=self.moveup)
+        self.b7 = Button(win, text='Simple input txt generator', command=self.simple_txt)
+
+        self.b1.place(x=70, y=200)
+        self.b10.place(x=170, y=200)
+        self.b2.place(x=50, y=310)
+        self.b3.place(x=130, y=310)
+        self.b4.place(x=270, y=200)
+        self.b5.place(x=100, y=630)
+        self.b6.place(x=200, y=630)
+        self.b7.place(x=400, y=680)
+
+        # --- Initialize active_logging_windows_filepath AFTER t1 and status_message_var are created ---
+        # self.active_logging_windows_filepath = None
+        # self._check_default_logging_windows_file() # MOVED HERE, now status_message_var exists
+
+        # --- Controller, Application, Zaber Setup ---
+        self.controller = pycrafter9000.dmd()
+        self.application = libs.Application()
+        self.controller.stopsequence()
+        self.controller.changemode(3)
+        self.controller.hdmi()
+
+        Library.enable_device_db_store()
+        connection = Connection.open_serial_port("COM3")
+        device_list = connection.detect_devices()
+        device = device_list[0]
+        self.axis = device.get_axis(1)
+        self.axis.home()
+        
+        # Set default acceleration for the Zaber stage upon initialization
+        try:
+            desired_startup_accel_physical_ums2 = 100000 # µm/s² (equivalent to 100 mm/s²)
+            
+            # Get current acceleration setting value for diagnostics
+            # The library typically returns this in the setting's inherent physical units (µm/s² for "accel")
+            current_accel_val_before = self.axis.settings.get("accel")
+            self.update_status_message(f"Stage accel BEFORE setting: {current_accel_val_before} µm/s² (assuming library default unit for 'accel')")
+
+            # Set the "accel" setting, explicitly providing the unit of the value
+            self.axis.settings.set(
+                "accel", 
+                desired_startup_accel_physical_ums2, 
+                unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+            )
+            
+            # Verify by getting the setting again, explicitly requesting µm/s²
+            current_accel_val_after = self.axis.settings.get("accel", unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED)
+            self.update_status_message(f"Default stage acceleration SET to: {desired_startup_accel_physical_ums2} µm/s². READ BACK as: {current_accel_val_after} µm/s².")
+
+            if abs(current_accel_val_after - desired_startup_accel_physical_ums2) > 1: # Allow for small rounding
+                 self.update_status_message(f"WARNING: Readback acceleration {current_accel_val_after} µm/s² differs from desired {desired_startup_accel_physical_ums2} µm/s².", error=True)
+
+        except Exception as e:
+            self.update_status_message(f"Error setting default stage acceleration: {e}", error=True)
+            traceback.print_exc() # Print full traceback for debugging
+
+        # --- Initial t.insert values ---
+        self.t1.delete(0, 'end')
+        self.t4.delete(0, 'end')
+        # self.t8.delete(0, 'end') # Not needed if t8 is a Label with textvariable
+        self.t9.delete(0, 'end')
+        self.t10.delete(0, 'end')
+        self.t11.delete(0, 'end')
+        self.t11_2.delete(0, 'end')
+        self.t14.delete(0, 'end')
+        self.t1.insert(END, str("C:\\Users\\cheng sun\\BoyuanSun\\Slicing\\Calibration\\Power_Grayscale"))
+        self.t4.insert(END, str("0"))
+        # self.t8.insert(END, str("Stage connected")) # This will be set by update_status_message
+        self.t9.insert(END, str("0"))
+        self.t10.insert(END, str("5"))
+        self.t11.insert(END, str("1"))
+        self.t11_2.insert(END, str("1"))
+        self.t14.insert(END, str("1"))
+
+        # --- Screeninfo, window_name, black_image ---
+        screen_id = 0
+        self.screen = screeninfo.get_monitors()[screen_id]
+        self.window_name = 'show'
+        self.black_image = np.zeros((1600, 2560))
+
+        self.update_auto_home_button_state()
+        self.update_status_message("System Ready.") # Example of setting initial status
+
+    def _update_gui_progress(self, progress_value, total_layers, current_layer_index):
+        """Updates the progress bar and layer count display."""
+        if hasattr(self, 'p1'):
+            self.p1['value'] = progress_value
+        
+        # current_layer_index is 0-based, display is 1-based
+        if hasattr(self, 'current_layer_num_var'):
+            self.current_layer_num_var.set(f"Layer: {current_layer_index + 1}/{total_layers}")
+        
+        # Optional: Update estimated time if you have logic for it
+        # if hasattr(self, 'exposure_time') and self.exposure_time and current_layer_index < len(self.exposure_time):
+        #     remaining_layers = total_layers - (current_layer_index + 1)
+        #     if remaining_layers > 0 and len(self.exposure_time) > 0:
+        #         # Simplistic estimate: avg exp time of remaining or last known exp time
+        #         avg_remaining_exp = sum(self.exposure_time[current_layer_index:]) / len(self.exposure_time[current_layer_index:]) if len(self.exposure_time[current_layer_index:]) > 0 else self.exposure_time[-1]
+        #         estimated_time_remaining_seconds = remaining_layers * avg_remaining_exp # Add pause times too if significant
+        #         self.lbl15.config(text=f'Estimate Time: {estimated_time_remaining_seconds / 60:.1f} min')
+        #     else:
+        #         self.lbl15.config(text='Estimate Time: Done')
+
+
+        self.win.update_idletasks() # Process pending GUI updates
+
+    def run_Continuous(self):
+        self.flag = False # Reset stop flag for a new print attempt
+        self.pause_flag = False # Reset pause flag as well
+        self.update_status_message("Starting Continuous Print Setup...")
+        try:
+            self.initilze_stage() 
+            self.input_directory() 
+            if not self.image_list:
+                self.update_status_message("No images found or directory not set. Aborting print.")
+                messagebox.showerror("Print Error", "Image directory not set or no images found.")
+                return
+
+            # --- Start Debug Prints ---
+            val_t14 = self.t14.get()
+            print(f"DEBUG: Raw value from t14 (DLP Power): '{val_t14}'")
+            dlp_power = int(val_t14)
+
+            val_t16 = self.t16.get()
+            print(f"DEBUG: Raw value from t16 (Step Speed): '{val_t16}'")
+            step_speed_um_s = float(val_t16) if val_t16 else 1000.0
+
+            val_t17 = self.t17.get()
+            print(f"DEBUG: Raw value from t17 (Pause): '{val_t17}'")
+            layer_pause_s = float(val_t17) if val_t17 else 0.0
+
+            val_t19 = self.t19.get()
+            print(f"DEBUG: Raw value from t19 (Overstep µm): '{val_t19}'")
+            overstep_um_gui = float(val_t19) if val_t19 else 0.0
+
+            val_t21 = self.t21.get()
+            print(f"DEBUG: Raw value from t21 (Acceleration mm/s²): '{val_t21}'") # UNIT CHANGED in debug
+            step_type_val_mms2 = float(val_t21) if val_t21 else 0.0 # Now in mm/s², allow float
+            # --- End Debug Prints ---
+            
+            self.b1.config(state=DISABLED)
+            self.b10.config(state=DISABLED)
+            self.b4.config(state=NORMAL)
+
+            self.start_print_thread(
+                dlp_power=dlp_power,
+                step_speed_um_s=step_speed_um_s,
+                layer_pause_s=layer_pause_s,
+                overstep_um_gui=overstep_um_gui,
+                step_type_val_mms2=step_type_val_mms2, # Pass mm/s² value
+                print_mode="continuous"
+            )
+        except ValueError as e: # Catch ValueError specifically
+            self.update_status_message(f"Invalid print parameter input: {e}") # Include the error message
+            messagebox.showerror("Input Error", f"Please check print parameters. One of them is not a valid number.\nDetails: {e}")
+            self.b1.config(state=NORMAL)
+            self.b10.config(state=NORMAL)
+        except Exception as e:
+            self.update_status_message(f"Error during print setup: {e}")
+            messagebox.showerror("Setup Error", f"An error occurred: {e}")
+            self.b1.config(state=NORMAL)
+            self.b10.config(state=NORMAL)
+
+    def run_Stepped(self):
+        self.flag = False # Reset stop flag for a new print attempt
+        self.pause_flag = False # Reset pause flag as well
+        self.update_status_message("Starting Stepped Print Setup...")
+        try:
+            self.initilze_stage() 
+            self.input_directory() 
+            if not self.image_list:
+                self.update_status_message("No images found or directory not set. Aborting print.")
+                messagebox.showerror("Print Error", "Image directory not set or no images found.")
+                return
+
+            # --- Start Debug Prints ---
+            val_t14 = self.t14.get()
+            print(f"DEBUG: Raw value from t14 (DLP Power): '{val_t14}'")
+            dlp_power = int(val_t14)
+
+            val_t16 = self.t16.get()
+            print(f"DEBUG: Raw value from t16 (Step Speed): '{val_t16}'")
+            step_speed_um_s = float(val_t16) if val_t16 else 1000.0
+
+            val_t17 = self.t17.get()
+            print(f"DEBUG: Raw value from t17 (Pause): '{val_t17}'")
+            layer_pause_s = float(val_t17) if val_t17 else 0.0
+
+            val_t19 = self.t19.get()
+            print(f"DEBUG: Raw value from t19 (Overstep µm): '{val_t19}'") # DEBUG LABEL CHANGED
+            overstep_um_gui = float(val_t19) if val_t19 else 0.0 # RENAMED and now in µm
+
+            val_t21 = self.t21.get()
+            print(f"DEBUG: Raw value from t21 (Acceleration mm/s²): '{val_t21}'") # DEBUG LABEL CHANGED
+            step_type_val_mms2 = float(val_t21) if val_t21 else 0.0 # Now in mm/s², allow float
+            # --- End Debug Prints ---
+
+            self.b1.config(state=DISABLED)
+            self.b10.config(state=DISABLED)
+            self.b4.config(state=NORMAL)
+
+            self.start_print_thread(
+                dlp_power=dlp_power,
+                step_speed_um_s=step_speed_um_s,
+                layer_pause_s=layer_pause_s,
+                overstep_um_gui=overstep_um_gui,
+                step_type_val_mms2=step_type_val_mms2, # Pass mm/s² value
+                print_mode="stepped"
+            )
+        except ValueError as e: # Catch ValueError specifically
+            self.update_status_message(f"Invalid print parameter input: {e}") # Include the error message
+            messagebox.showerror("Input Error", f"Please check print parameters. One of them is not a valid number.\nDetails: {e}")
+            self.b1.config(state=NORMAL)
+            self.b10.config(state=NORMAL)
+        except Exception as e:
+            self.update_status_message(f"Error during print setup: {e}")
+            messagebox.showerror("Setup Error", f"An error occurred: {e}")
+            self.b1.config(state=NORMAL)
+            self.b10.config(state=NORMAL)
+
+    def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
+        # The try block should start here, encompassing all setup and thread starting
+        try:
+            self.update_status_message(f"Starting {print_mode} Print Setup...")
+            
+            path = str(self.t1.get())
+            if not path or not os.path.isdir(path):
+                self.update_status_message("Error: Image directory not set or invalid.", error=True)
+                messagebox.showerror("Setup Error", "Please set a valid image directory first.", parent=self.win)
+                return
+
+            # Auto-logging configuration now relies entirely on SensorDataWindow's state
+            if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
+                # Check if the "Enable Automated Logging" checkbox *within SensorDataWindow* is checked
+                if self.sensor_data_window_instance.auto_log_enabled_var.get():
+                    self.update_status_message("Sensor Panel auto-log is enabled, configuring...")
+                    if not self.sensor_data_window_instance.configure_automated_logging(
+                        enabled_from_main_app=True, # Indicate that MyWindow is triggering this configuration for a print
+                        base_image_directory=path   # Provide the base directory for logs
+                    ):
+                        self.update_status_message("Print start aborted due to Auto-Log configuration error (via Sensor Panel).", error=True)
+                        self.b1.config(state=NORMAL)
+                        self.b10.config(state=NORMAL)
+                        self.b4.config(state=DISABLED)
+                        return
+                    else:
+                        self.update_status_message("Sensor Panel auto-log configured successfully.")
+                else:
+                    self.update_status_message("Sensor Panel auto-log is disabled. Proceeding without automated logging.")
+                    # Ensure SensorDataWindow's logger is also told it's disabled for this run if it was previously enabled
+                    self.sensor_data_window_instance.configure_automated_logging(
+                        enabled_from_main_app=False,
+                        base_image_directory=path # Still provide path in case it needs to clear/reset something
+                    )
+            else:
+                self.update_status_message("Sensor Panel not open. Automated logging will not be active.")
+            
+            # Start the actual print thread
+            self.print_thread = threading.Thread(target=self.print_t, args=(
+                dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode # Pass mm/s²
+            ))
+            self.print_thread.daemon = True
+            self.print_thread.start()
+            self.update_status_message(f"{print_mode.capitalize()} print thread initiated.")
+
+        except Exception as e:
+            self.update_status_message(f"Error in start_print_thread: {e}", error=True)
+            traceback.print_exc()
+            if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
+            if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
+            if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
+
+    def print_t(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
+        try:
+            self.update_status_message("Print thread started.")
+            # Use MyWindow's own image_list to determine if layers are loaded
+            if not self.image_list: # Check if self.image_list (populated by input_directory) is empty
+                self.update_status_message("Error: No layers loaded. Aborting print.", error=True)
+                messagebox.showerror("Print Error", "No layers loaded. Please check instruction file generation and image directory.", parent=self.win)
+                self.b1.config(state=NORMAL)
+                self.b10.config(state=NORMAL)
+                self.b4.config(state=DISABLED)
+                self.print_thread = None
+                return
+
+            print(f"DEBUG: print_t STARTING. MyWindow.image_list length: {len(self.image_list)}") 
+            self.b1.config(state=DISABLED)
+            self.b10.config(state=DISABLED)
+            self.b4.config(state=NORMAL)
+
+            self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+            self.update_status_message(f"Moved to reference: {self.reference} mm")
+
+            cv2.namedWindow(self.window_name, cv2.WND_PROP_FULLSCREEN)
+            cv2.moveWindow(self.window_name, self.screen.x + 1439, self.screen.y - 1) 
+            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            cv2.imshow(self.window_name, self.black_image)
+            cv2.waitKey(1)
+            self.update_status_message("OpenCV window initialized.")
+
+            # DLP setup for pattern projection
+            if hasattr(self, 'controller'):
+                self.controller.changemode(0) # Switch to pattern sequence mode
+                time.sleep(2.0) # Crucial delay for mode change to take effect
+                self.controller.power(current=dlp_power) 
+                self.update_status_message(f"DLP set to pattern mode, power: {dlp_power}.")
+            else:
+                self.update_status_message("DLP controller not available. Cannot control DLP.", error=True)
+                # Decide if print should abort if DLP is not available
+                # For now, it will continue, but images won't project.
+
+            current_layer_num_for_display = 0
+            num_layers = len(self.image_list)
+            z_at_previous_exposure_microns = self.reference * 1000 # Z where the "0th" layer or substrate is
+            last_commanded_dlp_power = -1 # Initialize to a value that won't match any valid power
+
+            for i in range(num_layers): 
+                if self.flag:  
+                    self.update_status_message("Print stopped by user.")
+                    break
+                
+                while self.pause_flag: 
+                    time.sleep(0.1)
+                    if self.flag: 
+                        self.update_status_message("Print stopped by user during pause.")
+                        break
+                if self.flag: break
+
+                current_layer_num_for_display = i + 1
+
+                # --- Fetch Per-Layer Parameters ---
+                current_exposure_s = self.exposure_time[i] if i < len(self.exposure_time) else 0.1 
+                current_thickness_um = self.thickness[i] if i < len(self.thickness) else 50.0 
+                actual_dlp_power = self.intensity_list[i] if i < len(self.intensity_list) else dlp_power
+                actual_step_speed_um_s = self.step_speed_list[i] if i < len(self.step_speed_list) else step_speed_um_s
+                
+                # Overstep is now directly in µm from GUI or file (assuming file also uses µm)
+                actual_overstep_microns = self.overstep_distance_list[i] if i < len(self.overstep_distance_list) else overstep_um_gui
+                
+                # --- Acceleration Calculation (Input is mm/s², Zaber needs µm/s²) ---
+                PRACTICAL_MIN_ACCEL_UM_S2 = 800 # UPDATED practical minimum in µm/s²
+
+                current_raw_accel_mms2 = 0.0
+                # self.step_type_list is assumed to store acceleration values from file in mm/s²
+                # Ensure that when self.application.set_image_directory parses the file,
+                # it converts the acceleration column to float.
+                if i < len(self.step_type_list) and self.step_type_list[i] is not None:
+                    try:
+                        current_raw_accel_mms2 = float(self.step_type_list[i])
+                    except (ValueError, TypeError):
+                        self.update_status_message(f"Warning: Invalid accel value '{self.step_type_list[i]}' in file for L{current_layer_num_for_display}. Using GUI fallback.", error=True)
+                        current_raw_accel_mms2 = float(step_type_val_mms2) # step_type_val_mms2 is already float
+                else:
+                    current_raw_accel_mms2 = float(step_type_val_mms2) # step_type_val_mms2 is already float
+
+                if current_raw_accel_mms2 <= 1e-9: # Effectively zero or negative mm/s²
+                    self.update_status_message(f"Info: Acceleration input is {current_raw_accel_mms2:.3f} mm/s². Using practical minimum: {PRACTICAL_MIN_ACCEL_UM_S2} µm/s².")
+                    actual_acceleration_to_set_um_s2 = PRACTICAL_MIN_ACCEL_UM_S2
+                else: # User provided a positive acceleration in mm/s²
+                    requested_accel_ums2 = current_raw_accel_mms2 * 1000.0 # Convert mm/s² to µm/s²
+                    if requested_accel_ums2 < PRACTICAL_MIN_ACCEL_UM_S2:
+                        self.update_status_message(f"Warning: Requested accel {current_raw_accel_mms2:.3f} mm/s² ({requested_accel_ums2:.0f} µm/s²) is below practical minimum. Using {PRACTICAL_MIN_ACCEL_UM_S2} µm/s².")
+                        actual_acceleration_to_set_um_s2 = PRACTICAL_MIN_ACCEL_UM_S2
+                    else:
+                        actual_acceleration_to_set_um_s2 = requested_accel_ums2
+                
+                actual_acceleration_to_set_um_s2 = int(round(actual_acceleration_to_set_um_s2)) # Ensure integer, round before int
+                
+                actual_layer_pause_s = self.pause_list[i] if i < len(self.pause_list) else layer_pause_s
+
+                # Update DLP power if it's per-layer and different from the last commanded power
+                if hasattr(self, 'controller'):
+                    # Convert actual_dlp_power to int for comparison and setting
+                    current_layer_target_power = int(actual_dlp_power)
+                    if current_layer_target_power != last_commanded_dlp_power:
+                        self.controller.power(current=current_layer_target_power)
+                        last_commanded_dlp_power = current_layer_target_power # Update last commanded power
+                        self.update_status_message(f"Layer {current_layer_num_for_display}: DLP power set to {current_layer_target_power}.")
+
+                # --- TARGET Z CALCULATION for current layer i ---
+                current_target_z_microns = (self.reference * 1000) - sum(self.thickness[k] for k in range(i + 1) if k < len(self.thickness))
+
+                # --- MODE-SPECIFIC OPERATIONS ---
+                if print_mode == "continuous":
+                    # 1. Calculate continuous velocity for this layer
+                    calculated_continuous_velocity_um_s = 0.0
+                    if current_exposure_s > 1e-6 and current_thickness_um > 0: # Avoid division by zero or tiny exposure
+                        calculated_continuous_velocity_um_s = current_thickness_um / current_exposure_s
+                    else:
+                        self.update_status_message(f"L{current_layer_num_for_display} (Cont.): Invalid thickness/exposure for velocity. Using default speed.", error=True)
+                        calculated_continuous_velocity_um_s = actual_step_speed_um_s # Fallback
+
+                    if calculated_continuous_velocity_um_s <= 1e-6: # Ensure velocity is positive
+                        self.update_status_message(f"L{current_layer_num_for_display} (Cont.): Calculated velocity too low. Using default speed.", error=True)
+                        calculated_continuous_velocity_um_s = actual_step_speed_um_s # Fallback
+
+                    # 2. Display image for layer i
+                    image_path = self.image_list[i]
+                    image_to_show = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+                    if image_to_show is None:
+                        self.update_status_message(f"Error loading image {str(image_path)} for L{current_layer_num_for_display}. Showing black.", error=True)
+                        cv2.imshow(self.window_name, self.black_image)
+                    else:
+                        cv2.imshow(self.window_name, image_to_show)
+                    cv2.waitKey(1) # Essential for OpenCV to process imshow
+
+                    # 3. Start Z-axis movement (non-blocking)
+                    self.update_status_message(f"L{current_layer_num_for_display} (Cont.): Moving to {current_target_z_microns / 1000.0:.4f} mm at {calculated_continuous_velocity_um_s:.2f} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²")
+                    self.axis.move_absolute(
+                        position=current_target_z_microns,
+                        unit=Units.LENGTH_MICROMETRES,
+                        wait_until_idle=False, 
+                        velocity=calculated_continuous_velocity_um_s,
+                        velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
+                        acceleration=actual_acceleration_to_set_um_s2,
+                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+                    )
+
+                    # 4. Exposure time (during which stage is moving)
+                    if current_exposure_s > 0:
+                        time.sleep(current_exposure_s)
+                    else:
+                        self.update_status_message(f"L{current_layer_num_for_display} (Cont.): Zero exposure time during move.", error=True)
+                        # If exposure is 0, the move might be very fast or effectively skipped depending on thickness.
+                        # We still need to ensure the Zaber command completes.
+
+                    # 5. Ensure Z-axis move is complete after exposure time has elapsed
+                    self.axis.wait_until_idle()
+                    z_at_previous_exposure_microns = current_target_z_microns
+                    # For continuous mode, DO NOT show black image here.
+                    # The next layer's image will be shown in the next iteration.
+
+                elif print_mode == "stepped":
+                    # --- Stepped Mode: Display, Expose, Blackout, then Move ---
+                    # 1. Display image for layer i
+                    image_path = self.image_list[i]
+                    image_to_show = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+                    if image_to_show is None:
+                        self.update_status_message(f"Error loading image {str(image_path)} for L{current_layer_num_for_display}. Showing black.", error=True)
+                        cv2.imshow(self.window_name, self.black_image)
+                    else:
+                        cv2.imshow(self.window_name, image_to_show)
+                    cv2.waitKey(1)
+
+                    # 2. Exposure
+                    if current_exposure_s > 0:
+                        time.sleep(current_exposure_s)
+                    else:
+                        self.update_status_message(f"L{current_layer_num_for_display} (Stepped): Zero exposure time.", error=True)
+
+                    # 3. Show black image after exposure for stepped mode
+                    cv2.imshow(self.window_name, self.black_image)
+                    cv2.waitKey(1)
+
+                    # 4. Z-Axis Movement (Peel and Return)
+                    self.update_status_message(f"Layer {current_layer_num_for_display} (Stepped): Starting peel sequence.")
+                    z_exposure_pos_current_layer_i = (self.reference * 1000) - sum(self.thickness[k] for k in range(i) if k < len(self.thickness))
+                    # actual_overstep_microns is now directly available
+
+                    # REMOVED: self.axis.settings.set("accel", actual_acceleration_to_set_um_s2)
+                    # self.update_status_message(f"Stepped L{current_layer_num_for_display}: Zaber accel set to {actual_acceleration_to_set_um_s2} um/s^2") # No longer setting globally
+
+                    z_peel_peak = z_exposure_pos_current_layer_i - (actual_overstep_microns + current_thickness_um)
+                    self.update_status_message(f"Stepped L{current_layer_num_for_display}: Peeling up to {z_peel_peak / 1000.0:.4f} mm (Speed: {actual_step_speed_um_s} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
+                    self.axis.move_absolute(
+                        position=z_peel_peak,
+                        unit=Units.LENGTH_MICROMETRES,
+                        wait_until_idle=True,
+                        velocity=actual_step_speed_um_s,
+                        velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
+                        acceleration=actual_acceleration_to_set_um_s2, 
+                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+                    )
+
+                    z_return_pos = z_peel_peak + actual_overstep_microns
+                    self.update_status_message(f"Stepped L{current_layer_num_for_display}: Returning to {z_return_pos / 1000.0:.4f} mm (Target for next layer, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
+                    self.axis.move_absolute(
+                        position=z_return_pos, 
+                        unit=Units.LENGTH_MICROMETRES,
+                        wait_until_idle=True, 
+                        velocity=actual_step_speed_um_s,
+                        velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
+                        acceleration=actual_acceleration_to_set_um_s2, 
+                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+                    )
+                    z_at_previous_exposure_microns = z_return_pos
+                
+                # --- COMMON POST-LAYER OPERATIONS ---
+                if self.sensor_data_window_instance and \
+                   self.sensor_data_window_instance.sensor_window.winfo_exists() and \
+                   self.sensor_data_window_instance.auto_log_enabled_var.get(): 
+                    self.sensor_data_window_instance.update_logger_current_layer(
+                        current_layer_num_for_display,
+                        z_at_previous_exposure_microns / 1000.0 
+                    )
+
+                if actual_layer_pause_s > 0:
+                    time.sleep(actual_layer_pause_s)
+                                
+                progress_val = (i + 1) * 100 / num_layers 
+                self.win.after(0, lambda p=progress_val, nl=num_layers, ci=i: self._update_gui_progress(p, nl, ci))
+
+            # --- END OF LOOP ---
+            if not self.flag: 
+                 self.update_status_message("Print completed successfully.")
+                 # Ensure black image is shown at the very end, especially if continuous mode was active
+                 cv2.imshow(self.window_name, self.black_image)
+                 cv2.waitKey(1) # Allow OpenCV to process the final black image
+            
+            winsound.Beep(440, 1000) 
+
+        except Exception as e:
+            self.update_status_message(f"CRITICAL Error during print: {e}", error=True)
+            traceback.print_exc()
+        finally:
+            self.update_status_message("Print finalization sequence started...")
+            # DLP Cleanup
+            if hasattr(self, 'controller'):
+                try:
+                    self.controller.stopsequence()
+                    self.controller.power(current=0) # Turn off LED
+                    self.controller.changemode(3)   # Set back to HDMI/video input mode
+                    # self.controller.hdmi()        # Optionally ensure HDMI input is active
+                    self.update_status_message("DLP sequence stopped, LEDs off, and mode set to HDMI.")
+                except Exception as dlp_e:
+                    self.update_status_message(f"Error during DLP cleanup: {dlp_e}", error=True)
+            
+            # OpenCV window cleanup
+            if hasattr(self, 'window_name') and self.window_name: # Check if window_name is not None
+                try:
+                    cv2.destroyWindow(self.window_name)
+                    self.update_status_message("OpenCV window closed.")
+                except cv2.error as cv_err:
+                    # Handle cases where the window might already be destroyed or was never properly created
+                    if "NULL window" not in str(cv_err) and "Invalid window name" not in str(cv_err):
+                         self.update_status_message(f"Error closing OpenCV window: {cv_err}", error=True)
+                    else:
+                         self.update_status_message("OpenCV window was likely already closed or not fully initialized.")
+
+
+            # Zaber stage movement
+            if hasattr(self, 'axis') and self.axis:
+                try:
+                    offset_val_mm = float(self.offset) 
+                    self.axis.move_relative(offset_val_mm, Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                    self.get_position() # Call get_position to update t4
+                    self.update_status_message(f"Moved Z by offset: {offset_val_mm}mm. Current Z: {self.t4.get()} mm")
+                except Exception as zaber_e:
+                    self.update_status_message(f"Error moving Zaber by offset: {zaber_e}", error=True) 
+
+            # Save auto-log data via SensorDataWindow
+            if self.sensor_data_window_instance and \
+               self.sensor_data_window_instance.sensor_window.winfo_exists() and \
+               self.sensor_data_window_instance.auto_log_enabled_var.get(): 
+                if self.sensor_data_window_instance.is_automated_logger_configured: 
+                     self.sensor_data_window_instance.stop_and_save_automated_logs()
+            
+            self.update_status_message("Print thread finished.")
+            if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
+            if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
+            if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
+            self.print_thread = None
+
+    def set_home(self):
+        self.reference = float(self.t4.get())
+        # self.axis.move_relative(position=self.offset, unit=Units.LENGTH_MILLIMETRES, # Assuming self.offset is a relative move
+        #                         wait_until_idle=False) # Consider if you want to wait or not
+        # It's usually safer to move to an absolute position after setting a reference if that's the intent.
+        # If self.reference is the new "zero", you might not need to move by self.offset here,
+        # or if you do, ensure it's to the correct absolute target.
+        # For now, just updating the status message:
+        self.update_status_message("Home Set") # Use update_status_message instead of direct t8 manipulation
+
+    def get_position(self):
+        self.t4.delete(0, 'end')
+        self.t4.insert(END, str(self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)))
+
+    def goto_position(self):
+        self.axis.move_absolute(position=float(self.t4.get()), unit=Units.LENGTH_MILLIMETRES,
+                                wait_until_idle=False)
+
+    def stop(self):
+        self.update_status_message("Stop signal received...")
+        self.flag = True
+        self.pause_flag = False
+        if hasattr(self, 'controller'):
+            try:
+                self.controller.stopsequence() # Stop any active sequence
+                # Optionally, also turn power off here if stop means immediate halt of light
+                # self.controller.power(current=0)
+            except Exception as e:
+                self.update_status_message(f"Error stopping DLP sequence: {e}")
+
+    def initilze_stage(self):
+        """Initializes the stage and resets DLP to a known idle state."""
+        self.update_status_message("Initializing stage and DLP for print...")
+        if hasattr(self, 'controller'):
+            try:
+                self.controller.stopsequence()  # Stop any previous sequence
+                self.controller.power(current=0)    # Ensure LED is off
+                self.controller.changemode(3)   # Set to HDMI/video input mode
+                self.controller.hdmi()          # Activate HDMI input
+                time.sleep(0.5) # Short pause for mode change to settle
+                self.update_status_message("DLP reset to HDMI mode.")
+            except Exception as e:
+                self.update_status_message(f"Error initializing DLP: {e}", error=True)
+                # Optionally, decide if this is a fatal error for starting a print
+                # return False 
+        # Any Zaber stage specific initialization can also go here if needed
+        # For now, it mainly focuses on DLP reset.
+        return True # Indicate success or readiness
+
+    def input_directory(self):
+        path = str(self.t1.get())
+        print(f"DEBUG: MyWindow.input_directory called with path: '{path}'") # Add this
+        try:
+            (
+                self.image_list, 
+                self.exposure_time,  # Corresponds to exposure_time_list
+                self.thickness,      # Corresponds to thickness_list
+                self.step_speed_list,
+                self.overstep_distance_list,
+                self.step_type_list,  # This will hold the 'Acceleration' values from the file
+                self.pause_list,
+                self.intensity_list
+            ) = self.application.set_image_directory(path)
+            
+            print(f"DEBUG: MyWindow.input_directory AFTER set_image_directory. MyWindow.image_list length: {len(self.image_list)}, Application.image_list length: {len(self.application.image_list)}") # Add this
+
+            if not self.image_list:
+                self.update_status_message("No image data loaded from instruction file.")
+                messagebox.showwarning("File Info", f"No image data was loaded from the instruction file in:\n{path}")
+            else:
+                self.update_status_message(f"Loaded {len(self.image_list)} layers from instruction file.")
+
+        except ValueError as e:
+            self.update_status_message(f"Error processing instruction file: {e}. Check file format and content.")
+            messagebox.showerror("File Error", f"Could not process the instruction file in '{path}'.\nDetails: {e}\nEnsure it matches the expected format (9 columns, tab-separated) and numeric values are correct.")
+            # Clear lists to prevent using old/corrupted data
+            self.image_list = []
+            self.exposure_time = []
+            self.thickness = []
+            self.step_speed_list = []
+            self.overstep_distance_list = []
+            self.step_type_list = []
+            self.pause_list = []
+            self.intensity_list = []
+        except FileNotFoundError:
+            self.update_status_message(f"Instruction file not found in '{path}'.")
+            messagebox.showerror("File Not Found", f"The instruction file (e.g., foldername.txt) was not found in the specified directory:\n{path}")
+        except Exception as e:
+            self.update_status_message(f"An unexpected error occurred reading directory: {e}")
+            messagebox.showerror("Directory Error", f"An unexpected error occurred:\n{e}")
+            traceback.print_exc()
+
+    def moveup(self):
+        self.axis.move_relative(position=float(self.t9.get())*-1, unit=Units.LENGTH_MILLIMETRES,
+                                wait_until_idle=False,velocity=10,
+                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+
+    def movedown(self):
+        self.axis.move_relative(position=float(self.t9.get()), unit=Units.LENGTH_MILLIMETRES,
+                                wait_until_idle=False,velocity=5,
+                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+
+    def simple_txt(self):
+        path = str(self.t1.get())
+        thickness = str(self.t10.get())
+        base = str(self.t11_2.get())
+        time_val = str(self.t11.get())
+        intensity = str(self.t14.get())
+        step_speed = str(self.t16.get())
+        overstep_distance = str(self.t19.get())
+        acceleration_val = str(self.t21.get())
+        pause = str(self.t17.get())
+        
+        self.application.generate_instructions(
+            path=path, 
+            thickness=thickness, 
+            base=base, 
+            time=time_val, 
+            intensity=intensity, 
+            step_speed=step_speed, 
+            overstep_distance=overstep_distance, 
+            step_type=acceleration_val, 
+            pause=pause
+        )
+    
+    def update_status_message(self, message, error=False):
+        """Updates the status message label and logs to console."""
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        # Concatenate for console/text area, but use raw message for status_message_var
+        log_message = f"[{timestamp}] {message}" 
+        
+        try:
+            if self.win.winfo_exists():
+                 self.status_message_var.set(message) # Set the StringVar for the Label
+        except TclError:
+            pass 
+
+        if error:
+            print(f"ERROR: {log_message}")
+        else:
+            print(f"Status Update: {log_message}")
+        
+        if hasattr(self, 'status_text_area') and self.status_text_area:
+            try:
+                if self.status_text_area.winfo_exists():
+                    self.status_text_area.insert(END, log_message + "\n")
+                    self.status_text_area.see(END)
+            except TclError:
+                 pass
+
+    def update_auto_home_button_state(self):
+        if (self.sensor_data_window_instance and
+            self.sensor_data_window_instance.sensor_window.winfo_exists() and
+            self.sensor_data_window_instance.is_force_gauge_calibrated_internally()):
+            self.b_auto_home.config(state=NORMAL)
+        else:
+            self.b_auto_home.config(state=DISABLED)
+
+    def open_sensor_panel(self):
+        if self.sensor_data_window_instance is None or not self.sensor_data_window_instance.sensor_window.winfo_exists():
+            if hasattr(self, 'axis') and self.axis:
+                # Pass 'self' (MyWindow instance) to SensorDataWindow
+                self.sensor_data_window_instance = SensorDataWindow(self.win, self.axis, self.update_status_message, self)
+                self.update_auto_home_button_state()
+            else:
+                # self.t8.delete(0, 'end') # self.t8 is a Label
+                # self.t8.insert(END, "Error: Zaber axis not initialized. Cannot open sensor panel.")
+                self.update_status_message("Error: Zaber axis not initialized. Cannot open sensor panel.", error=True)
+        else:
+            self.sensor_data_window_instance.sensor_window.lift()
+            self.update_auto_home_button_state()
+
+    def start_auto_home_sequence(self):
+        if self.auto_home_thread and self.auto_home_thread.is_alive():
+            self.update_status_message("Auto-Home is already in progress.")
+            return
+
+        try:
+            initial_guess = float(self.t_auto_home_guess.get())
+            contact_threshold_abs = float(self.t_contact_threshold_abs.get())
+            contact_threshold_delta = float(self.t_contact_threshold_delta.get())
+        except ValueError:
+            self.update_status_message("Invalid input for Auto-Home parameters.")
+            messagebox.showerror("Input Error", "Auto-Home parameters must be numbers.")
+            return
+
+        if not (self.sensor_data_window_instance and self.sensor_data_window_instance.force_gauge_manager):
+            self.update_status_message("Sensor panel or force gauge manager not available.")
+            return
+        
+        if not self.sensor_data_window_instance.is_force_gauge_calibrated_internally():
+            self.update_status_message("Force gauge is not calibrated. Please calibrate from Sensor Panel.")
+            messagebox.showwarning("Calibration Needed", "Force gauge must be calibrated before Auto-Home.")
+            return
+
+        self.update_status_message("Starting Auto-Home...")
+        self.b_auto_home.config(state=DISABLED)
+
+        self.auto_home_thread = AutoHomer(
+            zaber_axis=self.axis,
+            force_gauge_manager=self.sensor_data_window_instance.force_gauge_manager,
+            initial_guess=initial_guess,
+            contact_threshold_absolute=contact_threshold_abs,
+            contact_threshold_delta=contact_threshold_delta,
+            status_callback=self.update_status_message,
+            result_callback=self.handle_auto_home_result,
+            parent_gui=self.win
+        )
+        self.auto_home_thread.start()
+
+    def handle_auto_home_result(self, new_home_position, message):
+        self.update_status_message(message)
+        if new_home_position is not None:
+            self.reference = new_home_position
+            self.t4.delete(0, 'end')
+            self.t4.insert(END, f"{new_home_position:.4f}")
+            self.update_status_message(f"New Home set to: {new_home_position:.4f} mm")
+            messagebox.showinfo("Auto-Home Complete", f"New home position set to: {new_home_position:.4f} mm")
+        else:
+            messagebox.showerror("Auto-Home Failed", message)
+        
+        self.update_auto_home_button_state()
+
+    def on_closing(self):
+        if self.auto_home_thread and self.auto_home_thread.is_alive():
+            self.update_status_message("Attempting to stop Auto-Home routine...")
+            self.auto_home_thread.stop()
+            self.auto_home_thread.join(timeout=2.0)
+            if self.auto_home_thread.is_alive():
+                print("Warning: Auto-Home thread did not terminate cleanly.")
+
+        if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
+            self.sensor_data_window_instance.on_sensor_window_close()
+
+        if hasattr(self, 'axis') and self.axis:
+            try:
+                self.axis.stop()
+                if hasattr(self.axis, 'device') and hasattr(self.axis.device, 'connection'):
+                    self.axis.device.connection.close()
+                else:
+                    print("Note: Could not determine Zaber connection object directly from axis for closing.")
+            except Exception as e:
+                print(f"Error stopping/closing Zaber connection: {e}")
+        
+        if hasattr(self, 'controller'):
+            try:
+                self.controller.stopsequence()
+                self.controller.standby()
+            except Exception as e:
+                print(f"Error shutting down DLP: {e}")
+
+        self.win.destroy()
+
+
+if __name__ == '__main__':
+    Library.enable_device_db_store()
+    window = Tk()
+    mywin = MyWindow(window)
+    window.title('Prince - Main Window')
+    window.geometry("1200x800+10+10")
+    window.protocol("WM_DELETE_WINDOW", mywin.on_closing)
+    window.mainloop()
