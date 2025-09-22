@@ -1,0 +1,4 @@
+completed
+BPAGDA
+0.3% NPS, 0.5% I819, 60:40 PEGDA
+Set screw stage, 5mm of 2.5% PEO, 200umPDMS

@@ -1,0 +1,5 @@
+Layer,Peak_Peel_Force_N,Work_of_Adhesion_mJ,Time_to_Peel_Start_s,Peel_Time_s,Total_Peel_Time_s,Distance_to_Peel_Start_mm,Peak_Retraction_Force_N
+1,0.0062,0.0113,3.0437,0.0000,3.0437,1.5491,0.0000
+2,0.0062,0.0114,3.2675,0.0000,3.2675,1.6824,0.0000
+3,0.0062,0.0113,3.1376,0.0000,3.1376,1.6118,0.0000
+4,0.0062,0.0112,3.1381,0.0000,3.1381,1.6101,0.0000

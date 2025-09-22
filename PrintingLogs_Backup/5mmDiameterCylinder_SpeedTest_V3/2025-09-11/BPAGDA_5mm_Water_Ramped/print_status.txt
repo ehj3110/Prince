@@ -1,0 +1,5 @@
+completed
+BPAGDA, 0.3% NPS, 0.5% I819, 60:40 PEGDA:BPEGDA
+Set screw stage, 5mm of water
+0.1N starting force 
+200um PDMS

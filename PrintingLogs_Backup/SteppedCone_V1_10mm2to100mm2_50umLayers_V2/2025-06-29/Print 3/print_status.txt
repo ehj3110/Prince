@@ -1,0 +1,4 @@
+completed
+Stiffness: 550.92N/m
+Water, unsealed, BPAGDA, 120 power 1 second exposure
+200um/s peel speed. 
