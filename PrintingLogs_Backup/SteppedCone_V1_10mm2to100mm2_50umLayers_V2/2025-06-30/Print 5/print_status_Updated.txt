@@ -1,0 +1,4 @@
+completed, but failed about halfway through.
+Standard BPAGDA conditions with sealed water and ACF
+Because of the dent, the stiffness seems to be about 250 N/m when I set the force to 0.1, but it's 500 when 0.25N. 
+The stiffness is 291 when i unseal it

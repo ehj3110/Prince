@@ -1,0 +1,5 @@
+completed
+200umPDMS with 1mm of 2.5% PEO
+BPAGDA, 60:40, 0.3% NPS. 0.25% I819
+Set scrw stage
+0.08N of starting force

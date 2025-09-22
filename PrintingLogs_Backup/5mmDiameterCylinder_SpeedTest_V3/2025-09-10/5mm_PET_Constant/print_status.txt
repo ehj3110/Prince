@@ -1,0 +1,4 @@
+completed
+PET with 0.25% NPS, 0.5% LAP
+6:3:1 PEGDA 575, TET, Water
+Set screw stage, 200um PDMS, 5mm spacer of 2.5% PEO

@@ -1,0 +1,5 @@
+Layer_Number,Peak_Force_N,Work_of_Adhesion_mJ,Initiation_Time_s,Propagation_End_Time_s,Total_Peel_Duration_s,Distance_to_Peak_mm,Peel_Distance_mm,Peak_Retraction_Force_N,Peak_Position_mm,Propagation_Start_Time_s,Propagation_Duration_s
+1,0.0399,-0.0277,12.1854,13.9049,1.7195,-0.4712,-0.8599,-0.0894,67.9875,13.1277,0.7771
+2,0.0310,-0.0308,11.5942,18.3701,6.7759,-0.4278,-3.3878,-0.0943,68.2336,12.4498,5.9203
+3,0.0314,-0.0263,11.7016,15.2339,3.5324,-0.6888,-1.7660,-0.0894,67.8876,13.0792,2.1547
+4,0.1547,-0.3363,11.4317,11.6994,0.2678,-1.3567,-3.0275,-0.0737,67.1656,11.5556,0.1438
