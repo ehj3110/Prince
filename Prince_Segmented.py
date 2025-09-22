@@ -5,7 +5,13 @@ import numpy as np
 import time
 import screeninfo
 import sys
+import os
 import winsound
+import usb.core
+
+# Add support_modules to Python path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'support_modules'))
+
 import pycrafter9000
 import libs
 import timeit
@@ -15,6 +21,7 @@ from zaber_motion.ascii import Connection
 from zaber_motion import Units
 import csv
 import os
+import shutil
 import datetime
 import queue
 import traceback
@@ -52,6 +59,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.step_type_list = []  # Corresponds to 'Acceleration' from the file
         self.pause_list = []
         self.intensity_list = []
+        self.active_instruction_file_path = None  # Track instruction file for copying
 
         # Ensure self.p1 (ttk.Progressbar) is initialized - THIS WILL BE OUR MAIN PROGRESS BAR
         self.p1 = Progressbar(win, orient=HORIZONTAL, length=400, mode='determinate') # Increased length a bit
@@ -441,6 +449,27 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.b1.config(state=NORMAL)
             self.b10.config(state=NORMAL)
 
+    def _get_next_print_number(self, date_specific_log_dir):
+        """Determines the next print number for a given date directory."""
+        next_print_num = 1
+        if os.path.exists(date_specific_log_dir):
+            try:
+                entries = os.listdir(date_specific_log_dir)
+                print_nums = []
+                for entry in entries:
+                    if os.path.isdir(os.path.join(date_specific_log_dir, entry)) and entry.startswith("Print "):
+                        parts = entry.split(" - ")
+                        if len(parts) > 0: # Check if split produced at least one part
+                            num_part = parts[0].replace("Print ", "").strip()
+                            if num_part.isdigit():
+                                print_nums.append(int(num_part)) # Added missing append
+                if print_nums:
+                    next_print_num = max(print_nums) + 1
+            except Exception as e:
+                self.update_status_message(f"Error determining next print number: {e}", error=True)
+                # Fallback to 1 or handle error appropriately, for now, it will return 1
+        return next_print_num
+
     def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
         # The try block should start here, encompassing all setup and thread starting
         try:
@@ -457,24 +486,27 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 # Check if the "Enable Automated Logging" checkbox *within SensorDataWindow* is checked
                 if self.sensor_data_window_instance.auto_log_enabled_var.get():
                     self.update_status_message("Sensor Panel auto-log is enabled, configuring...")
-                    if not self.sensor_data_window_instance.configure_automated_logging(
-                        enabled_from_main_app=True, # Indicate that MyWindow is triggering this configuration for a print
-                        base_image_directory=path   # Provide the base directory for logs
-                    ):
-                        self.update_status_message("Print start aborted due to Auto-Log configuration error (via Sensor Panel).", error=True)
-                        self.b1.config(state=NORMAL)
-                        self.b10.config(state=NORMAL)
-                        self.b4.config(state=DISABLED)
-                        return
-                    else:
-                        self.update_status_message("Sensor Panel auto-log configured successfully.")
+                    
+                    # Set up logging directory structure like backup version
+                    main_img_dir = path
+                    self.current_print_log_base_dir = os.path.join(main_img_dir, "Printing_Logs")
+                    current_date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+                    self.current_print_date_dir = os.path.join(self.current_print_log_base_dir, current_date_str)
+                    self.current_print_number = self._get_next_print_number(self.current_print_date_dir)
+                    self.current_print_session_log_dir = os.path.join(self.current_print_date_dir, f"Print {self.current_print_number}")
+                    os.makedirs(self.current_print_session_log_dir, exist_ok=True)
+                    self.update_status_message(f"Log directory created: {self.current_print_session_log_dir}")
+                    
+                    # Configure AutomatedLayerLogger via SensorDataWindow with proper parameters
+                    self.sensor_data_window_instance.configure_automated_layer_logging(
+                        main_image_dir=main_img_dir,
+                        print_number=self.current_print_number,
+                        date_str_for_dir=current_date_str,
+                        log_directory=self.current_print_session_log_dir
+                    )
+                    self.update_status_message(f"AutomatedLayerLogger configured for print {self.current_print_number}.")
                 else:
                     self.update_status_message("Sensor Panel auto-log is disabled. Proceeding without automated logging.")
-                    # Ensure SensorDataWindow's logger is also told it's disabled for this run if it was previously enabled
-                    self.sensor_data_window_instance.configure_automated_logging(
-                        enabled_from_main_app=False,
-                        base_image_directory=path # Still provide path in case it needs to clear/reset something
-                    )
             else:
                 self.update_status_message("Sensor Panel not open. Automated logging will not be active.")
             
@@ -711,8 +743,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 # --- COMMON POST-LAYER OPERATIONS ---
                 if self.sensor_data_window_instance and \
                    self.sensor_data_window_instance.sensor_window.winfo_exists() and \
-                   self.sensor_data_window_instance.auto_log_enabled_var.get(): 
-                    self.sensor_data_window_instance.update_logger_current_layer(
+                   hasattr(self.sensor_data_window_instance, 'automated_layer_logger') and \
+                   self.sensor_data_window_instance.automated_layer_logger and \
+                   self.sensor_data_window_instance.automated_layer_logger.is_configured_for_run:
+                    # Corrected method name below
+                    self.sensor_data_window_instance.update_auto_logger_current_layer(
                         current_layer_num_for_display,
                         z_at_previous_exposure_microns / 1000.0 
                     )
@@ -774,9 +809,58 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # Save auto-log data via SensorDataWindow
             if self.sensor_data_window_instance and \
                self.sensor_data_window_instance.sensor_window.winfo_exists() and \
-               self.sensor_data_window_instance.auto_log_enabled_var.get(): 
-                if self.sensor_data_window_instance.is_automated_logger_configured: 
-                     self.sensor_data_window_instance.stop_and_save_automated_logs()
+               hasattr(self.sensor_data_window_instance, 'automated_layer_logger') and \
+               self.sensor_data_window_instance.automated_layer_logger and \
+               self.sensor_data_window_instance.automated_layer_logger.is_configured_for_run:
+                self.sensor_data_window_instance.stop_and_save_automated_logs()
+
+            # Write print status and save instruction file
+            if hasattr(self, 'current_print_session_log_dir') and self.current_print_session_log_dir:
+                # Determine print status
+                if self.flag:  # If flag is True, it means the print was stopped/aborted
+                    status_to_write = "stopped"
+                elif not self.flag:  # If flag is still false, it means it completed normally
+                    status_to_write = "completed"
+
+                # Save print status file
+                status_file_path = os.path.join(self.current_print_session_log_dir, "print_status.txt")
+                try:
+                    with open(status_file_path, 'w') as sf:
+                        sf.write(status_to_write)
+                    self.update_status_message(f"Print status '{status_to_write}' written to {status_file_path}")
+                except Exception as e_stat:
+                    self.update_status_message(f"Error writing final print status: {e_stat}")
+
+                # Save instruction file if work of adhesion or automated logging were enabled
+                try:
+                    should_save_instruction_file = False
+                    
+                    # Check if work of adhesion recording was enabled
+                    if (hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance and 
+                        hasattr(self.sensor_data_window_instance, 'record_work_var') and 
+                        self.sensor_data_window_instance.record_work_var.get()):
+                        should_save_instruction_file = True
+                    
+                    # Check if automated logging was enabled
+                    if (hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance and
+                        hasattr(self.sensor_data_window_instance, 'auto_log_enabled_var') and
+                        self.sensor_data_window_instance.auto_log_enabled_var.get()):
+                        should_save_instruction_file = True
+                    
+                    if should_save_instruction_file and hasattr(self, 'active_instruction_file_path') and self.active_instruction_file_path:
+                        if os.path.exists(self.active_instruction_file_path):
+                            instruction_filename = os.path.basename(self.active_instruction_file_path)
+                            saved_instruction_path = os.path.join(self.current_print_session_log_dir, instruction_filename)
+                            shutil.copy2(self.active_instruction_file_path, saved_instruction_path)
+                            self.update_status_message(f"Instruction file saved: {instruction_filename}")
+                        else:
+                            self.update_status_message("Warning: Active instruction file not found, could not save copy.")
+                    
+                except Exception as e_instr:
+                    self.update_status_message(f"Error saving instruction file: {e_instr}")
+            
+            # Trigger post-print analysis and plot generation
+            self._trigger_post_print_analysis()
             
             self.update_status_message("Print thread finished.")
             if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
@@ -836,6 +920,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
     def input_directory(self):
         path = str(self.t1.get())
         print(f"DEBUG: MyWindow.input_directory called with path: '{path}'") # Add this
+        
+        # Determine the expected instruction file name based on the directory name
+        # This logic should match what application.set_image_directory expects
+        expected_instruction_filename = os.path.basename(os.path.normpath(path)) + ".txt"
+        potential_instruction_file_path = os.path.join(path, expected_instruction_filename)
+
         try:
             (
                 self.image_list, 
@@ -849,6 +939,16 @@ Evan Jones, evanjones2026@u.northwestern.edu
             ) = self.application.set_image_directory(path)
             
             print(f"DEBUG: MyWindow.input_directory AFTER set_image_directory. MyWindow.image_list length: {len(self.image_list)}, Application.image_list length: {len(self.application.image_list)}") # Add this
+
+            # If set_image_directory was successful and found the file, update active_instruction_file_path
+            if os.path.exists(potential_instruction_file_path):
+                self.active_instruction_file_path = potential_instruction_file_path
+                self.update_status_message(f"Active instruction file set to: {self.active_instruction_file_path}")
+            else:
+                # This case should ideally be handled by set_image_directory raising FileNotFoundError
+                # but as a fallback:
+                self.active_instruction_file_path = None
+                self.update_status_message(f"Warning: Instruction file {expected_instruction_filename} not found in {path} after successful image list load.", warning=True)
 
             if not self.image_list:
                 self.update_status_message("No image data loaded from instruction file.")
@@ -1036,6 +1136,78 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 print(f"Error shutting down DLP: {e}")
 
         self.win.destroy()
+
+    def _trigger_post_print_analysis(self):
+        """
+        Trigger automated post-print analysis and plot generation.
+        This runs whether the print completed successfully or was stopped early.
+        """
+        try:
+            self.update_status_message("Starting post-print analysis...")
+            
+            # Check if we have a valid log directory
+            if not hasattr(self, 'current_print_session_log_dir') or not self.current_print_session_log_dir:
+                self.update_status_message("No log directory available for post-print analysis.")
+                return
+            
+            if not os.path.exists(self.current_print_session_log_dir):
+                self.update_status_message("Log directory does not exist for post-print analysis.")
+                return
+            
+            # Import and run post-print analyzer
+            from post_print_analyzer import PostPrintAnalyzer
+            from pathlib import Path
+            
+            analyzer = PostPrintAnalyzer()
+            
+            # Get the daily log directory (parent of current print session)
+            daily_log_dir = os.path.dirname(self.current_print_session_log_dir)
+            
+            # Find only the current session (most recent) instead of all sessions
+            print(f"DEBUG: Looking for current session in daily dir: {daily_log_dir}")
+            
+            # Use the PostPrintAnalyzer method to find current session in daily directory
+            current_session = analyzer.find_current_session_in_daily_dir(daily_log_dir)
+            
+            if not current_session:
+                self.update_status_message("Post-print analysis: No current session found.")
+                return
+            
+            print(f"DEBUG: Current session found: {current_session['date']}/{current_session['print_number']}")
+            
+            # Analyze the current session and track results
+            total_plots = 0
+            processed_sessions = 0
+            
+            try:
+                session_results = analyzer.analyze_print_session(current_session)
+                if session_results:
+                    processed_sessions += 1
+                    
+                    # Count plots generated
+                    plots_count = len([r for r in session_results if r.get('plot_path')])
+                    total_plots += plots_count
+                    
+                    # Count total layers processed across all CSV files in this session
+                    total_layers = sum(len(r.get('layers', [])) for r in session_results)
+                    
+                    if plots_count > 0:
+                        session_name = f"{current_session['date']}/{current_session['print_number']}"
+                        self.update_status_message(f"  📊 {session_name}: {total_layers} layers → {plots_count} plots")
+                        
+            except Exception as e:
+                print(f"Error analyzing current session {current_session.get('print_number', 'Unknown')}: {e}")
+        
+            if processed_sessions > 0:
+                self.update_status_message(f"Post-print analysis complete: {processed_sessions} session, {total_plots} plots generated.")
+            else:
+                self.update_status_message("Post-print analysis: No suitable data found for plotting.")
+                
+        except Exception as e:
+            self.update_status_message(f"Error in post-print analysis: {e}")
+            print(f"DEBUG: Post-print analysis error: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 if __name__ == '__main__':

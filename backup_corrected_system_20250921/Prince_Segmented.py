@@ -1,29 +1,34 @@
-import os
-import datetime
-import usb.core
-import pycrafter9000
-import libs
-import traceback
-import numpy as np
-import screeninfo
-import threading
-import shutil
-import winsound # Added winsound import
-
 from tkinter import *
 from tkinter.ttk import *
 import cv2
+import numpy as np
 import time
-import queue
+import screeninfo
+import sys
+import os
+import winsound
+import usb.core
+
+# Add support_modules to Python path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'support_modules'))
+
+import pycrafter9000
+import libs
+import timeit
+import threading # <--- Add this line
 from zaber_motion import Library
 from zaber_motion.ascii import Connection
 from zaber_motion import Units
 import csv
-
+import os
+import shutil
+import datetime
+import queue
+import traceback
 from tkinter import messagebox
 from SensorDataWindow import SensorDataWindow
 from AutoHomeRoutine import AutoHomer
-from PeakForceLogger import PeakForceLogger
+from USBCoordinator import usb_coordinator
 
 
 class MyWindow:
@@ -55,7 +60,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.step_type_list = []  # Corresponds to 'Acceleration' from the file
         self.pause_list = []
         self.intensity_list = []
-        self.peak_force_logger = None
+        self.active_instruction_file_path = None  # Track instruction file for copying
 
         # Ensure self.p1 (ttk.Progressbar) is initialized - THIS WILL BE OUR MAIN PROGRESS BAR
         self.p1 = Progressbar(win, orient=HORIZONTAL, length=400, mode='determinate') # Increased length a bit
@@ -128,7 +133,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.lbl16.place(x=column2_x, y=550)
         self.t16 = Entry(win)
         self.t16.place(x=column2_x, y=570)
-        self.t16.insert(END, "1000") # Default Step Speed
+        self.t16.insert(END, "1000.0") # Default Step Speed
         
         self.lbl19.place(x=column2_x, y=590)
         self.t19 = Entry(win)
@@ -138,13 +143,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.lbl17.place(x=column2_x, y=630)
         self.t17 = Entry(win)
         self.t17.place(x=column2_x, y=650)
-        self.t17.insert(END, "0") # Default Pause
+        self.t17.insert(END, "0.0") # Default Pause
         
         column3_x = 700
         self.lbl21.place(x=column3_x, y=550)
         self.t21 = Entry(win)
         self.t21.place(x=column3_x, y=570)
-        self.t21.insert(END, "5") # Default Acceleration in mm/s² (e.g., 5.0 mm/s²)
+        self.t21.insert(END, "5.0") # Default Acceleration in mm/s² (e.g., 5.0 mm/s²)
 
         # --- Auto-Home Control Box ---
         frame_auto_home_y_start = 730 # Adjust this Y-coordinate as needed
@@ -172,12 +177,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         self.b_auto_home = Button(self.frame_auto_home, text="Auto-Home Surface", command=self.start_auto_home_sequence, state=DISABLED)
         self.b_auto_home.grid(row=0, column=6, padx=10, pady=2)
-
-        # Add the stiffness display label within the Auto-Home frame
-        self.stiffness_var = StringVar() 
-        self.stiffness_var.set("Stiffness: --- N/m") # Default text also includes N/m
-        self.lbl_stiffness_display_in_frame = Label(self.frame_auto_home, textvariable=self.stiffness_var, font='Helvetica 10 bold')
-        self.lbl_stiffness_display_in_frame.grid(row=0, column=7, padx=10, pady=2, sticky=W)
 
         # --- Existing Layer Logger instantiation removed ---
         
@@ -247,84 +246,63 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # self._check_default_logging_windows_file() # MOVED HERE, now status_message_var exists
 
         # --- Controller, Application, Zaber Setup ---
-        try:
-            self.controller = pycrafter9000.dmd()
-            self.application = libs.Application()
-            self.controller.stopsequence() # Stop any existing sequence first
-            self.controller.changemode(3) # Pattern on the fly mode
-            # self.controller.hdmi() # Not needed if using pattern on the fly and not projecting video
-            self.update_status_message("DLP Controller initialized in Pattern on the Fly mode.")
-        except usb.core.USBError as e:
-            self.update_status_message(f"USBError initializing DLP: {e}. Check DLP connection and power. Printing may fail.", error=True)
-            self.controller = None # Ensure controller is None if init fails
-            # Optionally, re-raise or handle more gracefully if DLP is critical for all operations
-        except Exception as e:
-            self.update_status_message(f"Error initializing DLP controller: {e}. Printing may fail.", error=True)
-            self.controller = None # Ensure controller is None if init fails
-            traceback.print_exc()
+        self.controller = pycrafter9000.dmd()
+        self.application = libs.Application()
+        self.controller.stopsequence()
+        self.controller.changemode(3)
+        self.controller.hdmi()
 
         Library.enable_device_db_store()
-        try:
-            connection = Connection.open_serial_port("COM3")
-            device_list = connection.detect_devices()
-            if not device_list:
-                self.update_status_message("Zaber device not found on COM3. Stage control will fail.", error=True)
-                self.axis = None # Ensure axis is None
-                # Consider if the application should exit or prevent operations requiring Zaber
-            else:
-                device = device_list[0]
-                self.axis = device.get_axis(1)
-                self.axis.home()
-                self.update_status_message("Zaber stage initialized and homed.")
-        except Exception as e:
-            self.update_status_message(f"Error initializing Zaber stage: {e}. Stage control will fail.", error=True)
-            self.axis = None # Ensure axis is None
-            traceback.print_exc()
+        connection = Connection.open_serial_port("COM3")
+        device_list = connection.detect_devices()
+        device = device_list[0]
+        self.axis = device.get_axis(1)
+        self.axis.home()
         
         # Set default acceleration for the Zaber stage upon initialization
-        if self.axis: # Only if axis was successfully initialized
-            try:
-                desired_startup_accel_physical_ums2 = 100000 # µm/s² (equivalent to 100 mm/s²)
-                
-                # Get current acceleration setting value for diagnostics
-                current_accel_val_before = self.axis.settings.get("accel")
-                self.update_status_message(f"Stage accel BEFORE setting: {current_accel_val_before} µm/s² (assuming library default unit for 'accel')")
+        try:
+            desired_startup_accel_physical_ums2 = 100000 # µm/s² (equivalent to 100 mm/s²)
+            
+            # Get current acceleration setting value for diagnostics
+            # The library typically returns this in the setting's inherent physical units (µm/s² for "accel")
+            current_accel_val_before = self.axis.settings.get("accel")
+            self.update_status_message(f"Stage accel BEFORE setting: {current_accel_val_before} µm/s² (assuming library default unit for 'accel')")
 
-                # Set the "accel" setting, explicitly providing the unit of the value
-                self.axis.settings.set(
-                    "accel", 
-                    desired_startup_accel_physical_ums2, 
-                    unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                )
-                
-                # Verify by getting the setting again, explicitly requesting µm/s²
-                current_accel_val_after = self.axis.settings.get("accel", unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED)
-                self.update_status_message(f"Default stage acceleration SET to: {desired_startup_accel_physical_ums2} µm/s². READ BACK as: {current_accel_val_after} µm/s².")
+            # Set the "accel" setting, explicitly providing the unit of the value
+            self.axis.settings.set(
+                "accel", 
+                desired_startup_accel_physical_ums2, 
+                unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+            )
+            
+            # Verify by getting the setting again, explicitly requesting µm/s²
+            current_accel_val_after = self.axis.settings.get("accel", unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED)
+            self.update_status_message(f"Default stage acceleration SET to: {desired_startup_accel_physical_ums2} µm/s². READ BACK as: {current_accel_val_after} µm/s².")
 
-                if abs(current_accel_val_after - desired_startup_accel_physical_ums2) > 1: # Allow for small rounding
-                     self.update_status_message(f"WARNING: Readback acceleration {current_accel_val_after} µm/s² differs from desired {desired_startup_accel_physical_ums2} µm/s².", error=True)
+            if abs(current_accel_val_after - desired_startup_accel_physical_ums2) > 1: # Allow for small rounding
+                 self.update_status_message(f"WARNING: Readback acceleration {current_accel_val_after} µm/s² differs from desired {desired_startup_accel_physical_ums2} µm/s².", error=True)
 
-            except Exception as e:
-                self.update_status_message(f"Error setting default stage acceleration: {e}", error=True)
-                traceback.print_exc() 
-        else:
-            self.update_status_message("Zaber axis not available, skipping acceleration setup.", warning=True)
+        except Exception as e:
+            self.update_status_message(f"Error setting default stage acceleration: {e}", error=True)
+            traceback.print_exc() # Print full traceback for debugging
 
         # --- Initial t.insert values ---
         self.t1.delete(0, 'end')
-        self.t1.insert(END, "C:\\Users\\cheng sun\\BoyuanSun\\Slicing\\Calibration\\Power_Grayscale")
         self.t4.delete(0, 'end')
-        self.t4.insert(END, "0")
+        # self.t8.delete(0, 'end') # Not needed if t8 is a Label with textvariable
         self.t9.delete(0, 'end')
-        self.t9.insert(END, "0")
         self.t10.delete(0, 'end')
-        self.t10.insert(END, "5")
         self.t11.delete(0, 'end')
-        self.t11.insert(END, "1")
         self.t11_2.delete(0, 'end')
-        self.t11_2.insert(END, "1")
         self.t14.delete(0, 'end')
-        self.t14.insert(END, "1")
+        self.t1.insert(END, str("C:\\Users\\cheng sun\\BoyuanSun\\Slicing\\Calibration\\Power_Grayscale"))
+        self.t4.insert(END, str("0"))
+        # self.t8.insert(END, str("Stage connected")) # This will be set by update_status_message
+        self.t9.insert(END, str("0"))
+        self.t10.insert(END, str("5"))
+        self.t11.insert(END, str("1"))
+        self.t11_2.insert(END, str("1"))
+        self.t14.insert(END, str("1"))
 
         # --- Screeninfo, window_name, black_image ---
         screen_id = 0
@@ -333,58 +311,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.black_image = np.zeros((1600, 2560))
 
         self.update_auto_home_button_state()
-        self.update_status_message("System Ready.")
-
-        # Stiffness display setup
-        self.stiffness_var = StringVar() 
-        self.stiffness_var.set("Stiffness: --- N/m") # Default text also includes N/m
-        self.lbl_stiffness_display_in_frame = Label(self.frame_auto_home, textvariable=self.stiffness_var, font='Helvetica 10 bold')
-        self.lbl_stiffness_display_in_frame.grid(row=0, column=7, padx=10, pady=2, sticky=W)
-
-    def _get_next_print_number(self, date_specific_log_dir):
-        """Determines the next print number for a given date directory."""
-        next_print_num = 1
-        if os.path.exists(date_specific_log_dir):
-            try:
-                entries = os.listdir(date_specific_log_dir)
-                print_nums = []
-                for entry in entries:
-                    if os.path.isdir(os.path.join(date_specific_log_dir, entry)) and entry.startswith("Print "):
-                        parts = entry.split(" - ")
-                        if len(parts) > 0: # Check if split produced at least one part
-                            num_part = parts[0].replace("Print ", "").strip()
-                            if num_part.isdigit():
-                                print_nums.append(int(num_part)) # Added missing append
-                if print_nums:
-                    next_print_num = max(print_nums) + 1
-            except Exception as e:
-                self.update_status_message(f"Error determining next print number: {e}", error=True)
-                # Fallback to 1 or handle error appropriately, for now, it will return 1
-        return next_print_num
-
-    # IMPORTANT: Ensure input_directory method sets self.active_instruction_file_path
-    # Example:
-    # def input_directory(self):
-    #     # ...
-    #     # After determining instruction_file_actual_path:
-    #     self.active_instruction_file_path = instruction_file_actual_path
-    #     self.t2.delete(0, END)
-    #     self.t2.insert(0, self.active_instruction_file_path)
-    #     # ...
-    #     # The call to self.sensor_data_window_instance.configure_automated_layer_logging
-    #     # should ideally be removed from here and handled in start_print_thread if it's per-print session.
-    #     # If it remains, SensorDataWindow needs to be robust to re-configuration.
-
-    # IMPORTANT: Ensure generate_instruction_file method sets self.active_instruction_file_path
-    # Example:
-    # def generate_instruction_file(self):
-    #     # ...
-    #     # After file_path = filedialog.asksaveasfilename(...) and file is saved:
-    #     if file_path:
-    #         self.active_instruction_file_path = file_path
-    #         self.t2.delete(0, END)
-    #         self.t2.insert(0, self.active_instruction_file_path)
-    #     # ...
+        self.update_status_message("System Ready.") # Example of setting initial status
 
     def _update_gui_progress(self, progress_value, total_layers, current_layer_index):
         """Updates the progress bar and layer count display."""
@@ -523,106 +450,83 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.b1.config(state=NORMAL)
             self.b10.config(state=NORMAL)
 
-    def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
-        try:
-            self.update_status_message(f"Attempting to start {print_mode} print...")
-
-            if not self.image_list:
-                self.update_status_message("Image list is empty. Cannot start print.", error=True)
-                messagebox.showerror("Print Error", "Image list is empty. Please load images first.")
-                if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
-                if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
-                return
-
-            if not self.initilze_stage(): # Assuming initilze_stage returns True on success, False on failure
-                self.update_status_message("Stage initialization failed. Cannot start print.", error=True)
-                messagebox.showerror("Print Error", "Stage initialization failed.")
-                if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
-                if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
-                return
-
-            # --- Logging Directory Setup ---
-            main_img_dir = self.t1.get() 
-            if not main_img_dir or not os.path.isdir(main_img_dir):
-                self.update_status_message(f"Invalid image directory: {main_img_dir}. Cannot start print.", error=True)
-                messagebox.showerror("Print Error", f"Invalid image directory selected: {main_img_dir}")
-                if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
-                if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
-                return
-
-            self.current_print_log_base_dir = os.path.join(main_img_dir, "Printing_Logs")
-            current_date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-            self.current_print_date_dir = os.path.join(self.current_print_log_base_dir, current_date_str)
-            self.current_print_number = self._get_next_print_number(self.current_print_date_dir)
-            
-            self.current_print_session_log_dir = os.path.join(self.current_print_date_dir, f"Print {self.current_print_number}")
-
-            os.makedirs(self.current_print_session_log_dir, exist_ok=True)
-            self.update_status_message(f"Log directory created: {self.current_print_session_log_dir}")
-
-            # --- Initialize PeakForceLogger for this print run ---
+    def _get_next_print_number(self, date_specific_log_dir):
+        """Determines the next print number for a given date directory."""
+        next_print_num = 1
+        if os.path.exists(date_specific_log_dir):
             try:
-                # Define the specific CSV filename for this print run's peak force log
-                peak_force_log_filename = f"PeakForce_Log_Print{self.current_print_number}.csv"
-                peak_force_log_filepath = os.path.join(self.current_print_session_log_dir, peak_force_log_filename)
-
-                self.peak_force_logger_instance = PeakForceLogger(
-                    output_csv_filepath=peak_force_log_filepath, 
-                    is_manual_log=False
-                )
-                self.update_status_message(f"PeakForceLogger initialized. Logging to: {peak_force_log_filepath}")
-                # Pass this PFL instance to SensorDataWindow
-                if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                    self.sensor_data_window_instance.set_peak_force_logger_for_print_run(self.peak_force_logger_instance)
-                    self.update_status_message("PeakForceLogger instance passed to SensorDataWindow.")
-
-                # Configure AutomatedLayerLogger via SensorDataWindow
-                if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                    if main_img_dir: # Check the local variable main_img_dir from earlier in the function
-                        self.sensor_data_window_instance.configure_automated_layer_logging(
-                            main_image_dir=main_img_dir, # Use local variable
-                            print_number=self.current_print_number,
-                            date_str_for_dir=current_date_str, # Use local variable
-                            log_directory=self.current_print_session_log_dir
-                        )
-                        self.update_status_message(f"AutomatedLayerLogger configured for print {self.current_print_number}.")
-                    else:
-                        self.update_status_message("Error: Main image directory (from t1) not set or invalid. Cannot configure AutomatedLayerLogger.", error=True)
-                else:
-                    self.update_status_message("SensorDataWindow not available. Cannot configure AutomatedLayerLogger.", error=True)
+                entries = os.listdir(date_specific_log_dir)
+                print_nums = []
+                for entry in entries:
+                    if os.path.isdir(os.path.join(date_specific_log_dir, entry)) and entry.startswith("Print "):
+                        parts = entry.split(" - ")
+                        if len(parts) > 0: # Check if split produced at least one part
+                            num_part = parts[0].replace("Print ", "").strip()
+                            if num_part.isdigit():
+                                print_nums.append(int(num_part)) # Added missing append
+                if print_nums:
+                    next_print_num = max(print_nums) + 1
             except Exception as e:
-                self.update_status_message(f"Critical Error initializing loggers: {e}. Print aborted.", error=True)
-                traceback.print_exc()
-                messagebox.showerror("Initialization Error", f"Failed to initialize logging components: {e}\nThe print process cannot start.")
-                # Reset button states to allow user to try again or fix issue
-                if hasattr(self, 'b1'): self.b1.config(state=NORMAL)    # Run-Cont.
-                if hasattr(self, 'b10'): self.b10.config(state=NORMAL)   # Run-Step
-                if hasattr(self, 'b4') and self.b4: self.b4.config(state=DISABLED) # Stop button
-                return # IMPORTANT: Do not proceed to start the print_t thread
+                self.update_status_message(f"Error determining next print number: {e}", error=True)
+                # Fallback to 1 or handle error appropriately, for now, it will return 1
+        return next_print_num
 
-            # --- Start the actual print process in a new thread ---
+    def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
+        # The try block should start here, encompassing all setup and thread starting
+        try:
+            self.update_status_message(f"Starting {print_mode} Print Setup...")
+            
+            path = str(self.t1.get())
+            if not path or not os.path.isdir(path):
+                self.update_status_message("Error: Image directory not set or invalid.", error=True)
+                messagebox.showerror("Setup Error", "Please set a valid image directory first.", parent=self.win)
+                return
+
+            # Auto-logging configuration now relies entirely on SensorDataWindow's state
+            if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
+                # Check if the "Enable Automated Logging" checkbox *within SensorDataWindow* is checked
+                if self.sensor_data_window_instance.auto_log_enabled_var.get():
+                    self.update_status_message("Sensor Panel auto-log is enabled, configuring...")
+                    
+                    # Set up logging directory structure like backup version
+                    main_img_dir = path
+                    self.current_print_log_base_dir = os.path.join(main_img_dir, "Printing_Logs")
+                    current_date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+                    self.current_print_date_dir = os.path.join(self.current_print_log_base_dir, current_date_str)
+                    self.current_print_number = self._get_next_print_number(self.current_print_date_dir)
+                    self.current_print_session_log_dir = os.path.join(self.current_print_date_dir, f"Print {self.current_print_number}")
+                    os.makedirs(self.current_print_session_log_dir, exist_ok=True)
+                    self.update_status_message(f"Log directory created: {self.current_print_session_log_dir}")
+                    
+                    # Configure AutomatedLayerLogger via SensorDataWindow with proper parameters
+                    self.sensor_data_window_instance.configure_automated_layer_logging(
+                        main_image_dir=main_img_dir,
+                        print_number=self.current_print_number,
+                        date_str_for_dir=current_date_str,
+                        log_directory=self.current_print_session_log_dir
+                    )
+                    self.update_status_message(f"AutomatedLayerLogger configured for print {self.current_print_number}.")
+                else:
+                    self.update_status_message("Sensor Panel auto-log is disabled. Proceeding without automated logging.")
+            else:
+                self.update_status_message("Sensor Panel not open. Automated logging will not be active.")
+            
+            # Start the actual print thread
             self.print_thread = threading.Thread(target=self.print_t, args=(
-                dlp_power, 
-                step_speed_um_s, 
-                layer_pause_s, 
-                overstep_um_gui, 
-                step_type_val_mms2, 
-                print_mode
+                dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode # Pass mm/s²
             ))
-            self.print_thread.daemon = True 
+            self.print_thread.daemon = True
             self.print_thread.start()
-            self.update_status_message(f"{print_mode.capitalize()} print thread started.")
-
+            self.update_status_message(f"{print_mode.capitalize()} print thread initiated.")
 
         except Exception as e:
-            self.update_status_message(f"An unexpected error occurred in start_print_thread: {e}", error=True)
+            self.update_status_message(f"Error in start_print_thread: {e}", error=True)
             traceback.print_exc()
-            messagebox.showerror("Critical Error", f"An unexpected error occurred: {e}")
             if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
             if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
+            if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
 
     def print_t(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
-        self.print_thread_exception_occurred = False # Initialize flag
         try:
             self.update_status_message("Print thread started.")
             # Use MyWindow's own image_list to determine if layers are loaded
@@ -652,9 +556,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
             # DLP setup for pattern projection
             if hasattr(self, 'controller'):
-                self.controller.changemode(0) # Switch to pattern sequence mode
-                time.sleep(2.0) # Crucial delay for mode change to take effect
-                self.controller.power(current=dlp_power) 
+                with usb_coordinator.dlp_operation("mode_change_and_power"):
+                    self.controller.changemode(0) # Switch to pattern sequence mode
+                    time.sleep(2.0) # Crucial delay for mode change to take effect
+                    self.controller.power(current=dlp_power) 
                 self.update_status_message(f"DLP set to pattern mode, power: {dlp_power}.")
             else:
                 self.update_status_message("DLP controller not available. Cannot control DLP.", error=True)
@@ -725,7 +630,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     # Convert actual_dlp_power to int for comparison and setting
                     current_layer_target_power = int(actual_dlp_power)
                     if current_layer_target_power != last_commanded_dlp_power:
-                        self.controller.power(current=current_layer_target_power)
+                        with usb_coordinator.dlp_operation(f"power_layer_{current_layer_num_for_display}"):
+                            self.controller.power(current=current_layer_target_power)
                         last_commanded_dlp_power = current_layer_target_power # Update last commanded power
                         self.update_status_message(f"Layer {current_layer_num_for_display}: DLP power set to {current_layer_target_power}.")
 
@@ -809,48 +715,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     z_exposure_pos_current_layer_i = (self.reference * 1000) - sum(self.thickness[k] for k in range(i) if k < len(self.thickness))
                     # actual_overstep_microns is now directly available
 
-                    # --- Calculate z_peel_peak and z_return_pos ---
-                    thickness_of_next_layer_microns = 0.0
-                    if i < num_layers - 1: # If not the last layer
-                        if (i + 1) < len(self.thickness):
-                            thickness_of_next_layer_microns = float(self.thickness[i+1])
-                        else:
-                            self.update_status_message(f"Warning: Thickness for next layer {i+2} not found. Using 0 for peel calc.", error=True)
-                            thickness_of_next_layer_microns = 0.0 
-                    # For the last layer, thickness_of_next_layer_microns remains 0.
-                    
-                    total_peel_lift_microns = thickness_of_next_layer_microns + actual_overstep_microns
-                    z_peel_peak = current_target_z_microns - total_peel_lift_microns
-                    z_return_pos = current_target_z_microns - thickness_of_next_layer_microns
-                    # Original calculation for z_return_pos based on z_peel_peak:
-                    # z_return_pos_alt = z_peel_peak + actual_overstep_microns 
-                    # This should yield the same as current_target_z_microns - thickness_of_next_layer_microns
-                    # Using the direct calculation for z_return_pos for clarity.
+                    # REMOVED: self.axis.settings.set("accel", actual_acceleration_to_set_um_s2)
+                    # self.update_status_message(f"Stepped L{current_layer_num_for_display}: Zaber accel set to {actual_acceleration_to_set_um_s2} um/s^2") # No longer setting globally
 
-                    self.update_status_message(f"Layer {current_layer_num_for_display} (Stepped): Peel Peak Target: {z_peel_peak/1000.0:.4f} mm, Return Target: {z_return_pos/1000.0:.4f} mm")
-
-                    # --- Start monitoring for peak force and work ---
-                    if self.peak_force_logger_instance and \
-                       self.sensor_data_window_instance and \
-                       self.sensor_data_window_instance.sensor_window.winfo_exists():
-                        # Check if the PFL instance in SensorDataWindow is the one for this print run
-                        # This check might be redundant if set_peak_force_logger_for_print_run correctly manages the instance.
-                        # However, it's a safeguard.
-                        if self.sensor_data_window_instance.peak_force_logger == self.peak_force_logger_instance:
-                            z_peel_peak_mm = z_peel_peak / 1000.0
-                            z_return_pos_mm = z_return_pos / 1000.0
-                            # Call start_monitoring_for_layer directly on the instance we know is for the print run
-                            self.peak_force_logger_instance.start_monitoring_for_layer(
-                                current_layer_num_for_display,
-                                z_peel_peak_mm,
-                                z_return_pos_mm
-                            )
-                            self.update_status_message(f"PFL monitoring started for L{current_layer_num_for_display}")
-                        else:
-                            self.update_status_message(f"PFL instance mismatch in print_t for L{current_layer_num_for_display}. Shading/PFL log might be incorrect.", warning=True)
-                    # --- Z-Axis Movement (Peel and Return) ---
+                    z_peel_peak = z_exposure_pos_current_layer_i - (actual_overstep_microns + current_thickness_um)
+                    self.update_status_message(f"Stepped L{current_layer_num_for_display}: Peeling up to {z_peel_peak / 1000.0:.4f} mm (Speed: {actual_step_speed_um_s} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
                     self.axis.move_absolute(
-                        position=z_peel_peak, # Now z_peel_peak is defined
+                        position=z_peel_peak,
                         unit=Units.LENGTH_MICROMETRES,
                         wait_until_idle=True,
                         velocity=actual_step_speed_um_s,
@@ -871,22 +742,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
                     )
                     z_at_previous_exposure_microns = z_return_pos
-
-                    # --- Stop monitoring and log peak/work ---
-                    if self.peak_force_logger_instance and \
-                       self.sensor_data_window_instance and \
-                       self.sensor_data_window_instance.sensor_window.winfo_exists():
-                        # Similar to starting, ensure we're acting on the correct PFL instance.
-                        if self.sensor_data_window_instance.peak_force_logger == self.peak_force_logger_instance:
-                            self.peak_force_logger_instance.stop_monitoring_and_log_peak() # Removed argument
-                            self.update_status_message(f"PFL monitoring stopped and logged for L{current_layer_num_for_display}")
-                        else:
-                            self.update_status_message(f"PFL instance mismatch on stop in print_t for L{current_layer_num_for_display}. PFL log might be affected.", warning=True)
-
+                
                 # --- COMMON POST-LAYER OPERATIONS ---
                 if self.sensor_data_window_instance and \
                    self.sensor_data_window_instance.sensor_window.winfo_exists() and \
-                   self.sensor_data_window_instance.auto_log_enabled_var.get(): 
+                   hasattr(self.sensor_data_window_instance, 'automated_layer_logger') and \
+                   self.sensor_data_window_instance.automated_layer_logger and \
+                   self.sensor_data_window_instance.automated_layer_logger.is_configured_for_run:
                     # Corrected method name below
                     self.sensor_data_window_instance.update_auto_logger_current_layer(
                         current_layer_num_for_display,
@@ -911,98 +773,105 @@ Evan Jones, evanjones2026@u.northwestern.edu
         except Exception as e:
             self.update_status_message(f"CRITICAL Error during print: {e}", error=True)
             traceback.print_exc()
-            self.print_thread_exception_occurred = True # Set flag
         finally:
-            self.update_status_message("Print thread finishing...")
-            if hasattr(self, 'win') and self.win.winfo_exists(): # Ensure window exists before cv2 operations
-                cv2.destroyAllWindows() # Close OpenCV windows
-            
-            if hasattr(self, 'controller') and self.controller:
+            self.update_status_message("Print finalization sequence started...")
+            # DLP Cleanup
+            if hasattr(self, 'controller'):
                 try:
-                    if hasattr(self.controller, 'stopsequence'):
+                    with usb_coordinator.dlp_operation("power_off_cleanup"):
                         self.controller.stopsequence()
-                    else:
-                        self.update_status_message("Warning: controller has no stopsequence method.", warning=True)
-                    
-                    # Replace projectblack with changemode(3) and power(0)
-                    if hasattr(self.controller, 'changemode') and hasattr(self.controller, 'power'):
-                        self.controller.changemode(3) # Pattern on the fly
-                        self.controller.power(current=0) # LED off
-                        self.update_status_message("DLP set to pattern on the fly mode, LED off.")
-                    else:
-                        self.update_status_message("Info: controller missing changemode/power for final DLP state.", warning=True)
-                except Exception as e_dlp_final:
-                    self.update_status_message(f"Error during final DLP cleanup: {e_dlp_final}", error=True)
-            else:
-                self.update_status_message("Warning: controller not available for final cleanup.", warning=True)
+                        self.controller.power(current=0) # Turn off LED
+                        self.controller.changemode(3)   # Set back to HDMI/video input mode
+                    # self.controller.hdmi()        # Optionally ensure HDMI input is active
+                    self.update_status_message("DLP sequence stopped, LEDs off, and mode set to HDMI.")
+                except Exception as dlp_e:
+                    self.update_status_message(f"Error during DLP cleanup: {dlp_e}", error=True)
             
-            # Update status file to "stopped" or "completed" or "error"
-            status_to_write = "stopped" # Default if stopped by user
-            if self.print_thread_exception_occurred:
-                status_to_write = "error"
-            elif not self.flag: # If flag is still false, it means it completed normally
-                status_to_write = "completed"
-            
-            if self.current_print_session_log_dir:
+            # OpenCV window cleanup
+            if hasattr(self, 'window_name') and self.window_name: # Check if window_name is not None
+                try:
+                    cv2.destroyWindow(self.window_name)
+                    self.update_status_message("OpenCV window closed.")
+                except cv2.error as cv_err:
+                    # Handle cases where the window might already be destroyed or was never properly created
+                    if "NULL window" not in str(cv_err) and "Invalid window name" not in str(cv_err):
+                         self.update_status_message(f"Error closing OpenCV window: {cv_err}", error=True)
+                    else:
+                         self.update_status_message("OpenCV window was likely already closed or not fully initialized.")
+
+
+            # Zaber stage movement
+            if hasattr(self, 'axis') and self.axis:
+                try:
+                    offset_val_mm = float(self.offset) 
+                    self.axis.move_relative(offset_val_mm, Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                    self.get_position() # Call get_position to update t4
+                    self.update_status_message(f"Moved Z by offset: {offset_val_mm}mm. Current Z: {self.t4.get()} mm")
+                except Exception as zaber_e:
+                    self.update_status_message(f"Error moving Zaber by offset: {zaber_e}", error=True) 
+
+            # Save auto-log data via SensorDataWindow
+            if self.sensor_data_window_instance and \
+               self.sensor_data_window_instance.sensor_window.winfo_exists() and \
+               hasattr(self.sensor_data_window_instance, 'automated_layer_logger') and \
+               self.sensor_data_window_instance.automated_layer_logger and \
+               self.sensor_data_window_instance.automated_layer_logger.is_configured_for_run:
+                self.sensor_data_window_instance.stop_and_save_automated_logs()
+
+            # Write print status and save instruction file
+            if hasattr(self, 'current_print_session_log_dir') and self.current_print_session_log_dir:
+                # Determine print status
+                if self.flag:  # If flag is True, it means the print was stopped/aborted
+                    status_to_write = "stopped"
+                elif not self.flag:  # If flag is still false, it means it completed normally
+                    status_to_write = "completed"
+
+                # Save print status file
                 status_file_path = os.path.join(self.current_print_session_log_dir, "print_status.txt")
                 try:
                     with open(status_file_path, 'w') as sf:
                         sf.write(status_to_write)
-                    self.update_status_message(f"Print status '{status_to_write}' written to {status_file_path}", success=True)
+                    self.update_status_message(f"Print status '{status_to_write}' written to {status_file_path}")
                 except Exception as e_stat:
-                    self.update_status_message(f"Error writing final print status: {e_stat}", warning=True)
+                    self.update_status_message(f"Error writing final print status: {e_stat}")
 
-            # Resetting UI elements - scheduled to run in the main Tkinter thread
-            def _reset_ui_on_main_thread():
-                if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
-                if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
-                if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
-                
-                # Assuming b_pause_resume might exist, as per previous structure
-                if hasattr(self, 'b_pause_resume'): 
-                    self.b_pause_resume.config(text="Pause Print", state=DISABLED)
-                
-                # Reset progress bar and layer count
-                if hasattr(self, 'p1'): self.p1['value'] = 0
-                if hasattr(self, 'current_layer_num_var'): self.current_layer_num_var.set("Layer: 0/0")
-                if hasattr(self, 'lbl15'): self.lbl15.config(text='Estimate Time: ---')
-                
-                self.update_status_message("Print UI elements reset.")
-
-            if hasattr(self, 'win') and self.win.winfo_exists():
-                self.win.after(0, _reset_ui_on_main_thread)
-            else:
-                # If window doesn't exist, try to run directly (might not be safe, but last resort)
-                # This case should ideally not happen if UI elements are still being accessed.
+                # Save instruction file if work of adhesion or automated logging were enabled
                 try:
-                    _reset_ui_on_main_thread()
-                except Exception as e_direct_reset:
-                    print(f"Error during direct UI reset (window might be gone): {e_direct_reset}")
-
-            # Add stage return logic using relative offset
-            try:
-                if hasattr(self, 'axis') and self.axis:
-                    # Move the stage by a relative offset
-                    self.update_status_message(f"Print finished/stopped. Moving stage by offset: {self.offset} mm.")
-                    self.axis.move_relative(
-                        position=self.offset, # Use the offset defined in __init__
-                        unit=Units.LENGTH_MILLIMETRES,
-                        wait_until_idle=True # Wait for the move to complete
-                    )
-                    current_pos_after_offset = self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)
-                    self.update_status_message(f"Stage moved by offset. Current position: {current_pos_after_offset:.4f} mm.")
-                else:
-                    self.update_status_message("Zaber axis not available for final relative move.", warning=True)
-            except Exception as e_stage_return:
-                self.update_status_message(f"Error during final stage relative move: {e_stage_return}", error=True)
-                traceback.print_exc()
-
-            self.flag = False # Reset flag for next print
-            self.pause_flag = False # Reset pause flag
+                    should_save_instruction_file = False
+                    
+                    # Check if work of adhesion recording was enabled
+                    if (hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance and 
+                        hasattr(self.sensor_data_window_instance, 'record_work_var') and 
+                        self.sensor_data_window_instance.record_work_var.get()):
+                        should_save_instruction_file = True
+                    
+                    # Check if automated logging was enabled
+                    if (hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance and
+                        hasattr(self.sensor_data_window_instance, 'auto_log_enabled_var') and
+                        self.sensor_data_window_instance.auto_log_enabled_var.get()):
+                        should_save_instruction_file = True
+                    
+                    if should_save_instruction_file and hasattr(self, 'active_instruction_file_path') and self.active_instruction_file_path:
+                        if os.path.exists(self.active_instruction_file_path):
+                            instruction_filename = os.path.basename(self.active_instruction_file_path)
+                            saved_instruction_path = os.path.join(self.current_print_session_log_dir, instruction_filename)
+                            shutil.copy2(self.active_instruction_file_path, saved_instruction_path)
+                            self.update_status_message(f"Instruction file saved: {instruction_filename}")
+                        else:
+                            self.update_status_message("Warning: Active instruction file not found, could not save copy.")
+                    
+                except Exception as e_instr:
+                    self.update_status_message(f"Error saving instruction file: {e_instr}")
+            
+            self.update_status_message("Print thread finished.")
+            if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
+            if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
+            if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
+            self.print_thread = None
 
     def set_home(self):
         self.reference = float(self.t4.get())
-        # self.axis.move_relative(position=self.offset, unit=Units.LENGTH_MILLIMETERS, # Assuming self.offset is a relative move
+        # self.axis.move_relative(position=self.offset, unit=Units.LENGTH_MILLIMETRES, # Assuming self.offset is a relative move
         #                         wait_until_idle=False) # Consider if you want to wait or not
         # It's usually safer to move to an absolute position after setting a reference if that's the intent.
         # If self.reference is the new "zero", you might not need to move by self.offset here,
@@ -1021,37 +890,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
     def stop(self):
         self.update_status_message("Stop signal received...")
         self.flag = True
-        self.pause_flag = False # Ensure pause is also cleared on stop
-        
-        # Attempt to stop DLP sequence and set to pattern on the fly, LED off
-        if hasattr(self, 'controller') and self.controller:
+        self.pause_flag = False
+        if hasattr(self, 'controller'):
             try:
-                if hasattr(self.controller, 'stopsequence'):
-                    self.controller.stopsequence()
-                else:
-                    self.update_status_message("Warning: controller has no stopsequence method during stop.", warning=True)
-                
-                # Replace projectblack with changemode(3) and power(0)
-                if hasattr(self.controller, 'changemode') and hasattr(self.controller, 'power'):
-                    self.controller.changemode(3) # Pattern on the fly
-                    self.controller.power(current=0) # LED off
-                    self.update_status_message("DLP set to pattern on the fly mode, LED off on stop.")
-                else:
-                    self.update_status_message("Info: controller missing changemode/power for DLP stop state.", warning=True)
+                self.controller.stopsequence() # Stop any active sequence
+                # Optionally, also turn power off here if stop means immediate halt of light
+                # self.controller.power(current=0)
             except Exception as e:
-                self.update_status_message(f"Error during DLP stop: {e}", error=True)
-        else:
-            self.update_status_message("DLP controller not available, cannot send stop/cleanup commands.", warning=True)
-
-        # Disable the stop button itself once clicked, re-enabled when print finishes/resets
-        if hasattr(self, 'b4'): 
-            self.b4.config(state=DISABLED)
-        
-        # Note: Re-enabling b1 and b10 should happen in the print_t finally block
-        # to ensure the thread has fully terminated before allowing a new print to start.
-        # Disable the auto-home button during stop
-        if hasattr(self, 'b_auto_home'):
-            self.b_auto_home.config(state=DISABLED)
+                self.update_status_message(f"Error stopping DLP sequence: {e}")
 
     def initilze_stage(self):
         """Initializes the stage and resets DLP to a known idle state."""
@@ -1093,6 +939,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.intensity_list
             ) = self.application.set_image_directory(path)
             
+            print(f"DEBUG: MyWindow.input_directory AFTER set_image_directory. MyWindow.image_list length: {len(self.image_list)}, Application.image_list length: {len(self.application.image_list)}") # Add this
+
             # If set_image_directory was successful and found the file, update active_instruction_file_path
             if os.path.exists(potential_instruction_file_path):
                 self.active_instruction_file_path = potential_instruction_file_path
@@ -1103,22 +951,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.active_instruction_file_path = None
                 self.update_status_message(f"Warning: Instruction file {expected_instruction_filename} not found in {path} after successful image list load.", warning=True)
 
-            # Attempt to update SensorDataWindow logging paths
-            if self.sensor_data_window_instance and hasattr(self.sensor_data_window_instance, 'attempt_logging_path_setup'):
-                self.sensor_data_window_instance.attempt_logging_path_setup()
-
-            print(f"DEBUG: MyWindow.input_directory AFTER set_image_directory. MyWindow.image_list length: {len(self.image_list)}, Application.image_list length: {len(self.application.image_list)}") # Add this
-
             if not self.image_list:
                 self.update_status_message("No image data loaded from instruction file.")
-                messagebox.showwarning("File Info", f"No image data was loaded from the instruction file in:\\n{path}")
+                messagebox.showwarning("File Info", f"No image data was loaded from the instruction file in:\n{path}")
             else:
                 self.update_status_message(f"Loaded {len(self.image_list)} layers from instruction file.")
 
         except ValueError as e:
             self.update_status_message(f"Error processing instruction file: {e}. Check file format and content.")
-            messagebox.showerror("File Error", f"Could not process the instruction file in '{path}'.\\nDetails: {e}\\nEnsure it matches the expected format (9 columns, tab-separated) and numeric values are correct.")
-            self.active_instruction_file_path = None # Clear on error
+            messagebox.showerror("File Error", f"Could not process the instruction file in '{path}'.\nDetails: {e}\nEnsure it matches the expected format (9 columns, tab-separated) and numeric values are correct.")
             # Clear lists to prevent using old/corrupted data
             self.image_list = []
             self.exposure_time = []
@@ -1147,7 +988,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                 velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
 
     def simple_txt(self):
-        path = str(self.t1.get()) # This is the directory for slices, e.g., "C:\\Slices\\MyPrint"
+        path = str(self.t1.get())
         thickness = str(self.t10.get())
         base = str(self.t11_2.get())
         time_val = str(self.t11.get())
@@ -1157,8 +998,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
         acceleration_val = str(self.t21.get())
         pause = str(self.t17.get())
         
-        # Call the application's method to generate instructions.
-        # We will ignore its return value, assuming it prints its own status and creates the file.
         self.application.generate_instructions(
             path=path, 
             thickness=thickness, 
@@ -1170,27 +1009,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
             step_type=acceleration_val, 
             pause=pause
         )
-        
-        # Now, Prince_Segmented_06042025.py will construct the expected path itself.
-        # The instruction file is expected to be named after the directory 'path' and be inside it.
-        expected_instruction_filename = os.path.basename(os.path.normpath(path)) + ".txt"
-        constructed_instruction_file_path = os.path.join(path, expected_instruction_filename)
-
-        if os.path.exists(constructed_instruction_file_path):
-            self.active_instruction_file_path = constructed_instruction_file_path
-            # The message from libs.py ("Instruction file generated: ...") should cover the generation part.
-            # This message confirms Prince_Segmented sees it and sets it as active.
-            self.update_status_message(f"Instruction file found at {self.active_instruction_file_path} and set as active.", success=True)
-        else:
-            # This message indicates that after libs.py was called, the file wasn't found where expected.
-            self.update_status_message(f"Instruction file generation was called by Prince_Segmented, but file not found at expected path: {constructed_instruction_file_path}.", error=True)
-            self.active_instruction_file_path = None
-
-        # Attempt to update SensorDataWindow logging paths
-        if self.sensor_data_window_instance and hasattr(self.sensor_data_window_instance, 'attempt_logging_path_setup'):
-            self.sensor_data_window_instance.attempt_logging_path_setup()
-
-    def update_status_message(self, message, error=False, warning=False, success=False): # Added success parameter
+    
+    def update_status_message(self, message, error=False):
         """Updates the status message label and logs to console."""
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         # Concatenate for console/text area, but use raw message for status_message_var
@@ -1204,8 +1024,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         if error:
             print(f"ERROR: {log_message}")
-        elif warning:
-            print(f"WARNING: {log_message}")
         else:
             print(f"Status Update: {log_message}")
         
@@ -1272,31 +1090,20 @@ Evan Jones, evanjones2026@u.northwestern.edu
             contact_threshold_absolute=contact_threshold_abs,
             contact_threshold_delta=contact_threshold_delta,
             status_callback=self.update_status_message,
-            result_callback=self.handle_auto_home_result, # This now expects to be called with 2 args
+            result_callback=self.handle_auto_home_result,
             parent_gui=self.win
         )
         self.auto_home_thread.start()
 
-    def handle_auto_home_result(self, new_home_position, message): # REVERTED: definition takes 2 args + self
+    def handle_auto_home_result(self, new_home_position, message):
         self.update_status_message(message)
-        retrieved_stiffness = None # Initialize
-        if self.auto_home_thread and hasattr(self.auto_home_thread, 'calculated_stiffness'):
-            retrieved_stiffness = self.auto_home_thread.calculated_stiffness
-
         if new_home_position is not None:
             self.reference = new_home_position
             self.t4.delete(0, 'end')
             self.t4.insert(END, f"{new_home_position:.4f}")
             self.update_status_message(f"New Home set to: {new_home_position:.4f} mm")
-            
-            if retrieved_stiffness is not None: # Check the retrieved stiffness
-                # Only update the value, keep the "Stiffness: " prefix
-                self.stiffness_var.set(f"{retrieved_stiffness:.2f} N/m")
-            else:
-                self.stiffness_var.set("--- N/m (not calculated)")
             messagebox.showinfo("Auto-Home Complete", f"New home position set to: {new_home_position:.4f} mm")
         else:
-            self.stiffness_var.set("--- N/m (failed)")
             messagebox.showerror("Auto-Home Failed", message)
         
         self.update_auto_home_button_state()
