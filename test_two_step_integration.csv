@@ -1,0 +1,4 @@
+Layer_Number,Peak_Force_N,Work_of_Adhesion_mJ,Pre_Initiation_Time_s,Propagation_Time_s,Total_Peeling_Time_s,Distance_to_Peel_Start_mm,Distance_to_Full_Peel_mm,Peak_Retraction_Force_N,Pre_Peel_Force_N,Raw_Peak_Force_Reading_N,Baseline_Reading_N
+1,0.1467,0.0196,0.2617,0.5235,0.7852,0.1309,0.2617,0.1104,0.0132,0.1488,0.0363
+2,0.1432,0.0037,0.2215,0.0805,0.3020,0.1107,0.0403,0.0439,0.0118,0.1442,0.0992
+3,0.1406,0.0000,0.2215,-0.8658,-0.6443,0.1107,0.4329,0.1198,0.0132,0.1472,0.0208

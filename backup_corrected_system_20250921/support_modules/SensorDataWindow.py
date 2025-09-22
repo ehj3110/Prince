@@ -122,7 +122,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         buttons_and_sampling_frame.pack(side=TOP, fill=X, pady=(2, 5), padx=5)
         Label(buttons_and_sampling_frame, text="Sampling (ms):", font=control_box_font).pack(side=LEFT, padx=(0, 5))
         self.sampling_rate_entry = Entry(buttons_and_sampling_frame, width=6, font=control_box_font)
-        self.sampling_rate_entry.insert(0, "100")
+        self.sampling_rate_entry.insert(0, "25")
         self.sampling_rate_entry.pack(side=LEFT, padx=(0, 10))
 
         self.b_clear_plot = Button(buttons_and_sampling_frame, text="Clear Plot", command=self.clear_plot_data, font=control_box_font)
@@ -147,6 +147,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         self.b_calibrate_force_gauge = Button(force_controls_row1, text="Calibrate Force Gauge", command=lambda: self.force_gauge_manager.calibrate_force_gauge(), font=control_box_font)
         self.b_calibrate_force_gauge.pack(side=LEFT, padx=5)
+
+        self.b_tare_force_gauge = Button(force_controls_row1, text="Tare", command=self.tare_force_gauge, font=control_box_font)
+        self.b_tare_force_gauge.pack(side=LEFT, padx=5)
+
+        self.b_save_calibration = Button(force_controls_row1, text="Save Calibration", command=self.save_force_gauge_calibration, font=control_box_font)
+        self.b_save_calibration.pack(side=LEFT, padx=5)
 
         self.lbl_force_gauge_status = Label(force_controls_row1, text="Force: N/A", font=control_box_font, anchor=W)
         self.lbl_force_gauge_status.pack(side=LEFT, padx=5)
@@ -224,6 +230,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.plot_data_y_position = []
         self.plot_data_y_force = []
         self.is_live_readout_enabled = False
+        self.live_readout_auto_started_by_logging = False  # Track if auto-started by automated logging
         self.is_manual_recording_active = False # Specifically for manual button state
         self.plot_start_time = None
         self.last_y_rescale_time = 0
@@ -313,17 +320,149 @@ Evan Jones, evanjones2026@u.northwestern.edu
             if success:
                 # Use self.update_main_status
                 self.update_main_status(f"AutomatedLayerLogger configured via SensorDataWindow for Print {print_number}.")
-                # You might want to store these for other uses within SensorDataWindow if needed
-                # self.current_print_main_image_dir_sw = main_image_dir
-                # self.current_print_number_sw = print_number
-                # self.current_print_date_str_sw = date_str_for_dir
-                # self.current_print_log_dir_sw = log_directory
+                
+                # Create automated PeakForceLogger for this specific print session
+                automated_csv_path = os.path.join(log_directory, "automated_work_of_adhesion.csv")
+                
+                # Create the automated logger with our enhanced analysis
+                self.automated_peak_force_logger = PeakForceLogger(
+                    output_csv_filepath=automated_csv_path,
+                    is_manual_log=False,  # This is automated logging
+                    enhanced_analysis=True,  # Enable our TwoStepBaselineAnalyzer
+                    analyzer_type="two_step_baseline"  # Use our enhanced analyzer
+                )
+                
+                self.update_main_status(f"Automated work of adhesion logging configured. Output: {automated_csv_path}")
+                
+                # Start monitoring for layer 1 immediately (will be updated when actual layer processing begins)
+                try:
+                    self.automated_peak_force_logger.start_monitoring_for_layer(
+                        1,  # Start with layer 1
+                        z_peel_peak=1.0,  # Default peel start position
+                        z_return_pos=3.0  # Default peel end position
+                    )
+                    self.update_main_status("Automated peak force monitoring started for initial layer.")
+                except Exception as e:
+                    self.update_main_status(f"Error starting initial automated monitoring: {e}")
+                
+                # Automatically start live readout if not already enabled (required for data collection)
+                if not self.is_live_readout_enabled:
+                    self.update_main_status("Auto-starting live readout for automated logging...")
+                    try:
+                        self.start_live_readout()
+                        self.live_readout_auto_started_by_logging = True  # Remember we auto-started it
+                        self.update_main_status("Live readout started automatically for automated logging.")
+                    except Exception as e:
+                        self.update_main_status(f"Error auto-starting live readout: {e}", error=True)
+                        self.update_main_status("Automated logging may not collect data without live readout enabled.", error=True)
+                
             else:
                 # Use self.update_main_status
                 self.update_main_status(f"AutomatedLayerLogger configuration failed via SensorDataWindow for Print {print_number}.", error=True)
         else:
             # Use self.update_main_status
             self.update_main_status("AutomatedLayerLogger instance not found in SensorDataWindow. Cannot configure.", error=True)
+
+    def configure_automated_logging(self, enabled_from_main_app=True, base_image_directory=None):
+        """
+        Configures automated logging for a print run. This method is called by Prince_Segmented.py.
+        
+        Args:
+            enabled_from_main_app (bool): Whether logging is being enabled from main app
+            base_image_directory (str): Base directory for print images and logs
+            
+        Returns:
+            bool: True if configuration successful, False otherwise
+        """
+        try:
+            if not enabled_from_main_app:
+                # Disabling automated logging - clean up any existing logger
+                if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
+                    # Stop any ongoing monitoring
+                    if hasattr(self.automated_peak_force_logger, 'stop_monitoring_and_log_peak'):
+                        self.automated_peak_force_logger.stop_monitoring_and_log_peak()
+                    self.automated_peak_force_logger = None
+                self.update_main_status("Automated logging disabled for this print run.")
+                return True
+                
+            if not base_image_directory:
+                self.update_main_status("Error: No base directory provided for automated logging.", error=True)
+                return False
+                
+            # Check if auto logging is enabled in the UI
+            if not hasattr(self, 'auto_log_enabled_var') or not self.auto_log_enabled_var.get():
+                self.update_main_status("Auto logging not enabled in sensor panel.", warning=True)
+                return False
+                
+            # Set up automated work of adhesion logging for the print
+            self.update_main_status(f"Configuring automated work of adhesion logging for directory: {base_image_directory}")
+            
+            # Create automated PeakForceLogger for this print run
+            # The file should be saved in the specific print session directory, not the date directory
+            # This will be set when the actual print starts and we know the print session directory
+            
+            self.update_main_status("Automated work of adhesion logging prepared for print session.")
+            self.update_main_status("Automated logger will use TwoStepBaselineAnalyzer for enhanced force analysis.")
+            
+            return True
+            
+        except Exception as e:
+            self.update_main_status(f"Error configuring automated logging: {str(e)}", error=True)
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def update_logger_current_layer(self, layer_number, z_position_mm):
+        """
+        Updates the automated layer logger with current layer information.
+        This method is called by Prince_Segmented.py after each layer.
+        
+        Args:
+            layer_number (int): Current layer number
+            z_position_mm (float): Z position in millimeters
+        """
+        try:
+            # Update any internal tracking if needed
+            self.update_main_status(f"Processing layer {layer_number} data at Z={z_position_mm:.3f}mm")
+            
+            # Handle automated work of adhesion logging
+            if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
+                # Stop monitoring for previous layer and log the peak force data
+                self.automated_peak_force_logger.stop_monitoring_and_log_peak()
+                
+                # Start monitoring for the new layer
+                # Note: For peeling operations, you may need to define peel start/end positions
+                # For now, using generic positions - you may need to adjust based on your setup
+                peel_start_z = z_position_mm + 1.0  # Example: 1mm above current position
+                peel_end_z = z_position_mm + 3.0    # Example: 3mm above current position
+                
+                self.automated_peak_force_logger.start_monitoring_for_layer(
+                    layer_number, 
+                    z_peel_peak=peel_start_z, 
+                    z_return_pos=peel_end_z
+                )
+                
+                # Feed live force data to the logger (if force gauge is active)
+                if hasattr(self, 'force_gauge_manager') and self.force_gauge_manager:
+                    # The force data should be automatically fed through the data queue
+                    # This happens in the live readout system
+                    pass
+                    
+                self.update_main_status(f"Automated work of adhesion monitoring started for layer {layer_number}")
+                
+            # Handle automated layer logger (for other data)
+            if hasattr(self, 'automated_layer_logger') and self.automated_layer_logger:
+                # You may want to call specific methods on the layer logger here
+                # For example: self.automated_layer_logger.update_current_layer(layer_number, z_position_mm)
+                pass
+                
+            return True
+            
+        except Exception as e:
+            self.update_main_status(f"Error updating logger for layer {layer_number}: {str(e)}", error=True)
+            import traceback
+            traceback.print_exc()
+            return False
 
     def attempt_logging_path_setup(self):
         """Public method to allow re-triggering of logging path setup."""
@@ -435,7 +574,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         if hasattr(self, 'automated_layer_logger') and self.automated_layer_logger:
             if hasattr(self.automated_layer_logger, 'stop_all_logging_sessions'):
                 print("SensorDataWindow: Stopping all logging sessions for AutomatedLayerLogger.")
-                self.automated_layer_logger.stop_all_logging_sessions(save_data=True) # Assuming save_data is a valid param
+                self.automated_layer_logger.stop_all_logging_sessions()  # Remove invalid save_data parameter
             elif hasattr(self.automated_layer_logger, 'close'): # Generic fallback
                  print("SensorDataWindow: Closing AutomatedLayerLogger.")
                  self.automated_layer_logger.close()
@@ -696,6 +835,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 return
             sampling_rate = int(sampling_rate_str)
 
+            # Synchronize force gauge data interval with sampling rate
+            if self.force_gauge_manager:
+                phidget_interval = sampling_rate  # Use same interval as position logging
+                if self.force_gauge_manager.set_data_interval(phidget_interval):
+                    print(f"Force gauge data interval synchronized to {phidget_interval}ms")
+                else:
+                    print("Warning: Could not synchronize force gauge data interval")
+
             self.stop_event.clear()
             self.position_logger = PositionLogger(
                 self.zaber_axis,
@@ -797,25 +944,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     coll.remove() # Correctly remove the collection
                 self._shading.clear()
 
-                # Add shading if PFL is active, monitoring, and has data for the current peel segment
-                # Condition changed: Removed self.record_work_var.get() to allow shading
-                # during print runs without the manual checkbox needing to be active.
-                # Shading now depends on self.peak_force_logger existing and being in a monitoring state.
-                if self.peak_force_logger and \
-                   hasattr(self.peak_force_logger, 'is_monitoring') and \
-                   self.peak_force_logger.is_monitoring() and \
-                   hasattr(self.peak_force_logger, 'get_current_peel_data_for_plot_shading'):
-                    
-                    peel_time_data, peel_force_data = self.peak_force_logger.get_current_peel_data_for_plot_shading()
-                    
-                    if peel_time_data and peel_force_data and self.plot_start_time is not None:
-                        # Convert absolute timestamps from PFL to elapsed time for plotting
-                        peel_elapsed_time_data = [t - self.plot_start_time for t in peel_time_data]
-                        
-                        if len(peel_elapsed_time_data) > 1 and len(peel_force_data) > 1:
-                            fill = self.ax2.fill_between(peel_elapsed_time_data, 0, peel_force_data, alpha=0.3, color='orange', step='post')
-                            self._shading.append(fill)
-                
                 self.canvas.draw_idle() # Use draw_idle for better performance
 
         except queue.Empty:
@@ -826,7 +954,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # Optionally, update a status bar or show a non-modal error
         finally:
             if self.is_live_readout_enabled and self.sensor_window.winfo_exists(): # Check if window still exists
-                self.sensor_window.after(max(50, int(self.sampling_rate_entry.get()) // 2), self.update_plot) # Dynamic update rate based on sampling, min 50ms
+                self.sensor_window.after(max(50, int(self.sampling_rate_entry.get()) // 2), self.update_plot) # Dynamic update rate, min 50ms for GUI
     
     def on_record_work_checkbox(self):
         """Handles the 'Record Work of Adhesion' checkbox state change."""
@@ -876,10 +1004,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # Checkbox is unchecked - stop monitoring and log data if PFL instance exists
             if self.peak_force_logger:
                 try:
-                    # For manual logging, current_layer might not be relevant in the same way as print runs.
-                    # We can pass a default or placeholder if the method requires it, or adapt the method.
-                    # Assuming stop_monitoring_and_log_peak for manual logs doesn't strictly need layer, z_peel, z_return.
-                    self.peak_force_logger.stop_monitoring_and_log_peak(current_layer=0) # Pass a dummy layer
+                    # For manual logging, stop monitoring and log the data
+                    # The method no longer requires current_layer parameter
+                    self.peak_force_logger.stop_monitoring_and_log_peak()
                     self.update_main_status(f"Manual Work of Adhesion data saved to: {self.peak_force_logger.output_csv_filepath}")
                     print(f"DEBUG: Manual PeakForceLogger stopped and logged. File: {self.peak_force_logger.output_csv_filepath}")
                 except Exception as e:
@@ -892,14 +1019,32 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 print("DEBUG: Record Work checkbox unchecked, no PFL instance to stop.")
 
     def pfl_add_data_point(self, timestamp, position, force):
-        """Adds a single data point to the PeakForceLogger if it's active."""
-        if self.record_work_var.get() and self.peak_force_logger: # This check is fine for adding data to a manually initiated PFL
+        """Adds a single data point to the PeakForceLogger(s) if they're active."""
+        # Feed data to manual logger if enabled
+        if self.record_work_var.get() and self.peak_force_logger:
             try:
                 self.peak_force_logger.add_data_point(timestamp, position, force)
             except Exception as e:
                 # This could generate many messages, consider logging to console or a file instead of status bar
-                # print(f"Error adding data point to PFL: {e}")
+                # print(f"Error adding data point to manual PFL: {e}")
                 pass # Avoid flooding status bar
+                
+        # Feed data to automated logger if active
+        if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
+            try:
+                # Add debug info to verify data flow
+                if hasattr(self.automated_peak_force_logger, '_monitoring') and self.automated_peak_force_logger._monitoring:
+                    self.automated_peak_force_logger.add_data_point(timestamp, position, force)
+                    # Uncomment for debugging data flow:
+                    # print(f"DEBUG: Fed data to automated PFL: t={timestamp:.3f}, pos={position:.3f}, force={force:.4f}")
+                elif hasattr(self.automated_peak_force_logger, '_monitoring'):
+                    # Uncomment for debugging monitoring state:
+                    # print(f"DEBUG: Automated PFL not monitoring, skipping data point")
+                    pass
+            except Exception as e:
+                print(f"Error adding data point to automated PFL: {e}")
+                import traceback
+                traceback.print_exc()
 
     def set_peak_force_logger_for_print_run(self, pfl_instance):
         """
@@ -927,6 +1072,129 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 # self.update_main_status(f"AutoLogger: L{layer_number} data processed.") # Optional: can be verbose
             except Exception as e:
                 # Corrected status update call to use the main app's status callback
-                self.update_main_status(f"Error in AutoLogger processing for L{layer_number}: {e}", warning=True)
+                self.update_main_status(f"Error in AutoLogger processing for L{layer_number}: {e}")
+                import traceback
                 traceback.print_exc() # It's good to have the traceback for debugging
+                
+        # Handle automated peak force logger for work of adhesion data
+        if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
+            try:
+                # Stop monitoring for previous layer and log the peak force data (if any)
+                if layer_number > 1:  # Don't try to stop for the first layer
+                    self.automated_peak_force_logger.stop_monitoring_and_log_peak()
+                    self.update_main_status(f"AutoPFL: Layer {layer_number-1} force data saved.")
+                
+                # Start monitoring for the new layer
+                # Note: For peeling operations, you may need to define peel start/end positions
+                # For now, using generic positions - you may need to adjust based on your setup
+                peel_start_z = z_position_mm + 1.0  # Example: 1mm above current position
+                peel_end_z = z_position_mm + 3.0    # Example: 3mm above current position
+                
+                self.automated_peak_force_logger.start_monitoring_for_layer(
+                    layer_number, 
+                    z_peel_peak=peel_start_z, 
+                    z_return_pos=peel_end_z
+                )
+                
+                self.update_main_status(f"AutoPFL: Started monitoring for layer {layer_number}")
+                
+            except Exception as e:
+                self.update_main_status(f"Error in AutoPFL processing for L{layer_number}: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def stop_and_save_automated_logs(self):
+        """Called when print finishes to save final automated logging data."""
+        try:
+            # Stop automated layer logger
+            if hasattr(self, 'automated_layer_logger') and self.automated_layer_logger:
+                if hasattr(self.automated_layer_logger, 'stop_all_logging_sessions'):
+                    self.automated_layer_logger.stop_all_logging_sessions()
+                    self.update_main_status("Automated layer logging stopped and saved.")
+                elif hasattr(self.automated_layer_logger, 'close'):
+                    self.automated_layer_logger.close()
+                    self.update_main_status("Automated layer logging closed.")
+            
+            # Stop and save final automated peak force logger data
+            if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
+                final_save_result = self.automated_peak_force_logger.stop_monitoring_and_log_peak()
+                if final_save_result:
+                    self.update_main_status("Final automated peak force data saved.")
+                else:
+                    self.update_main_status("No final automated peak force data to save.")
+            
+            # If we auto-started live readout for this logging session, stop it
+            if hasattr(self, 'live_readout_auto_started_by_logging') and self.live_readout_auto_started_by_logging:
+                self.update_main_status("Stopping auto-started live readout (automated logging finished)...")
+                try:
+                    self.stop_live_readout()
+                    self.live_readout_auto_started_by_logging = False
+                    self.update_main_status("Auto-started live readout stopped.")
+                except Exception as e:
+                    self.update_main_status(f"Error stopping auto-started live readout: {e}", error=True)
+                    
+        except Exception as e:
+            self.update_main_status(f"Error stopping automated logs: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def tare_force_gauge(self):
+        """Tare the force gauge by setting the current reading as the new zero point."""
+        try:
+            # Check if force gauge is available and calibrated
+            if not self.force_gauge_manager or not self.force_gauge_manager.is_calibrated():
+                messagebox.showerror("Error", "Force gauge must be calibrated before taring.", parent=self.sensor_window)
+                return
+            
+            # Check if force gauge is connected
+            if not self.force_gauge_manager.voltage_ratio_input or not self.force_gauge_manager.voltage_ratio_input.getAttached():
+                messagebox.showerror("Error", "Force gauge is not connected.", parent=self.sensor_window)
+                return
+                
+            # Get current voltage ratio and set it as the new offset
+            current_voltage_ratio = self.force_gauge_manager.voltage_ratio_input.getVoltageRatio()
+            
+            # Update the offset
+            self.force_gauge_manager.OFFSET = current_voltage_ratio
+            
+            # Update the offset display
+            if hasattr(self, 'lbl_offset'):
+                self.lbl_offset.config(text=f"Offset: {self.force_gauge_manager.OFFSET:.8f}")
+            
+            messagebox.showinfo("Tare Complete", f"Force gauge tared successfully.\nNew offset: {self.force_gauge_manager.OFFSET:.8f}", parent=self.sensor_window)
+            print(f"Force gauge tared - New offset: {self.force_gauge_manager.OFFSET:.8f}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to tare force gauge: {e}", parent=self.sensor_window)
+            print(f"Error during tare operation: {e}")
+            traceback.print_exc()
+
+    def save_force_gauge_calibration(self):
+        """Save the current force gauge calibration values to a file."""
+        try:
+            if not self.force_gauge_manager or not self.force_gauge_manager.is_calibrated():
+                messagebox.showerror("Error", "Force gauge must be calibrated before saving.", parent=self.sensor_window)
+                return
+            
+            # Create filename with timestamp
+            import os
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"force_gauge_calibration_{timestamp}.txt"
+            
+            # Save to current working directory
+            current_dir = os.getcwd()
+            file_path = os.path.join(current_dir, filename)
+            
+            with open(file_path, 'w') as f:
+                f.write("# Force Gauge Calibration Data\n")
+                f.write(f"# Saved on: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"GAIN={self.force_gauge_manager.GAIN}\n")
+                f.write(f"OFFSET={self.force_gauge_manager.OFFSET}\n")
+            
+            messagebox.showinfo("Calibration Saved", f"Calibration saved to:\n{file_path}", parent=self.sensor_window)
+            print(f"Calibration saved to: {file_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save calibration: {e}", parent=self.sensor_window)
+            print(f"Error saving calibration: {e}")
 
