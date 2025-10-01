@@ -41,8 +41,7 @@ class PostPrintAnalyzer:
     def __init__(self):
         # Use corrected light smoothing settings
         self.calculator = AdhesionMetricsCalculator(
-            smoothing_window=3,
-            smoothing_polyorder=1,
+            smoothing_sigma=0.5,
             baseline_threshold_factor=0.002,
             min_peak_height=0.01,
             min_peak_distance=50
@@ -300,24 +299,40 @@ class PostPrintAnalyzer:
         """
         layers = []
         
-        # Simple peak detection to identify layers
+        # Layer boundary detection based on pause and retraction steps
         forces = df['Force'].values
         times = df['Time'].values
         positions = df['Position'].values
         
-        # Find peaks (simplified - hybrid plotter does this better)
-        from scipy.signal import find_peaks
+        # Find retraction steps using position data
+        # Detect significant upward motion followed by downward motion
+        pos_diff = np.diff(positions)
+        pos_thresh = 0.05  # mm, threshold for significant motion
+        
+        retraction_ends = []  # Indices where retractions end
+        in_retraction = False
+        
+        for i, (diff_up, diff_down) in enumerate(zip(pos_diff[:-1], pos_diff[1:])):
+            if not in_retraction and diff_up > pos_thresh:  # Start of lift
+                in_retraction = True
+            elif in_retraction and diff_down < -pos_thresh:  # End of retraction
+                retraction_ends.append(i + 2)  # +2 to account for diff and lookahead
+                in_retraction = False
         
         try:
-            peaks, _ = find_peaks(forces, height=0.01, distance=50)
-            
-            for i, peak_idx in enumerate(peaks[:5]):  # Limit to first 5 layers
-                # Define layer window around peak
-                start_idx = max(0, peak_idx - 100)
-                end_idx = min(len(df), peak_idx + 200)
+            # Process each layer
+            for i in range(len(retraction_ends)):
+                if i == 0:  # First layer starts at beginning of file
+                    start_idx = 0
+                else:
+                    start_idx = retraction_ends[i-1]
                 
+                # Layer ends at its retraction end
+                end_idx = retraction_ends[i]
+                
+                # Extract layer data with pause-to-retraction boundaries
                 layer_times = times[start_idx:end_idx] - times[start_idx]  # Reset to 0
-                layer_positions = positions[start_idx:end_idx] 
+                layer_positions = positions[start_idx:end_idx]
                 layer_forces = forces[start_idx:end_idx]
                 
                 if len(layer_times) > 10:

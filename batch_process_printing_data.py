@@ -21,13 +21,8 @@ import re
 import warnings
 from pathlib import Path
 
-# Import the enhanced adhesion analyzer
-try:
-    from enhanced_adhesion_metrics import EnhancedAdhesionAnalyzer
-    print("Enhanced adhesion analyzer imported successfully")
-except ImportError:
-    print("Warning: Enhanced adhesion analyzer not found. Using basic analysis only.")
-    EnhancedAdhesionAnalyzer = None
+# Replace EnhancedAdhesionAnalyzer with AdhesionMetricsCalculator
+from adhesion_metrics_calculator import AdhesionMetricsCalculator
 
 warnings.filterwarnings('ignore')
 
@@ -44,8 +39,8 @@ class BatchPrintingDataProcessor:
             master_folder_path (str): Path to master folder containing all print data folders
         """
         self.master_folder = Path(master_folder_path)
-        self.analyzer = EnhancedAdhesionAnalyzer() if EnhancedAdhesionAnalyzer else None
-        
+        self.analyzer = AdhesionMetricsCalculator()
+
         if not self.master_folder.exists():
             raise ValueError(f"Master folder does not exist: {master_folder_path}")
     

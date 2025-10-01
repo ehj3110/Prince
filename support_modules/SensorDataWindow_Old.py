@@ -410,7 +410,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # This will be set when the actual print starts and we know the print session directory
             
             self.update_main_status("Automated work of adhesion logging prepared for print session.")
-            self.update_main_status("Automated logger will use AdhesionMetricsCalculator for enhanced force analysis.")
+            self.update_main_status("Automated logger will use TwoStepBaselineAnalyzer for enhanced force analysis.")
             
             return True
             
@@ -542,9 +542,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         self.btn_add_window_to_file.config(state=tk.DISABLED)
                     return False
             
-            # Ensure logging_windows_csv_path is defined globally for later use
-            self.logging_windows_csv_path = logging_windows_csv_path
-
             self.current_logging_windows_file = logging_windows_csv_path
             self.active_logging_windows_filepath_var.set(self.current_logging_windows_file)
             self.update_main_status(f"Logging windows file: {self.current_logging_windows_file}")
@@ -580,15 +577,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         if hasattr(self, 'persistent_readout_active') and self.persistent_readout_active:
             self._stop_persistent_readouts()
-
-        # --- Clean up PeakForceLogger instances ---
-        if hasattr(self, 'peak_force_logger') and self.peak_force_logger:
-            print("SensorDataWindow: Closing manual PeakForceLogger.")
-            self.peak_force_logger.close()
-
-        if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
-            print("SensorDataWindow: Closing automated PeakForceLogger.")
-            self.automated_peak_force_logger.close()
 
         # Clean up AutomatedLayerLogger if it exists and has a shutdown method
         if hasattr(self, 'automated_layer_logger') and self.automated_layer_logger:
@@ -784,12 +772,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
             file_exists_and_not_empty = os.path.isfile(self.current_logging_windows_file) and os.path.getsize(self.current_logging_windows_file) > 0
             
-            mode = 'a' if file_exists_and_not_empty else 'w' # Append if exists and has content, else write (will create header) 
+            mode = 'a' if file_exists_and_not_empty else 'w' # Append if exists and has content, else write (will create header)
             
             with open(self.current_logging_windows_file, mode, newline='') as f:
                 writer = csv.writer(f)
                 if mode == 'w' or not file_exists_and_not_empty: # Write header if new file or empty
-                    writer.writerow(["StartLayer", "EndLayer"])
+                    writer.writerow(["StartLayer", "EndLayer"]) # Corrected header
                 writer.writerow([start_layer, end_layer])
             
             self.update_main_status(f"Window [{start_layer}-{end_layer}] added to {os.path.basename(self.current_logging_windows_file)}.")
@@ -799,7 +787,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         except Exception as e:
             self.update_main_status(f"Error adding window to file: {e}", error=True)
             traceback.print_exc()
-            messagebox.showerror("File Error", f"Could not write to {os.path.basename(self.current_logging_windows_file)}: {e}", parent=self.sensor_window)
+            messagebox.showerror("File Error", f"Could not write to {os.path.basename(self.current_logging_csv_path)}: {e}", parent=self.sensor_window)
         print(f"Add window: Start L: {start_layer_str}, End L: {self.current_logging_windows_file}")
 
     def clear_plot_data(self):
@@ -920,10 +908,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 time_stamp, position, force = self.position_plot_queue.get_nowait()
                 new_data_processed = True
 
-                # Always call pfl_add_data_point. It will internally check which loggers are active.
-                self.pfl_add_data_point(time_stamp, position, force)
-
-                if self.plot_start_time is None:
+                if self.record_work_var.get() and self.peak_force_logger: # Check if PFL exists
+                    self.pfl_add_data_point(time_stamp, position, force) 
+                
+                if self.plot_start_time is None: 
                     self.plot_start_time = time_stamp # Initialize with the first data point's timestamp
 
                 # For the main plot, x-axis is elapsed time from self.plot_start_time
@@ -1005,12 +993,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     output_csv_filepath=output_csv_filepath,
                     is_manual_log=True # Explicitly set for manual logging
                 )
-                # For manual logging, we now explicitly start monitoring.
-                # This call is CRUCIAL to reset the data buffers and prevent memory leaks.
-                self.peak_force_logger.start_monitoring_for_layer(layer_number=0)
-
+                # For manual logging, we don't call start_monitoring_for_layer immediately.
+                # Data points will be added via pfl_add_data_point during live readout.
+                # Logging happens when stop_monitoring_and_log_peak is called (e.g., when checkbox is unchecked or window closes).
                 self.update_main_status(f"Manual Work of Adhesion logging enabled. Data will be saved to: {output_csv_filepath}")
-                print(f"DEBUG: Manual PeakForceLogger initialized and started. Output to: {output_csv_filepath}")
+                print(f"DEBUG: Manual PeakForceLogger initialized. Output to: {output_csv_filepath}")
 
                 # If live readout is not active, prompt user or start it?
                 if not self.is_live_readout_enabled:
@@ -1218,3 +1205,4 @@ Evan Jones, evanjones2026@u.northwestern.edu
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save calibration: {e}", parent=self.sensor_window)
             print(f"Error saving calibration: {e}")
+

@@ -55,8 +55,7 @@ class HybridAdhesionPlotter:
         
         # Initialize calculator with correct light smoothing settings
         self.calculator = AdhesionMetricsCalculator(
-            smoothing_window=3,
-            smoothing_polyorder=1,
+            smoothing_sigma=0.5,  # Gaussian smoothing sigma
             baseline_threshold_factor=0.002,
             min_peak_height=0.01,
             min_peak_distance=50
@@ -143,10 +142,8 @@ class HybridAdhesionPlotter:
         print(f"Time range: {time_data.min():.3f} to {time_data.max():.3f} seconds")
         print(f"Force range: {force_data.min():.6f} to {force_data.max():.6f} N")
         
-        # Step 1: Apply minimal smoothing for peak detection
-        smoothed_force = savgol_filter(force_data, 
-                                     window_length=self.smoothing_window, 
-                                     polyorder=self.smoothing_polyorder)
+        # Step 1: Use calculator's smoothing for consistency with post-processing
+        smoothed_force = self.calculator.apply_smoothing(force_data)
         
         # Step 2: Detect peaks using robust method from original
         peaks = self._detect_peaks(force_data, smoothed_force)
@@ -485,10 +482,14 @@ class HybridAdhesionPlotter:
         """Plot individual layer detail subplot with adaptive font sizing."""
         color = layer['color']
         
-        # Define focused window around the peeling event
-        buffer = 100  # Points before and after the peeling event
-        window_start = max(layer['start_idx'], layer['pre_init_idx'] - buffer)
-        window_end = min(layer['end_idx'], layer['prop_end_idx'] + buffer)
+        # Define focused window with 1.0s buffer before and after (exact from batch_process_printing_data.py)
+        buffer_time = 1.0  # 1 second buffer
+        window_start_time = layer['pre_init_time'] - buffer_time
+        window_end_time = layer['prop_end_time'] + buffer_time
+        
+        # Find corresponding indices
+        window_start = np.argmin(np.abs(time_data - window_start_time))
+        window_end = np.argmin(np.abs(time_data - window_end_time))
         
         # Extract windowed data
         window_time = time_data[window_start:window_end]
@@ -558,8 +559,8 @@ class HybridAdhesionPlotter:
                rotation=90, va='center', fontsize=font_size, fontweight='bold',
                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
         
-        # Time duration annotations
-        y_annotation = layer['baseline'] - 0.015
+        # Time duration annotations (placed further below baseline as in original)
+        y_annotation = layer['baseline'] - 0.025
         
         # Pre-initiation duration
         ax.annotate('', xy=(layer['peak_time'], y_annotation), 
@@ -570,8 +571,8 @@ class HybridAdhesionPlotter:
                ha='center', fontsize=font_size-1, color='blue', fontweight='bold',
                bbox=dict(boxstyle='round,pad=0.2', facecolor='lightblue', alpha=0.8))
         
-        # Propagation duration
-        y_annotation2 = layer['baseline'] - 0.030
+        # Propagation duration (placed further below baseline as in original)
+        y_annotation2 = layer['baseline'] - 0.045
         ax.annotate('', xy=(layer['prop_end_time'], y_annotation2), 
                    xytext=(layer['peak_time'], y_annotation2),
                    arrowprops=dict(arrowstyle='<->', color='red', lw=3))

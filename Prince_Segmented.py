@@ -19,6 +19,7 @@ import threading # <--- Add this line
 from zaber_motion import Library
 from zaber_motion.ascii import Connection
 from zaber_motion import Units
+from zaber_motion.exceptions import MovementFailedException
 import csv
 import os
 import shutil
@@ -716,28 +717,105 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     # self.update_status_message(f"Stepped L{current_layer_num_for_display}: Zaber accel set to {actual_acceleration_to_set_um_s2} um/s^2") # No longer setting globally
 
                     z_peel_peak = z_exposure_pos_current_layer_i - (actual_overstep_microns + current_thickness_um)
+                    
+                    # PRE-MOVEMENT DIAGNOSTICS
+                    try:
+                        current_force = self.force_gauge_manager.get_force() if hasattr(self, 'force_gauge_manager') else 0.0
+                        current_pos = self.axis.get_position(unit=Units.LENGTH_MICROMETRES)
+                        self.update_status_message(f"PRE-PEEL L{current_layer_num_for_display}: Pos={current_pos/1000.0:.4f}mm, Force={current_force:.4f}N")
+                        
+                        # Check for excessive pre-peel force (could indicate stuck part)
+                        if abs(current_force) > 0.5:  # 0.5N threshold - adjust as needed
+                            self.update_status_message(f"WARNING L{current_layer_num_for_display}: High pre-peel force detected ({current_force:.4f}N). Part may be stuck!", error=True)
+                    except Exception as diag_e:
+                        self.update_status_message(f"DEBUG L{current_layer_num_for_display}: Pre-movement diagnostics failed: {diag_e}")
+                    
                     self.update_status_message(f"Stepped L{current_layer_num_for_display}: Peeling up to {z_peel_peak / 1000.0:.4f} mm (Speed: {actual_step_speed_um_s} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
-                    self.axis.move_absolute(
-                        position=z_peel_peak,
-                        unit=Units.LENGTH_MICROMETRES,
-                        wait_until_idle=True,
-                        velocity=actual_step_speed_um_s,
-                        velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
-                        acceleration=actual_acceleration_to_set_um_s2, 
-                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                    )
+                    
+                    try:
+                        self.axis.move_absolute(
+                            position=z_peel_peak,
+                            unit=Units.LENGTH_MICROMETRES,
+                            wait_until_idle=True,
+                            velocity=actual_step_speed_um_s,
+                            velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
+                            acceleration=actual_acceleration_to_set_um_s2, 
+                            acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+                        )
+                        self.update_status_message(f"SUCCESS L{current_layer_num_for_display}: Peel movement completed")
+                    except Exception as peel_error:
+                        self.update_status_message(f"ERROR L{current_layer_num_for_display}: Peel movement failed: {peel_error}", error=True)
+                        # Log detailed diagnostics
+                        try:
+                            fault_status = self.axis.warnings.get_flags()
+                            pos_after_fail = self.axis.get_position(unit=Units.LENGTH_MICROMETRES)
+                            force_after_fail = self.force_gauge_manager.get_force() if hasattr(self, 'force_gauge_manager') else 0.0
+                            self.update_status_message(f"DIAGNOSTICS L{current_layer_num_for_display}: Fault={fault_status}, Pos={pos_after_fail/1000.0:.4f}mm, Force={force_after_fail:.4f}N", error=True)
+                        except:
+                            pass
+                        raise  # Re-raise to trigger print abort
 
                     z_return_pos = z_peel_peak + actual_overstep_microns
+                    
+                    # PRE-RETURN DIAGNOSTICS
+                    try:
+                        current_force = self.force_gauge_manager.get_force() if hasattr(self, 'force_gauge_manager') else 0.0
+                        current_pos = self.axis.get_position(unit=Units.LENGTH_MICROMETRES)
+                        self.update_status_message(f"PRE-RETURN L{current_layer_num_for_display}: Pos={current_pos/1000.0:.4f}mm, Force={current_force:.4f}N")
+                        
+                        # Check if force is still high after peel (could indicate adhesion issue)
+                        if abs(current_force) > 0.3:  # 0.3N threshold
+                            self.update_status_message(f"WARNING L{current_layer_num_for_display}: High post-peel force ({current_force:.4f}N). Return may be difficult!", error=True)
+                    except Exception as diag_e:
+                        self.update_status_message(f"DEBUG L{current_layer_num_for_display}: Pre-return diagnostics failed: {diag_e}")
+                    
                     self.update_status_message(f"Stepped L{current_layer_num_for_display}: Returning to {z_return_pos / 1000.0:.4f} mm (Target for next layer, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
-                    self.axis.move_absolute(
-                        position=z_return_pos, 
-                        unit=Units.LENGTH_MICROMETRES,
-                        wait_until_idle=True, 
-                        velocity=actual_step_speed_um_s,
-                        velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
-                        acceleration=actual_acceleration_to_set_um_s2, 
-                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                    )
+                    
+                    try:
+                        self.axis.move_absolute(
+                            position=z_return_pos, 
+                            unit=Units.LENGTH_MICROMETRES,
+                            wait_until_idle=True, 
+                            velocity=actual_step_speed_um_s,
+                            velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
+                            acceleration=actual_acceleration_to_set_um_s2, 
+                            acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+                        )
+                        self.update_status_message(f"SUCCESS L{current_layer_num_for_display}: Return movement completed")
+                    except Exception as return_error:
+                        self.update_status_message(f"ERROR L{current_layer_num_for_display}: Return movement failed: {return_error}", error=True)
+                        # Log detailed diagnostics
+                        try:
+                            fault_status = self.axis.warnings.get_flags()
+                            pos_after_fail = self.axis.get_position(unit=Units.LENGTH_MICROMETRES)
+                            force_after_fail = self.force_gauge_manager.get_force() if hasattr(self, 'force_gauge_manager') else 0.0
+                            self.update_status_message(f"DIAGNOSTICS L{current_layer_num_for_display}: Fault={fault_status}, Pos={pos_after_fail/1000.0:.4f}mm, Force={force_after_fail:.4f}N", error=True)
+                            
+                            # RECOVERY ATTEMPT: Clear faults and try gentle movement
+                            self.update_status_message(f"RECOVERY L{current_layer_num_for_display}: Attempting to clear faults and recover...", error=True)
+                            try:
+                                # Clear any faults
+                                self.axis.warnings.clear()
+                                time.sleep(0.5)
+                                
+                                # Try a very slow, gentle movement back up
+                                recovery_pos = pos_after_fail + 500  # Move up 0.5mm slowly
+                                self.axis.move_absolute(
+                                    position=recovery_pos,
+                                    unit=Units.LENGTH_MICROMETRES,
+                                    wait_until_idle=True,
+                                    velocity=100,  # Very slow: 100 um/s
+                                    velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
+                                    acceleration=10000,  # Lower acceleration
+                                    acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+                                )
+                                self.update_status_message(f"RECOVERY L{current_layer_num_for_display}: Successfully moved to {recovery_pos/1000.0:.4f}mm", error=True)
+                            except Exception as recovery_error:
+                                self.update_status_message(f"RECOVERY FAILED L{current_layer_num_for_display}: {recovery_error}", error=True)
+                        except:
+                            pass
+                        raise  # Re-raise to trigger print abort
+                    time.sleep(0.1) # Failsafe delay
                     z_at_previous_exposure_microns = z_return_pos
                 
                 # --- COMMON POST-LAYER OPERATIONS ---
@@ -1209,6 +1287,54 @@ Evan Jones, evanjones2026@u.northwestern.edu
             import traceback
             traceback.print_exc()
 
+    def move_with_retries(self, position_mm, retries=3):
+        """
+        Attempt to move the stage to the specified position with a fixed number of retries.
+        Logs detailed diagnostic information in case of failures.
+        """
+        for attempt in range(1, retries + 1):
+            try:
+                self.update_status_message(f"Attempting to move stage to {position_mm} mm (Attempt {attempt}/{retries}).")
+                self.axis.move_absolute(position_mm, Units.LENGTH_MILLIMETRES)
+                self.update_status_message(f"Stage moved to {position_mm} mm successfully.")
+                return  # Exit if movement is successful
+            except MovementFailedException as e:
+                self.update_status_message(f"Attempt {attempt} failed: {e}", error=True)
+                self.update_status_message(f"Diagnostic: Current stage position: {self.axis.get_position(Units.LENGTH_MILLIMETRES)} mm.")
+                if attempt < retries:
+                    self.update_status_message("Retrying movement...")
+                    time.sleep(2)  # Wait before retrying
+                else:
+                    self.update_status_message(f"Critical: Failed to move to {position_mm} mm after {retries} attempts.", error=True)
+                    raise  # Re-raise the exception after exhausting retries
+            except Exception as e:
+                self.update_status_message(f"Unexpected error during movement: {e}", error=True)
+                raise
+
+    def save_fault_data(self, attempted_position_mm):
+        """
+        Save fault data to a CSV file, including the current stage position,
+        the attempted position, and a timestamp.
+        """
+        try:
+            current_position_mm = self.axis.get_position(Units.LENGTH_MILLIMETRES)
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            fault_data = [timestamp, current_position_mm, attempted_position_mm]
+
+            # Ensure the fault log file exists
+            fault_log_file = "fault_log.csv"
+            file_exists = os.path.isfile(fault_log_file)
+
+            with open(fault_log_file, mode="a", newline="") as file:
+                writer = csv.writer(file)
+                if not file_exists:
+                    # Write header if the file is new
+                    writer.writerow(["Timestamp", "Current Position (mm)", "Attempted Position (mm)"])
+                writer.writerow(fault_data)
+
+            self.update_status_message(f"Fault data saved: {fault_data}")
+        except Exception as e:
+            self.update_status_message(f"Error saving fault data: {e}", error=True)
 
 if __name__ == '__main__':
     Library.enable_device_db_store()
