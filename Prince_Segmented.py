@@ -794,8 +794,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             # RECOVERY ATTEMPT: Clear faults and try gentle movement
                             self.update_status_message(f"RECOVERY L{current_layer_num_for_display}: Attempting to clear faults and recover...", error=True)
                             try:
-                                # Clear any faults
-                                self.axis.warnings.clear()
+                                # Clear any faults by sending home command to reset state
+                                # Note: Zaber warnings don't have a .clear() method
+                                # Instead, we try to reset the axis state
+                                self.axis.home(wait_until_idle=False)
+                                time.sleep(0.5)
+                                self.axis.stop()
                                 time.sleep(0.5)
                                 
                                 # Try a very slow, gentle movement back up
