@@ -526,6 +526,50 @@ Evan Jones, evanjones2026@u.northwestern.edu
             if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
             if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
 
+    def cleanup_dlp_safe_state(self):
+        """Reset DLP to safe idle state: stop sequence, power off, video mode."""
+        try:
+            if hasattr(self, 'controller'):
+                self.controller.stopsequence()
+                self.controller.power(current=0)  # Turn off LED
+                self.controller.changemode(3)     # HDMI/video mode
+                self.update_status_message("DLP reset to safe state (video mode, power=0)")
+        except Exception as e:
+            self.update_status_message(f"Error resetting DLP: {e}", error=True)
+
+
+    def _cleanup_print_resources(self):
+        """Clean up background threads and queues after print completion."""
+        try:
+            # Clean up sensor data window resources
+            if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                # Clear plot queues
+                if hasattr(self.sensor_data_window_instance, 'position_plot_queue'):
+                    while not self.sensor_data_window_instance.position_plot_queue.empty():
+                        try:
+                            self.sensor_data_window_instance.position_plot_queue.get_nowait()
+                        except:
+                            break
+                    self.update_status_message("Plot queue cleared.")
+                
+                # Clear force data queue
+                if hasattr(self.sensor_data_window_instance, 'force_data_queue_for_logger'):
+                    while not self.sensor_data_window_instance.force_data_queue_for_logger.empty():
+                        try:
+                            self.sensor_data_window_instance.force_data_queue_for_logger.get_nowait()
+                        except:
+                            break
+                
+                # Close PeakForceLogger if exists
+                if hasattr(self.sensor_data_window_instance, 'peak_force_logger') and self.sensor_data_window_instance.peak_force_logger:
+                    self.sensor_data_window_instance.peak_force_logger.close()
+                    self.sensor_data_window_instance.peak_force_logger = None
+                    self.update_status_message("PeakForceLogger shut down.")
+                    
+        except Exception as e:
+            self.update_status_message(f"Error during resource cleanup: {e}", error=True)
+
+
     def print_t(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
         try:
             self.update_status_message("Print thread started.")
@@ -707,6 +751,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     # 3. Show black image after exposure for stepped mode
                     cv2.imshow(self.window_name, self.black_image)
                     cv2.waitKey(1)
+                    
+                    # 3b. Turn off DLP power to eliminate background light during movement
+                    if hasattr(self, 'controller'):
+                        try:
+                            self.controller.power(current=0)
+                            self.update_status_message(f"L{current_layer_num_for_display}: DLP power=0 (background light off)")
+                        except Exception as e:
+                            self.update_status_message(f"L{current_layer_num_for_display}: Could not set DLP power to 0: {e}", error=True)
 
                     # 4. Z-Axis Movement (Peel and Return)
                     self.update_status_message(f"Layer {current_layer_num_for_display} (Stepped): Starting peel sequence.")
@@ -782,6 +834,16 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
                         )
                         self.update_status_message(f"SUCCESS L{current_layer_num_for_display}: Return movement completed")
+                    
+                    # 4b. Restore DLP power for next layer (if not last layer)
+                    if i < num_layers - 1 and hasattr(self, 'controller'):
+                        try:
+                            # Get next layer's power setting
+                            next_layer_power = int(actual_dlp_power)
+                            self.controller.power(current=next_layer_power)
+                            self.update_status_message(f"L{current_layer_num_for_display}: DLP power restored to {next_layer_power}")
+                        except Exception as e:
+                            self.update_status_message(f"L{current_layer_num_for_display}: Could not restore DLP power: {e}", error=True)
                     except Exception as return_error:
                         self.update_status_message(f"ERROR L{current_layer_num_for_display}: Return movement failed: {return_error}", error=True)
                         # Log detailed diagnostics
@@ -818,6 +880,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                 self.update_status_message(f"RECOVERY FAILED L{current_layer_num_for_display}: {recovery_error}", error=True)
                         except:
                             pass
+                        
+                        # Clean up DLP before aborting
+                        self.cleanup_dlp_safe_state()
+                        self._cleanup_print_resources()
                         raise  # Re-raise to trigger print abort
                     time.sleep(0.1) # Failsafe delay
                     z_at_previous_exposure_microns = z_return_pos
@@ -945,6 +1011,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self._trigger_post_print_analysis()
             
             self.update_status_message("Print thread finished.")
+
+            # Clean up resources
+            self._cleanup_print_resources()
             if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
             if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
             if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
@@ -973,10 +1042,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.flag = True
         self.pause_flag = False
         if hasattr(self, 'controller'):
-            try:
-                self.controller.stopsequence() # Stop any active sequence
-                # Optionally, also turn power off here if stop means immediate halt of light
-                # self.controller.power(current=0)
+            # Use standardized DLP cleanup
+            self.cleanup_dlp_safe_state()
             except Exception as e:
                 self.update_status_message(f"Error stopping DLP sequence: {e}")
 
