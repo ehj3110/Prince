@@ -17,7 +17,7 @@ Date: September 19, 2025
 import numpy as np
 import pandas as pd
 from scipy import integrate
-from scipy.ndimage import gaussian_filter1d
+from scipy.signal import savgol_filter, medfilt
 import warnings
 from typing import Dict, Tuple, Optional, Union
 from pathlib import Path
@@ -26,11 +26,13 @@ from pathlib import Path
 class AdhesionMetricsCalculator:
     """
     Unified calculator for adhesion metrics using a reverse-search, second-derivative
-    propagation end detection method and Gaussian smoothing.
+    propagation end detection method and two-step filtering (Median + Savitzky-Golay).
     """
     
     def __init__(self, 
-                 smoothing_sigma=0.5,
+                 median_kernel=5,
+                 savgol_window=9,
+                 savgol_order=2,
                  baseline_threshold_factor=0.002,
                  min_peak_height=0.01,
                  min_peak_distance=50):
@@ -38,12 +40,16 @@ class AdhesionMetricsCalculator:
         Initialize the adhesion metrics calculator. 
         
         Args:
-            smoothing_sigma (float): Gaussian filter standard deviation for smoothing.
+            median_kernel (int): Kernel size for median filter (must be odd, for outlier rejection).
+            savgol_window (int): Window length for Savitzky-Golay filter (must be odd).
+            savgol_order (int): Polynomial order for Savitzky-Golay filter.
             baseline_threshold_factor (float): Threshold above baseline for initiation detection (N).
             min_peak_height (float): Minimum peak height for detection (N).
             min_peak_distance (int): Minimum distance between peaks (data points).
         """
-        self.smoothing_sigma = smoothing_sigma
+        self.median_kernel = median_kernel if median_kernel % 2 == 1 else median_kernel + 1
+        self.savgol_window = savgol_window if savgol_window % 2 == 1 else savgol_window + 1
+        self.savgol_order = savgol_order
         self.baseline_threshold_factor = baseline_threshold_factor
         self.min_peak_height = min_peak_height
         self.min_peak_distance = min_peak_distance
@@ -155,7 +161,11 @@ class AdhesionMetricsCalculator:
     
     def _apply_smoothing(self, force_data: np.ndarray) -> np.ndarray:
         """
-        Apply Gaussian smoothing filter.
+        Apply two-step filtering: Median filter for outlier rejection, then Savitzky-Golay for smoothing.
+        
+        This is the optimal filtering approach determined through comprehensive testing.
+        - Step 1: Median filter (kernel=5) removes sharp outlier peaks
+        - Step 2: Savitzky-Golay filter (window=9, order=2) smooths while preserving peak shape
         
         Args:
             force_data: Raw force data.
@@ -163,14 +173,20 @@ class AdhesionMetricsCalculator:
         Returns:
             Smoothed force data.
         """
-        if len(force_data) < 3:
+        if len(force_data) < max(self.median_kernel, self.savgol_window):
             return force_data.copy()
             
         try:
-            smoothed = gaussian_filter1d(force_data, sigma=self.smoothing_sigma)
+            # Step 1: Median filter for outlier rejection (removes sharp spikes)
+            median_filtered = medfilt(force_data, kernel_size=self.median_kernel)
+            
+            # Step 2: Savitzky-Golay filter for smoothing (preserves peak shape)
+            smoothed = savgol_filter(median_filtered, 
+                                    window_length=self.savgol_window,
+                                    polyorder=self.savgol_order)
             return smoothed
         except Exception as e:
-            warnings.warn(f"Gaussian smoothing failed: {e}. Using raw data.")
+            warnings.warn(f"Two-step filtering failed: {e}. Using raw data.")
             return force_data.copy()
     
     def _calculate_metrics(self, 
