@@ -6,6 +6,8 @@ Processes autolog files from SteppedCone tests and generates area-based plots
 import pandas as pd
 import numpy as np
 from pathlib import Path
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to avoid Windows crashes
 import matplotlib.pyplot as plt
 from matplotlib.legend_handler import HandlerTuple
 import sys
@@ -14,7 +16,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent / 'support_modules'))
 sys.path.insert(0, str(Path(__file__).parent / 'post-processing'))
 from adhesion_metrics_calculator import AdhesionMetricsCalculator
-from analysis_plotter import AnalysisPlotter
 from RawData_Processor import RawDataProcessor
 
 
@@ -39,14 +40,9 @@ class SteppedConeBatchProcessor:
         # Load area mapping
         self.area_map = self._load_area_mapping()
         
-        # Initialize calculator, plotter, and processor
-        self.calculator = AdhesionMetricsCalculator(
-            median_kernel=5,
-            savgol_window=9,
-            savgol_order=2
-        )
-        self.plotter = AnalysisPlotter(figure_size=(16, 12), dpi=150)
-        self.processor = RawDataProcessor(self.calculator, self.plotter)
+        # Initialize calculator and processor (NO PLOTTER - pure data processing)
+        self.calculator = AdhesionMetricsCalculator()
+        self.processor = RawDataProcessor(self.calculator)
         
         # Storage for all results
         self.all_results = []
@@ -65,24 +61,31 @@ class SteppedConeBatchProcessor:
     
     def parse_folder_name(self, folder_name):
         """
-        Parse the folder name to extract fluid type and gap
+        Parse the folder name to extract fluid type, gap, and optionally speed
         
         Args:
-            folder_name: Name of the folder (e.g., '2p5PEO_1mm_SteppedCone_BPAGDA')
+            folder_name: Name of the folder
+                        Format 1: '2p5PEO_1mm_SteppedCone_BPAGDA' (original)
+                        Format 2: 'Water_1mm_SteppedCone_BPAGDA_1000' (V2 with speed)
             
         Returns:
-            Tuple of (fluid_type, gap_mm)
+            Tuple of (fluid_type, gap_mm, speed_um_s or None)
         """
         parts = folder_name.split('_')
         
-        # Extract fluid type (e.g., '2p5PEO')
+        # Extract fluid type (e.g., '2p5PEO' or 'Water')
         fluid_type = parts[0]
         
         # Extract gap (e.g., '1mm')
         gap_str = parts[1]
         gap_mm = float(gap_str.replace('mm', ''))
         
-        return fluid_type, gap_mm
+        # Check if there's a speed suffix (last part is a number)
+        speed_um_s = None
+        if parts[-1].isdigit():
+            speed_um_s = int(parts[-1])
+        
+        return fluid_type, gap_mm, speed_um_s
     
     def extract_layer_number(self, filename):
         """
@@ -116,11 +119,18 @@ class SteppedConeBatchProcessor:
         print(f"\nProcessing folder: {folder_name}")
         
         # Parse folder name
-        fluid_type, gap_mm = self.parse_folder_name(folder_name)
-        condition_label = f"{fluid_type}_{int(gap_mm)}mm"
+        fluid_type, gap_mm, speed_um_s = self.parse_folder_name(folder_name)
         
-        print(f"  Fluid Type: {fluid_type}")
-        print(f"  Gap: {gap_mm} mm")
+        # Create condition label
+        if speed_um_s:
+            condition_label = f"{fluid_type}_{int(gap_mm)}mm_{speed_um_s}um_s"
+            print(f"  Fluid Type: {fluid_type}")
+            print(f"  Gap: {gap_mm} mm")
+            print(f"  Speed: {speed_um_s} um/s")
+        else:
+            condition_label = f"{fluid_type}_{int(gap_mm)}mm"
+            print(f"  Fluid Type: {fluid_type}")
+            print(f"  Gap: {gap_mm} mm")
         
         # Create plots directory for this folder
         plots_dir = folder_path / 'plots'
@@ -147,18 +157,20 @@ class SteppedConeBatchProcessor:
                     print(f"    Warning: No area mapping for layer {layer_num}")
                     continue
                 
-                # Process CSV using RawData_Processor (WITH plot generation)
+                # Process CSV using RawData_Processor (WITHOUT plot generation to avoid crashes)
                 # Create title with area information
                 plot_title = f"{condition_label} - Layers {layer_num}-{layer_num+5} (Area: {area_mm2:.2f} mm²)"
                 plot_save_path = plots_dir / f"{file.stem}_analysis.png"
                 
+                # Process without generating individual plots (crashes on Windows)
                 layers = self.processor.process_csv(
                     csv_filepath=str(file),
                     title=plot_title,
-                    save_path=str(plot_save_path)  # Save individual plots
+                    save_path=None  # Disable individual plots temporarily
                 )
                 
-                print(f"    Saved plot: {plot_save_path.name}")
+                # Note: Individual plots disabled due to Windows matplotlib crashes
+                # print(f"    Saved plot: {plot_save_path.name}")
                 
                 if layers:
                     # Extract metrics from each layer
@@ -173,6 +185,7 @@ class SteppedConeBatchProcessor:
                             'condition_label': condition_label,
                             'fluid_type': fluid_type,
                             'gap_mm': gap_mm,
+                            'speed_um_s': speed_um_s,  # Will be None if not present
                             'area_mm2': area_mm2,
                             'peak_force_N': layer_obj.get('peak_force', None),
                             'work_of_adhesion_mJ': layer_obj.get('work_of_adhesion_mJ', None),
@@ -263,10 +276,14 @@ class SteppedConeBatchProcessor:
         # Take absolute value of peel distance (convert negative to positive)
         df['peel_distance_mm'] = df['peel_distance_mm'].abs()
         
-        # Define high-contrast color map for conditions (matching V17Tests)
+        # Define high-contrast color map for conditions
         color_map = {
-            '2p5PEO_1mm': '#0000FF',    # Pure Blue (matching V17Tests 2p5PEO_1mm)
-            '2p5PEO_5mm': '#FF6600',    # Bright Orange (matching V17Tests 2p5PEO_5mm)
+            '2p5PEO_1mm': '#0000FF',           # Pure Blue
+            '2p5PEO_5mm': '#FF6600',           # Bright Orange
+            '2p5PEO_1mm_1000um_s': '#0000FF', # Pure Blue (2.5% PEO @ 1000 um/s)
+            'Water_1mm_1000um_s': '#FF0000',   # Red (Water @ 1000 um/s)
+            'Water_1mm_3000um_s': '#00CC00',   # Green (Water @ 3000 um/s)
+            'Water_1mm_6000um_s': '#FF00FF',   # Magenta (Water @ 6000 um/s)
         }
         
         print("\n" + "="*60)
@@ -301,9 +318,19 @@ class SteppedConeBatchProcessor:
         # Get unique conditions
         conditions = sorted(df['condition_label'].unique())
         
+        # Define additional colors for conditions not in color_map
+        additional_colors = ['#FF6600', '#9900CC', '#00CCCC', '#FFCC00', '#CC6699']
+        color_idx = 0
+        
         for condition in conditions:
             condition_data = df[df['condition_label'] == condition]
-            color = color_map.get(condition, '#000000')
+            
+            # Get color from map, or assign new color if not in map
+            if condition in color_map:
+                color = color_map[condition]
+            else:
+                color = additional_colors[color_idx % len(additional_colors)]
+                color_idx += 1
             
             # Determine line style based on fluid type
             if '2p5PEO' in condition:
@@ -376,9 +403,19 @@ class SteppedConeBatchProcessor:
         # Get unique conditions
         conditions = sorted(df['condition_label'].unique())
         
+        # Define additional colors for conditions not in color_map
+        additional_colors = ['#FF6600', '#9900CC', '#00CCCC', '#FFCC00', '#CC6699']
+        color_idx = 0
+        
         for condition in conditions:
             condition_data = df[df['condition_label'] == condition]
-            color = color_map.get(condition, '#000000')
+            
+            # Get color from map, or assign new color if not in map
+            if condition in color_map:
+                color = color_map[condition]
+            else:
+                color = additional_colors[color_idx % len(additional_colors)]
+                color_idx += 1
             
             # Determine line style based on fluid type
             if '2p5PEO' in condition:
@@ -435,8 +472,8 @@ class SteppedConeBatchProcessor:
 def main():
     """Main execution function"""
     
-    # Define paths
-    data_directory = Path(r"C:\Users\ehunt\OneDrive - Northwestern University\Lab Work\Nissan\Adhesion Tests\SteppedConeTests")
+    # Define paths - CHANGE THIS to switch between folders
+    data_directory = Path(r"C:\Users\ehunt\OneDrive - Northwestern University\Lab Work\Nissan\Adhesion Tests\SteppedConeTests\V2")
     area_mapping_file = data_directory / "LayerToArea.txt"
     
     # Create processor

@@ -5,13 +5,40 @@ import pandas as pd
 from typing import List, Tuple
 
 class RawDataProcessor:
-    def __init__(self, calculator, plotter):
+    """
+    Pure data processing module for adhesion test data.
+    Responsibilities:
+    1. Load CSV data
+    2. Find layer boundaries
+    3. Calculate metrics for each layer
+    4. Return structured results
+    
+    Does NOT handle plotting - that should be done separately.
+    """
+    
+    def __init__(self, calculator):
+        """
+        Initialize processor with metrics calculator.
+        
+        Args:
+            calculator: AdhesionMetricsCalculator instance
+        """
         self.calculator = calculator
-        self.plotter = plotter
 
     def process_csv(self, csv_filepath: str, title: str = None, save_path: str = None):
         """
-        Process a CSV file containing raw force/position data
+        Process a CSV file containing raw force/position data.
+        
+        Note: title and save_path parameters are kept for backward compatibility
+        but are not used by this processor. Plotting should be handled externally.
+        
+        Args:
+            csv_filepath: Path to CSV file
+            title: Not used (kept for compatibility)
+            save_path: Not used (kept for compatibility)
+            
+        Returns:
+            List of layer dictionaries with metrics and indices
         """
         # 1. Load and prepare data
         df = self._load_and_prepare_data(csv_filepath)
@@ -25,7 +52,7 @@ class RawDataProcessor:
 
         # 2. Find Layer Boundaries
         # Use calculator's smoothing for consistency with live analysis
-        smoothed_force = self.calculator.apply_smoothing(force_data)
+        smoothed_force = self.calculator._apply_smoothing(force_data)
         peak_indices = self._detect_peaks(smoothed_force)
 
         # Get layer numbers from filename
@@ -35,10 +62,10 @@ class RawDataProcessor:
 
         layer_boundaries = self._find_layer_boundaries(peak_indices, position_data, time_data, layer_numbers)
 
-        # Debug plot to visualize boundaries
-        self._create_debug_plot(time_data, force_data, position_data, layer_boundaries, peak_indices,
-                              title="Layer Boundary Debug Plot",
-                              save_path=Path(save_path).parent / "layer_boundaries_debug.png" if save_path else None)
+        # Debug plot to visualize boundaries - DISABLED DUE TO WINDOWS CRASHES
+        # self._create_debug_plot(time_data, force_data, position_data, layer_boundaries, peak_indices,
+        #                       title="Layer Boundary Debug Plot",
+        #                       save_path=Path(save_path).parent / "layer_boundaries_debug.png" if save_path else None)
 
         # 3. Calculate Metrics for Each Layer
         layers = []
@@ -69,10 +96,7 @@ class RawDataProcessor:
                 print(f"  -> ERROR calculating metrics for Layer {layer_num}: {e}")
                 continue
 
-        # 4. Generate Plot
-        if layers:
-            self.plotter.create_plot(time_data, force_data, smoothed_force, layers, title, save_path)
-
+        # Return layers only - NO PLOTTING in this module
         return layers
 
     def _smooth_data(self, data: np.ndarray, window_size: int = 5) -> np.ndarray:
@@ -272,52 +296,8 @@ class RawDataProcessor:
         print(f"Found {len(layer_starts)} layer starts at indices: {layer_starts}")
         return layer_starts  # Return the actual layer start indices
 
-
-    def _create_debug_plot(self, time_data: np.ndarray, force_data: np.ndarray, 
-                         position_data: np.ndarray, layer_boundaries: List[Tuple[int, int]],
-                         peak_indices: np.ndarray, title: str = None, save_path: Path = None):
-        """Creates a debug plot showing force, position, and layer boundaries."""
-        import matplotlib.pyplot as plt
-        
-        # Create figure with two y-axes
-        fig, ax1 = plt.subplots(figsize=(12, 6))
-        ax2 = ax1.twinx()
-        
-        # Plot force data on first axis
-        line1 = ax1.plot(time_data, force_data, 'b-', label='Force', alpha=0.6)
-        ax1.set_xlabel('Time (s)')
-        ax1.set_ylabel('Force (N)', color='b')
-        ax1.tick_params(axis='y', labelcolor='b')
-        
-        # Plot position data on second axis
-        line2 = ax2.plot(time_data, position_data, 'r-', label='Position', alpha=0.6)
-        ax2.set_ylabel('Position (mm)', color='r')
-        ax2.tick_params(axis='y', labelcolor='r')
-        
-        # Plot peaks and layer boundaries
-        for peak_idx in peak_indices:
-            ax1.axvline(x=time_data[peak_idx], color='g', linestyle=':', alpha=0.5)
-            
-        for start, end in layer_boundaries:
-            ax1.axvline(x=time_data[start], color='k', linestyle='--', alpha=0.3)
-            ax1.axvline(x=time_data[end], color='r', linestyle='--', alpha=0.3)
-        
-        # Set title if provided
-        if title:
-            plt.title(title)
-            
-        # Combine legends
-        lines = line1 + line2
-        labels = [l.get_label() for l in lines]
-        ax1.legend(lines, labels, loc='upper right', fontsize=8)
-        
-        # Save or show plot
-        if save_path:
-            plt.savefig(save_path)
-            print(f"Plotter: Plot saved to {save_path}")
-            plt.close()
-        else:
-            plt.show()
+    # NOTE: Plotting methods removed - use AnalysisPlotter module for visualization
+    # RawData_Processor is a pure data processing module
 
     def _create_layer_object(self, metrics, peak_idx, start_idx, time_data, force_data, layer_idx, end_idx):
         """Creates a layer object with calculated metrics and indices."""
@@ -363,105 +343,38 @@ class RawDataProcessor:
             return None
 
 if __name__ == "__main__":
+    """
+    Standalone test mode - validates layer boundary detection only.
+    For plotting, use AnalysisPlotter module separately.
+    """
     import sys
     from pathlib import Path
+    from adhesion_metrics_calculator import AdhesionMetricsCalculator
     
     if len(sys.argv) < 2:
         print("Usage: python RawData_Processor.py <csv_file>")
+        print("Note: This only processes data. Use AnalysisPlotter for visualization.")
         sys.exit(1)
     
     csv_file = sys.argv[1]
-    processor = RawDataProcessor(None, None)  # No calculator/plotter needed for testing
     
-    # Load data directly for testing
-    df = pd.read_csv(csv_file)
-    time_data = df['Elapsed Time (s)'].to_numpy()
-    force_data = df['Force (N)'].to_numpy()
-    position_data = df['Position (mm)'].to_numpy()
+    # Initialize with calculator
+    calculator = AdhesionMetricsCalculator()
+    processor = RawDataProcessor(calculator)
     
-    # Just test layer boundary detection
-    peak_indices = processor._detect_peaks(processor._smooth_data(force_data))
-    boundaries = processor._find_layer_boundaries(peak_indices, position_data, time_data, [1,2,3])
+    # Process the file
+    print(f"\nProcessing: {csv_file}")
+    layers = processor.process_csv(csv_file)
     
-    # Helper functions for motion detection
-    window_size = 5  # Points to average for stability check
-    pos_threshold = 0.03  # mm threshold for movement detection
-    sampling_rate = 50  # Hz
-    min_stable_points = int(0.2 * sampling_rate)  # 10 points minimum for stable period
+    print(f"\n{'='*60}")
+    print(f"Processing Complete:")
+    print(f"  Found {len(layers)} layers")
+    print(f"{'='*60}")
     
-    def detect_movement(curr_pos, last_pos):
-        diff = curr_pos - last_pos
-        if abs(diff) < pos_threshold/2:
-            return 0  # stable
-        return 1 if diff > 0 else -1  # 1 for increasing, -1 for decreasing
+    for layer in layers:
+        print(f"\nLayer {layer['number']}:")
+        print(f"  Peak Force: {layer['peak_force']:.4f} N")
+        print(f"  Work of Adhesion: {layer['work_of_adhesion_mJ']:.4f} mJ")
+        print(f"  Indices: {layer['start_idx']}-{layer['end_idx']}")
     
-    # Create debug plot
-    import matplotlib.pyplot as plt
-    
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-    
-    # Plot force data with peaks
-    ax1.plot(time_data, force_data, label='Force')
-    ax1.scatter(time_data[peak_indices], force_data[peak_indices], color='red', marker='x', s=100, label='Force Peaks')
-    layer_starts = boundaries  # Get layer start indices
-    ax1.scatter(time_data[layer_starts], force_data[layer_starts], 
-                color='green', marker='o', s=100, label='Layer Starts')
-    ax1.set_ylabel('Force (N)')
-    ax1.legend()
-    ax1.grid(True)
-    
-    # Plot position data
-    ax2.plot(time_data, position_data, label='Position')
-    
-    # Add shaded regions for each layer with increased alpha for visibility
-    print(f"Adding shaded regions for layers starting at indices: {layer_starts}")
-    colors = ['lightblue', 'lightgreen', 'lightpink']
-    
-    # Find the last significant motion in the data to set plot range
-    last_motion_idx = None
-    for i in range(len(position_data)-window_size-1, window_size, -1):
-        window = position_data[i-window_size:i+window_size]
-        if np.std(window) > pos_threshold/2:
-            last_motion_idx = i
-            break
-    
-    if last_motion_idx is None:
-        last_motion_idx = len(position_data) - 1
-    
-    # Add shaded regions with higher alpha for better visibility
-    for i in range(len(layer_starts) - 1):
-        start_idx = layer_starts[i]
-        end_idx = layer_starts[i + 1]
-        # Add shading with higher alpha (0.3) for better visibility
-        ax2.axvspan(time_data[start_idx], time_data[end_idx], 
-                   alpha=0.3, color=colors[i % len(colors)],
-                   label=f'Layer {i+1}')
-        
-        # Also shade the same region in the force plot
-        ax1.axvspan(time_data[start_idx], time_data[end_idx],
-                   alpha=0.3, color=colors[i % len(colors)])
-    
-    # Set x-axis limits to show only relevant data
-    x_margin = 0.5  # 0.5 second margin
-    start_time = time_data[layer_starts[0]] - x_margin
-    end_time = min(time_data[last_motion_idx] + x_margin, time_data[layer_starts[-1]] + x_margin)
-    ax1.set_xlim(start_time, end_time)
-    ax2.set_xlim(start_time, end_time)
-    
-    ax2.legend()
-    ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Position (mm)')
-    ax2.legend()
-    ax2.grid(True)
-    
-    # Add title and additional information
-    ax1.set_title('Force Data with Layer Boundaries')
-    ax2.set_title('Stage Position with Layer Regions')
-    
-    # Customize the position plot appearance
-    ax2.set_ylabel('Position (mm)')
-    ax2.grid(True)
-    
-    plt.tight_layout()
-    plt.savefig('layer_boundaries_debug.png', dpi=300, bbox_inches='tight')
-    plt.close()
+    print("\nTo generate plots, use AnalysisPlotter module.")

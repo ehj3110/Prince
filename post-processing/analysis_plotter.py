@@ -24,6 +24,7 @@ Date: September 20, 2025
 
 import numpy as np
 import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend to avoid Windows crashes
 import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Union
 from pathlib import Path

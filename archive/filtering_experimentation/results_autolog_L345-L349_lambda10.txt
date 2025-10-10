@@ -1,0 +1,31 @@
+filter	params	score
+Median(k=5) -> Gaussian	sigma=2	0.0235978243516205
+Median(k=9) -> Butterworth	N=3, Wn=0.2	0.023737968760165234
+Median(k=5) -> Butterworth	N=3, Wn=0.2	0.023826147201467803
+Median(k=9) -> Butterworth	N=3, Wn=0.25	0.023922027704489233
+Median(k=9) -> Gaussian	sigma=2	0.02400853512335482
+Median(k=5) -> Butterworth	N=3, Wn=0.25	0.024038859602859355
+Median(k=9) -> Savitzky-Golay	window=13, order=2	0.024357682949389507
+Median(k=9) -> Butterworth	N=3, Wn=0.15	0.024577457597482904
+Median(k=5) -> Butterworth	N=3, Wn=0.15	0.02458583534171476
+Median(k=9) -> Gaussian	sigma=1	0.024840794397243408
+Median(k=5) -> Gaussian	sigma=1	0.024871878128667764
+Median(k=5) -> Savitzky-Golay	window=13, order=2	0.024880490028612003
+Median(k=9) -> Savitzky-Golay	window=17, order=2	0.024975110965424197
+Median(k=5) -> Gaussian	sigma=3	0.024983486973844074
+Median(k=9) -> Savitzky-Golay	window=9, order=2	0.025289033470756492
+Median(k=9) -> Gaussian	sigma=3	0.02536665777387631
+Median(k=5) -> Savitzky-Golay	window=17, order=2	0.02546410772710745
+Median(k=5) -> Savitzky-Golay	window=9, order=2	0.02550535778263995
+Median(k=9) -> Savitzky-Golay	window=21, order=2	0.02667248912325912
+Median(k=5) -> Savitzky-Golay	window=21, order=2	0.026835707467843438
+Median(k=5) -> Gaussian	sigma=4	0.027171228088869636
+Median(k=9) -> Gaussian	sigma=4	0.027504137023486898
+Median(k=5) -> Butterworth	N=3, Wn=0.1	0.027576766447854215
+Median(k=9) -> Butterworth	N=3, Wn=0.1	0.027662512804800705
+Median(k=5) -> Gaussian	sigma=5	0.029660811889279236
+Median(k=9) -> Gaussian	sigma=5	0.029916160747242026
+Median(k=9) -> Savitzky-Golay	window=5, order=2	0.03183201014821714
+Median(k=5) -> Savitzky-Golay	window=5, order=2	0.03409496784631999
+Median(k=5) -> Butterworth	N=3, Wn=0.05	0.03625429839413872
+Median(k=9) -> Butterworth	N=3, Wn=0.05	0.036316404175525986
