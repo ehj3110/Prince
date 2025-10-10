@@ -270,19 +270,24 @@ class AdhesionMetricsCalculator:
                                            positions: np.ndarray,
                                            motion_end_idx: Optional[int]) -> int:
         """
-        Find propagation end by searching backwards from the end of the peel motion.
-        This avoids false plateaus at high speeds.
-        The end is defined as the first significant peak in the second derivative
-        (an inflection point) encountered when searching backwards.
+        Find propagation end using second derivative zero-crossing method.
+        
+        Method:
+        1. Find the MAXIMUM of the second derivative after peak force (highest curvature)
+        2. Find where second derivative returns to ZERO after that maximum
+        3. This zero-crossing is where force curve stops curving (propagation ends)
+        
+        Physical meaning: The maximum 2nd derivative is where force is decaying fastest.
+        The zero-crossing after that is where the decay stabilizes to baseline.
         """
         # 1. Define the full search region from the peak to the end of motion
         search_start_abs = peak_idx
-        search_end_abs = motion_end_idx if motion_end_idx is not None else len(smoothed_force) -1
+        search_end_abs = motion_end_idx if motion_end_idx is not None else len(smoothed_force) - 1
         
         if (search_end_abs - search_start_abs) < 10:
-            return search_end_abs # Not enough data, return end of motion
+            return search_end_abs  # Not enough data, return end of motion
 
-        # 2. Determine the "lifting point" (point of maximum travel)
+        # 2. Determine the "lifting point" (point of maximum travel) for position constraint
         try:
             travel_positions = positions[search_start_abs:search_end_abs]
             if len(travel_positions) > 0:
@@ -293,51 +298,47 @@ class AdhesionMetricsCalculator:
         except Exception:
             lifting_point_idx = search_end_abs
 
-        # 3. Define the reverse search start point (90% of the way to the lifting point)
-        reverse_search_start_idx = int(peak_idx + 0.9 * (lifting_point_idx - peak_idx))
-        
-        # Ensure the search happens between the peak and the lifting point
-        if reverse_search_start_idx <= peak_idx:
-            return lifting_point_idx
-
-        # 4. Calculate second derivative for the region of interest
+        # 3. Calculate second derivative for the region of interest
         try:
             # Region is from peak to lifting point
             region_of_interest = smoothed_force[peak_idx:lifting_point_idx+1]
             if len(region_of_interest) < 5:
                 return lifting_point_idx
 
+            # Calculate second derivative using np.gradient
             second_derivative = np.gradient(np.gradient(region_of_interest))
             
-            # 5. Search backwards for the first significant peak in the second derivative
-            # A peak in the 2nd derivative is a strong inflection point (the "knee")
-            reverse_search_start_relative = reverse_search_start_idx - peak_idx
+            # 4. Find the MAXIMUM of the second derivative (highest curvature point)
+            max_second_deriv_idx = np.argmax(second_derivative)
             
-            # Find peaks in the second derivative
-            # A simple peak is a point greater than its neighbors
-            peaks_indices = []
-            for i in range(1, len(second_derivative) - 1):
-                if second_derivative[i] > second_derivative[i-1] and second_derivative[i] > second_derivative[i+1]:
-                    peaks_indices.append(i)
+            # 5. Find where second derivative returns to zero AFTER the maximum
+            # Search forward from the maximum
+            zero_crossing_idx = None
+            for i in range(max_second_deriv_idx + 1, len(second_derivative)):
+                # Check if we've crossed zero (or are very close to it)
+                if second_derivative[i] <= 0:
+                    zero_crossing_idx = i
+                    break
+                # Also check if derivative is close to zero (within 5% of max)
+                if abs(second_derivative[i]) < 0.05 * abs(second_derivative[max_second_deriv_idx]):
+                    zero_crossing_idx = i
+                    break
             
-            if not peaks_indices:
-                return lifting_point_idx # No inflection points found
-
-            # Filter for peaks that are in the reverse search path
-            valid_peaks = [p for p in peaks_indices if p <= reverse_search_start_relative]
-            if not valid_peaks:
-                return lifting_point_idx # No peaks in the search path
-
-            # The first one encountered searching backwards is the last one in the list
-            last_peak_relative_idx = valid_peaks[-1]
+            # If no zero crossing found, use a point well past the maximum
+            if zero_crossing_idx is None:
+                # Use a point that's 2/3 of the way from max to end
+                zero_crossing_idx = max_second_deriv_idx + int(0.67 * (len(second_derivative) - max_second_deriv_idx))
             
             # Convert back to absolute index in the original array
-            propagation_end_idx = peak_idx + last_peak_relative_idx
+            propagation_end_idx = peak_idx + zero_crossing_idx
+            
+            # Ensure we don't exceed the lifting point
+            propagation_end_idx = min(propagation_end_idx, lifting_point_idx)
             
             return propagation_end_idx
 
         except Exception as e:
-            warnings.warn(f"Reverse search for propagation end failed: {e}. Using lifting point as fallback.")
+            warnings.warn(f"Second derivative zero-crossing search failed: {e}. Using lifting point as fallback.")
             return lifting_point_idx
     
     def _calculate_work_metrics(self, 
