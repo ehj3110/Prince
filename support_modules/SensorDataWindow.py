@@ -806,6 +806,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.plot_data_x.clear()
         self.plot_data_y_position.clear()
         self.plot_data_y_force.clear()
+        
+        # Also clear the force data queue to prevent stale data
+        while not self.force_data_queue_for_logger.empty():
+            try:
+                self.force_data_queue_for_logger.get_nowait()
+            except queue.Empty:
+                break
 
         # Only reset plot_start_time if not actively plotting,
         # otherwise, keep the current time reference.
