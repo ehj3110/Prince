@@ -30,6 +30,15 @@ class PositionLogger(threading.Thread):
         # self._csv_header_written_for_current_file = False # Replaced by checking file size in _open_log_file
         self._csv_logging_session_start_time = None # Start time for the current logging session/file
 
+        # Phase detection attributes
+        self._previous_position = None
+        self._stationary_count = 0  # How many consecutive readings with no motion
+        self._current_phase = "Unknown"  # Current phase: Lift, Retract, Pause, Sandwich, Exposure
+        self._POSITION_CHANGE_THRESHOLD = 0.002  # mm - below this is considered stationary
+        self._STATIONARY_THRESHOLD_COUNT = 3  # How many stationary readings before declaring Pause
+        self._SANDWICH_DISTANCE_THRESHOLD = 1.0  # mm - small motions < 1mm might be sandwich
+        self._position_at_motion_start = None  # Track position when motion begins
+
         self.daemon = True # Thread will exit when main program exits
 
     def _open_log_file(self):
@@ -52,7 +61,7 @@ class PositionLogger(threading.Thread):
             # Check if the file is empty to decide whether to write a header
             self._log_file_handle.seek(0, os.SEEK_END) # Go to the end of the file
             if self._log_file_handle.tell() == 0: # If position is 0, file is empty
-                self._writer.writerow(['Elapsed Time (s)', 'Position (mm)', 'Force (N)'])
+                self._writer.writerow(['Elapsed Time (s)', 'Position (mm)', 'Force (N)', 'Phase'])
                 self._log_file_handle.flush() # Ensure header is written immediately
             
             self._csv_logging_session_start_time = time.time() # Reset start time for this new file/session
@@ -79,6 +88,78 @@ class PositionLogger(threading.Thread):
         self._writer = None
         self._current_open_log_file_name = None
         self._csv_logging_session_start_time = None
+        # Reset phase tracking when closing file
+        self._previous_position = None
+        self._stationary_count = 0
+        self._current_phase = "Unknown"
+        self._position_at_motion_start = None
+
+    def _determine_phase(self, current_position):
+        """
+        Determines the current phase based on stage position changes.
+        
+        Phases:
+        - Lift: Stage moving DOWN (position decreasing) by significant amount (>1mm total)
+        - Retract: Stage moving UP (position increasing) by significant amount (>1mm total)
+        - Pause: Stage stationary
+        - Sandwich: Small downward motion (<1mm total)
+        - Exposure: Stationary after retract (future enhancement - currently labeled as Pause)
+        
+        Args:
+            current_position: Current stage position in mm
+            
+        Returns:
+            str: Phase name
+        """
+        if current_position is None or not isinstance(current_position, (int, float)):
+            return "Unknown"
+        
+        # First reading - initialize
+        if self._previous_position is None:
+            self._previous_position = current_position
+            self._position_at_motion_start = current_position
+            self._current_phase = "Pause"  # Assume starting stationary
+            return self._current_phase
+        
+        # Calculate position change
+        position_change = current_position - self._previous_position
+        abs_change = abs(position_change)
+        
+        # Check if stationary (below threshold)
+        if abs_change < self._POSITION_CHANGE_THRESHOLD:
+            self._stationary_count += 1
+            
+            # If stationary for enough readings, declare Pause
+            if self._stationary_count >= self._STATIONARY_THRESHOLD_COUNT:
+                # Reset motion start position when becoming stationary
+                if self._current_phase not in ["Pause", "Unknown"]:
+                    self._position_at_motion_start = current_position
+                self._current_phase = "Pause"
+        else:
+            # Motion detected - reset stationary counter
+            self._stationary_count = 0
+            
+            # Track start of motion if coming from pause
+            if self._current_phase in ["Pause", "Unknown"]:
+                self._position_at_motion_start = self._previous_position
+            
+            # Calculate total distance traveled since motion started
+            total_distance_traveled = abs(current_position - self._position_at_motion_start) if self._position_at_motion_start is not None else 0
+            
+            # Determine direction and classify phase
+            if position_change < 0:  # Moving down (decreasing position)
+                # Check if it's a small motion (sandwich) or large motion (lift)
+                if total_distance_traveled < self._SANDWICH_DISTANCE_THRESHOLD:
+                    self._current_phase = "Sandwich"
+                else:
+                    self._current_phase = "Lift"
+            else:  # Moving up (increasing position)
+                self._current_phase = "Retract"
+        
+        # Update previous position for next iteration
+        self._previous_position = current_position
+        
+        return self._current_phase
 
     def run(self):
         print(f"PositionLogger: Thread started. Plotting enabled. CSV logging initially: {self.csv_logging_enabled}")
@@ -138,13 +219,17 @@ class PositionLogger(threading.Thread):
                     if self._writer and self._csv_logging_session_start_time is not None:
                         elapsed_time_for_csv = current_loop_time - self._csv_logging_session_start_time
                         
+                        # Determine current phase based on position
+                        current_phase = self._determine_phase(position)
+                        
                         pos_str = f"{position:.4f}" if isinstance(position, (int, float)) else "N/A"
                         force_str = f"{latest_force_value_for_log:.6f}" if isinstance(latest_force_value_for_log, (int, float)) else "N/A"
                         
                         row_data = [
                             f"{elapsed_time_for_csv:.3f}",
                             pos_str,
-                            force_str
+                            force_str,
+                            current_phase
                         ]
                         try:
                             self._writer.writerow(row_data)

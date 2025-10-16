@@ -236,15 +236,20 @@ class AdhesionMetricsCalculator:
         
         # Step 7: Calculate work and energy metrics
         work_metrics = self._calculate_work_metrics(
-            positions, forces, smoothed_force, baseline, pre_init_idx, prop_end_idx)
+            positions, forces, smoothed_force, baseline, pre_init_idx, peak_idx, prop_end_idx)
         results.update(work_metrics)
         
-        # Step 8: Calculate dynamic metrics
+         # Step 8: Calculate effective stiffness from pre-initiation stage
+        stiffness_metrics = self._calculate_stiffness(
+            positions, forces, smoothed_force, baseline, pre_init_idx, peak_idx)
+        results.update(stiffness_metrics)
+        
+        # Step 9: Calculate dynamic metrics
         dynamic_metrics = self._calculate_dynamic_metrics(
             times, forces, smoothed_force, pre_init_idx, peak_idx, prop_end_idx)
         results.update(dynamic_metrics)
         
-        # Step 9: Calculate data quality metrics
+        # Step 10: Calculate data quality metrics
         quality_metrics = self._calculate_quality_metrics(forces, smoothed_force, baseline, peak_force)
         results.update(quality_metrics)
         
@@ -267,17 +272,41 @@ class AdhesionMetricsCalculator:
     
     def _find_pre_initiation(self, smoothed_force: np.ndarray, peak_idx: int, baseline: float) -> int:
         """
-        Find pre-initiation start (baseline crossing before peak).
-        """
-        threshold = baseline + self.baseline_threshold_factor
+        Find pre-initiation start - the point where force crosses baseline.
         
-        # Search backwards from peak
+        Searches backwards from peak to find where force equals baseline (within tolerance).
+        This represents the moment when adhesion forces begin to develop.
+        
+        Special case for sandwich data: If the force starts HIGHER than baseline
+        (indicating pre-existing adhesion), use the beginning of the data as the
+        pre-initiation point.
+        
+        Args:
+            smoothed_force: Smoothed force array
+            peak_idx: Index of peak force
+            baseline: Baseline force level
+            
+        Returns:
+            Index where force crosses baseline before peak
+        """
+        # Small tolerance for numerical comparison (0.1% of baseline or minimum 0.001 N)
+        tolerance = max(abs(baseline) * 0.001, 0.001)
+        
+        # Search backwards from peak to find baseline crossing
         search_start = max(0, peak_idx - 300)  # Limit search range
         
+        # Special case: Check if the force at the beginning is already above baseline
+        # This happens with sandwich data where adhesion exists before lifting starts
+        if smoothed_force[search_start] > (baseline + tolerance):
+            # Force starts above baseline - use the beginning as pre-initiation
+            return search_start
+        
         for i in range(peak_idx - 1, search_start, -1):
-            if smoothed_force[i] <= threshold:
-                return i + 1  # Return first point above threshold
+            # Check if force is at or below baseline (within tolerance)
+            if smoothed_force[i] <= (baseline + tolerance):
+                return i  # Return the baseline crossing point
                 
+        # If no crossing found, return search start
         return search_start
 
     def _find_propagation_end_reverse_search(self, 
@@ -286,15 +315,18 @@ class AdhesionMetricsCalculator:
                                            positions: np.ndarray,
                                            motion_end_idx: Optional[int]) -> int:
         """
-        Find propagation end using second derivative zero-crossing method.
+        Find propagation end using second derivative 10% threshold method.
         
         Method:
-        1. Find the MAXIMUM of the second derivative after peak force (highest curvature)
-        2. Find where second derivative returns to ZERO after that maximum
-        3. This zero-crossing is where force curve stops curving (propagation ends)
+        1. Find the HIGHEST POSITIVE PEAK of the second derivative after peak force
+        2. Calculate 10% threshold of that peak value
+        3. Find the LAST point BEFORE the derivative drops below this threshold
+        4. This is where propagation ends
         
-        Physical meaning: The maximum 2nd derivative is where force is decaying fastest.
-        The zero-crossing after that is where the decay stabilizes to baseline.
+        Physical meaning: The highest positive 2nd derivative peak is where force is 
+        decaying fastest. The 10% threshold marks when the decay rate has diminished
+        to just 10% of its maximum, indicating propagation has essentially completed.
+        Using the last point BEFORE crossing ensures we capture the full propagation zone.
         """
         # 1. Define the full search region from the peak to the end of motion
         search_start_abs = peak_idx
@@ -303,75 +335,104 @@ class AdhesionMetricsCalculator:
         if (search_end_abs - search_start_abs) < 10:
             return search_end_abs  # Not enough data, return end of motion
 
-        # 2. Determine the "lifting point" (point of maximum travel) for position constraint
+        # 2. Determine the "80% point in lifting stage" for position constraint
         try:
             travel_positions = positions[search_start_abs:search_end_abs]
             if len(travel_positions) > 0:
-                min_pos_relative_idx = np.argmin(travel_positions)
-                lifting_point_idx = search_start_abs + min_pos_relative_idx
+                # Find the minimum position (maximum travel point)
+                min_pos = np.min(travel_positions)
+                max_pos = positions[peak_idx]
+                
+                # 80% of the lifting distance
+                target_position = max_pos - 0.8 * (max_pos - min_pos)
+                
+                # Find index where position first reaches or passes the 80% point
+                lifting_80pct_idx = search_start_abs
+                for i in range(search_start_abs, search_end_abs):
+                    if positions[i] <= target_position:
+                        lifting_80pct_idx = i
+                        break
+                else:
+                    # If never reached 80%, use the minimum position index
+                    min_pos_relative_idx = np.argmin(travel_positions)
+                    lifting_80pct_idx = search_start_abs + min_pos_relative_idx
             else:
-                lifting_point_idx = search_end_abs
+                lifting_80pct_idx = search_end_abs
         except Exception:
-            lifting_point_idx = search_end_abs
+            lifting_80pct_idx = search_end_abs
 
         # 3. Calculate second derivative for the region of interest
         try:
-            # Region is from peak to lifting point
-            region_of_interest = smoothed_force[peak_idx:lifting_point_idx+1]
+            # Region is from peak to 80% lifting point
+            region_of_interest = smoothed_force[peak_idx:lifting_80pct_idx+1]
             if len(region_of_interest) < 5:
-                return lifting_point_idx
+                return lifting_80pct_idx
 
             # Calculate second derivative using np.gradient
             second_derivative = np.gradient(np.gradient(region_of_interest))
             
-            # 4. Find the MAXIMUM of the second derivative (highest curvature point)
-            max_second_deriv_idx = np.argmax(second_derivative)
+            # 4. Find the HIGHEST POSITIVE PEAK of the second derivative
+            # Only consider positive values
+            positive_mask = second_derivative > 0
+            if not np.any(positive_mask):
+                # No positive peaks found, use the maximum value
+                max_second_deriv_idx = np.argmax(second_derivative)
+                max_second_deriv_value = second_derivative[max_second_deriv_idx]
+            else:
+                # Find the index of the maximum among positive values
+                positive_second_deriv = second_derivative.copy()
+                positive_second_deriv[~positive_mask] = -np.inf
+                max_second_deriv_idx = np.argmax(positive_second_deriv)
+                max_second_deriv_value = second_derivative[max_second_deriv_idx]
             
-            # 5. Find where second derivative returns to zero AFTER the maximum
-            # Search forward from the maximum
-            zero_crossing_idx = None
+            # 5. Calculate 10% threshold and find LAST point BEFORE crossing
+            threshold = max_second_deriv_value * 0.10
+            
+            # Search forward from the maximum to find where it drops below threshold
+            threshold_idx = None
             for i in range(max_second_deriv_idx + 1, len(second_derivative)):
-                # Check if we've crossed zero (or are very close to it)
-                if second_derivative[i] <= 0:
-                    zero_crossing_idx = i
-                    break
-                # Also check if derivative is close to zero (within 5% of max)
-                if abs(second_derivative[i]) < 0.05 * abs(second_derivative[max_second_deriv_idx]):
-                    zero_crossing_idx = i
+                if second_derivative[i] < threshold:
+                    # Found the crossing point - return the PREVIOUS index
+                    # (last point before it drops below threshold)
+                    threshold_idx = max(0, i - 1)
                     break
             
-            # If no zero crossing found, use a point well past the maximum
-            if zero_crossing_idx is None:
-                # Use a point that's 2/3 of the way from max to end
-                zero_crossing_idx = max_second_deriv_idx + int(0.67 * (len(second_derivative) - max_second_deriv_idx))
+            # If no threshold crossing found, use a conservative estimate
+            if threshold_idx is None:
+                # Use a point that's halfway from max to end
+                threshold_idx = max_second_deriv_idx + int(0.5 * (len(second_derivative) - max_second_deriv_idx))
             
             # Convert back to absolute index in the original array
-            propagation_end_idx = peak_idx + zero_crossing_idx
+            propagation_end_idx = peak_idx + threshold_idx
             
-            # Ensure we don't exceed the lifting point
-            propagation_end_idx = min(propagation_end_idx, lifting_point_idx)
+            # Ensure we don't exceed the 80% lifting point
+            propagation_end_idx = min(propagation_end_idx, lifting_80pct_idx)
             
             return propagation_end_idx
 
         except Exception as e:
-            warnings.warn(f"Second derivative zero-crossing search failed: {e}. Using lifting point as fallback.")
-            return lifting_point_idx
+            warnings.warn(f"Second derivative 10% threshold search failed: {e}. Using 80% lifting point as fallback.")
+            return lifting_80pct_idx
     
     def _calculate_work_metrics(self, 
                               positions: np.ndarray, 
                               forces: np.ndarray, 
                               smoothed_force: np.ndarray,
                               baseline: float,
-                              pre_init_idx: int, 
+                              pre_init_idx: int,
+                              peak_idx: int,
                               prop_end_idx: int) -> Dict:
         """
         Calculate work and energy metrics.
+        
+        Work of adhesion is integrated from PEAK FORCE to PROPAGATION END
+        (not from pre-initiation start).
         """
         results = {}
         
-        # Extract peel region data
-        peel_positions = positions[pre_init_idx:prop_end_idx+1]
-        peel_forces = forces[pre_init_idx:prop_end_idx+1]
+        # Extract peel region data - FROM PEAK TO PROPAGATION END
+        peel_positions = positions[peak_idx:prop_end_idx+1]
+        peel_forces = forces[peak_idx:prop_end_idx+1]
         peel_forces_corrected = peel_forces - baseline
         
         if len(peel_positions) < 2:
@@ -428,6 +489,62 @@ class AdhesionMetricsCalculator:
                 'energy_dissipation_mJ': 0.0,
                 'total_energy_mJ': 0.0,
                 'energy_density_mJ_per_mm': 0.0
+            })
+        
+        return results
+    
+    def _calculate_stiffness(self,
+                           positions: np.ndarray,
+                           forces: np.ndarray,
+                           smoothed_force: np.ndarray,
+                           baseline: float,
+                           pre_init_idx: int,
+                           peak_idx: int) -> Dict:
+        """
+        Calculate effective stiffness from the pre-initiation stage.
+        
+        Uses the first 50% of the pre-initiation data (most linear region)
+        to calculate stiffness as the slope of the force-position curve.
+        
+        Returns:
+            Dict with stiffness metrics in N/mm
+        """
+        results = {}
+        
+        try:
+            # Extract pre-initiation region
+            pre_init_positions = positions[pre_init_idx:peak_idx+1]
+            pre_init_forces = smoothed_force[pre_init_idx:peak_idx+1]
+            
+            # Baseline-correct the forces
+            pre_init_forces_corrected = pre_init_forces - baseline
+            
+            # Use only the first 50% of the pre-initiation data (most linear)
+            half_length = len(pre_init_positions) // 2
+            if half_length < 3:
+                # Not enough data points for reliable linear fit
+                results['effective_stiffness_N_per_mm'] = 0.0
+                results['stiffness_r_squared'] = 0.0
+                return results
+            
+            linear_positions = pre_init_positions[:half_length]
+            linear_forces = pre_init_forces_corrected[:half_length]
+            
+            # Perform linear regression: F = k * x + b
+            # where k is the stiffness (slope)
+            from scipy import stats
+            slope, intercept, r_value, p_value, std_err = stats.linregress(linear_positions, linear_forces)
+            
+            # Stiffness is the absolute value of the slope (N/mm)
+            # Note: slope will be negative (force decreases as position increases during retraction)
+            results['effective_stiffness_N_per_mm'] = abs(slope)
+            results['stiffness_r_squared'] = r_value ** 2  # Coefficient of determination
+            
+        except Exception as e:
+            warnings.warn(f"Stiffness calculation failed: {e}")
+            results.update({
+                'effective_stiffness_N_per_mm': 0.0,
+                'stiffness_r_squared': 0.0
             })
         
         return results
