@@ -197,29 +197,37 @@ class AnalysisPlotter:
         ax.plot(window_time, window_smoothed, color=color, linewidth=3.5, alpha=0.95,
                 label='Smoothed Force', zorder=3)
 
-        # Shaded bands for peeling stages
-        ax.axvspan(layer['pre_init_time'], layer['peak_time'], color='lightblue', alpha=0.5, label='Pre-Initiation', zorder=1)
-        ax.axvspan(layer['peak_time'], layer['prop_end_time'], color='lightcoral', alpha=0.5, label='Propagation', zorder=1)
+        # Shaded bands for peeling stages (NO ARROWS - cleaner visualization)
+        ax.axvspan(layer['pre_init_time'], layer['peak_time'], color='lightblue', alpha=0.3, label='Pre-Initiation', zorder=1)
+        ax.axvspan(layer['peak_time'], layer['prop_end_time'], color='lightcoral', alpha=0.3, label='Propagation', zorder=1)
 
         # Vertical lines and markers
-        ax.axvline(x=layer['peak_time'], color=color, linestyle='--', linewidth=4, zorder=4)
-        ax.plot(layer['peak_time'], layer['peak_force'], 'o', color=color, markersize=14, zorder=5,
-                markeredgecolor='black', markeredgewidth=2, label=f'Peak: {layer["peak_force"]:.4f}N')
-        ax.axvline(x=layer['prop_end_time'], color='purple', linestyle=':', linewidth=4, zorder=4)
+        ax.axvline(x=layer['peak_time'], color=color, linestyle='--', linewidth=3, alpha=0.8, zorder=4, label='Peak Force')
+        ax.plot(layer['peak_time'], layer['peak_force'], 'o', color=color, markersize=12, zorder=5,
+                markeredgecolor='black', markeredgewidth=2)
+        ax.axvline(x=layer['prop_end_time'], color='purple', linestyle=':', linewidth=3, alpha=0.8, zorder=4, label='Prop End')
         ax.plot(layer['prop_end_time'], smoothed_force[layer['prop_end_idx']], 's', color='purple',
-                markersize=10, zorder=5, markeredgecolor='black', markeredgewidth=1, label='Prop End')
+                markersize=9, zorder=5, markeredgecolor='black', markeredgewidth=1.5)
 
         # Baseline
-        ax.axhline(y=layer['baseline'], color='gray', linestyle='--', linewidth=3, alpha=0.6,
+        ax.axhline(y=layer['baseline'], color='gray', linestyle='--', linewidth=2, alpha=0.6,
                    label=f'Baseline: {layer["baseline"]:.4f}N', zorder=2)
 
-        self._add_layer_annotations(ax, layer, font_size)
-
+        # Add simple text annotations for key metrics (no arrows!)
+        # Peak force annotation
+        ax.text(layer['peak_time'], layer['peak_force'] * 1.05, 
+                f"{layer['peak_force']:.4f}N",
+                ha='center', va='bottom', fontsize=font_size, fontweight='bold', 
+                color=color, bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor=color, alpha=0.9))
+        
+        # Duration annotations in title
+        duration_text = f"Pre-init: {layer['pre_init_duration']:.2f}s | Prop: {layer['prop_duration']:.2f}s"
+        
         ax.set_xlabel('Time (s)', fontsize=font_size + 1, fontweight='bold')
         ax.set_ylabel('Force (N)', fontsize=font_size + 1, fontweight='bold')
-        ax.set_title(f'Layer {layer["number"]} - Peeling Stages', fontsize=font_size + 3, fontweight='bold', color=color)
+        ax.set_title(f'Layer {layer["number"]} - {duration_text}', fontsize=font_size + 2, fontweight='bold', color=color)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=font_size - 1, loc='upper left', framealpha=0.9)
+        ax.legend(fontsize=font_size - 2, loc='upper left', framealpha=0.9, ncol=2)
 
         # Calculate appropriate margins for y-axis
         force_range = layer['peak_force'] - layer['baseline']
@@ -228,34 +236,11 @@ class AnalysisPlotter:
         y_max = max(layer['peak_force'] + y_margin, np.max(window_force))
         ax.set_ylim(y_min, y_max)
 
-        # X-limits with 30% margin of peeling duration
-        x_margin = (layer['prop_end_time'] - layer['pre_init_time']) * 0.3
+        # X-limits with 20% margin of peeling duration
+        x_margin = (layer['prop_end_time'] - layer['pre_init_time']) * 0.2
         ax.set_xlim(layer['pre_init_time'] - x_margin, layer['prop_end_time'] + x_margin)
 
-    def _add_layer_annotations(self, ax, layer, font_size=10):
-        """Adds measurement annotations to a layer subplot."""
-        # Force range annotation
-        force_range_x = layer['peak_time'] + (layer['prop_end_time'] - layer['peak_time']) * 0.7
-        ax.annotate('', xy=(force_range_x, layer['peak_force']), xytext=(force_range_x, layer['baseline']),
-                    arrowprops=dict(arrowstyle='<->', color='black', lw=3))
-        ax.text(force_range_x + 0.3, (layer['peak_force'] + layer['baseline']) / 2,
-                f'ΔF = {layer["force_range"]:.4f}N', rotation=90, va='center',
-                fontsize=font_size, fontweight='bold', bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
 
-        # Time duration annotations - further below baseline as in hybrid plotter
-        y_annotation = layer['baseline'] - 0.025
-        ax.annotate('', xy=(layer['peak_time'], y_annotation), xytext=(layer['pre_init_time'], y_annotation),
-                    arrowprops=dict(arrowstyle='<->', color='blue', lw=3))
-        ax.text((layer['peak_time'] + layer['pre_init_time']) / 2, y_annotation - 0.008,
-                f't_pre = {layer["pre_init_duration"]:.2f}s', ha='center', fontsize=font_size - 1,
-                color='blue', fontweight='bold', bbox=dict(boxstyle='round,pad=0.2', facecolor='lightblue', alpha=0.8))
-
-        y_annotation2 = layer['baseline'] - 0.045
-        ax.annotate('', xy=(layer['prop_end_time'], y_annotation2), xytext=(layer['peak_time'], y_annotation2),
-                    arrowprops=dict(arrowstyle='<->', color='red', lw=3))
-        ax.text((layer['prop_end_time'] + layer['peak_time']) / 2, y_annotation2 - 0.008,
-                f't_prop = {layer["prop_duration"]:.2f}s', ha='center', fontsize=font_size - 1,
-                color='red', fontweight='bold', bbox=dict(boxstyle='round,pad=0.2', facecolor='lightcoral', alpha=0.8))
 
     def print_metrics_summary(self, layers: List[Dict]):
         """Prints a formatted summary of key metrics for all processed layers."""

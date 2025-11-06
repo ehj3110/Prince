@@ -59,7 +59,8 @@ class AdhesionMetricsCalculator:
                             position_data: np.ndarray, 
                             force_data: np.ndarray,
                             layer_number: Optional[int] = None,
-                            motion_end_idx: Optional[int] = None) -> Dict:
+                            motion_end_idx: Optional[int] = None,
+                            lifting_start_idx: Optional[int] = 0) -> Dict:
         """
         Calculate adhesion metrics from numpy arrays (live data or pre-loaded).
         
@@ -69,6 +70,7 @@ class AdhesionMetricsCalculator:
             force_data: Force values (N).
             layer_number: Layer identifier (optional).
             motion_end_idx: Index where stage motion ends (optional, uses full data if None).
+            lifting_start_idx: Index where lifting phase starts (default 0, meaning start of arrays).
             
         Returns:
             Dictionary containing all calculated metrics.
@@ -98,7 +100,7 @@ class AdhesionMetricsCalculator:
         
         # Calculate metrics using the new methodology
         return self._calculate_metrics(times, positions, forces, smoothed_force, 
-                                     layer_number, motion_end_idx)
+                                     layer_number, motion_end_idx, lifting_start_idx)
     
     def calculate_from_csv(self, 
                           csv_filepath: Union[str, Path],
@@ -195,7 +197,8 @@ class AdhesionMetricsCalculator:
                          forces: np.ndarray, 
                          smoothed_force: np.ndarray,
                          layer_number: Optional[int],
-                         motion_end_idx: Optional[int]) -> Dict:
+                         motion_end_idx: Optional[int],
+                         lifting_start_idx: int = 0) -> Dict:
         """
         Calculate all adhesion metrics using the new methodology.
         """
@@ -219,7 +222,7 @@ class AdhesionMetricsCalculator:
         results['peak_force_corrected'] = peak_force - baseline
         
         # Step 4: Find pre-initiation start
-        pre_init_idx = self._find_pre_initiation(smoothed_force, peak_idx, baseline)
+        pre_init_idx = self._find_pre_initiation(smoothed_force, positions, peak_idx, baseline, lifting_start_idx)
         results['pre_initiation_position'] = positions[pre_init_idx]
         results['pre_initiation_time'] = times[pre_init_idx] - times[0]
         results['pre_initiation_force'] = smoothed_force[pre_init_idx]
@@ -270,44 +273,42 @@ class AdhesionMetricsCalculator:
         peak_force = smoothed_force[peak_idx]
         return peak_idx, peak_force
     
-    def _find_pre_initiation(self, smoothed_force: np.ndarray, peak_idx: int, baseline: float) -> int:
+    def _find_pre_initiation(self, smoothed_force: np.ndarray, positions: np.ndarray, 
+                             peak_idx: int, baseline: float, lifting_start_idx: int = 0) -> int:
         """
-        Find pre-initiation start - the point where force crosses baseline.
+        Find pre-initiation start - the point where force crosses baseline AFTER lifting starts.
         
-        Searches backwards from peak to find where force equals baseline (within tolerance).
-        This represents the moment when adhesion forces begin to develop.
+        Strategy:
+        1. Use the provided lifting_start_idx as the true start of lifting phase
+        2. Search FORWARD from lifting start to find first baseline crossing
+        3. If force is already above baseline when lifting starts (rare preloaded case), 
+           use lifting start as pre-initiation
         
-        Special case for sandwich data: If the force starts HIGHER than baseline
-        (indicating pre-existing adhesion), use the beginning of the data as the
-        pre-initiation point.
+        This ensures pre-initiation time doesn't include the pause before lifting.
         
         Args:
             smoothed_force: Smoothed force array
+            positions: Position array (to detect when lifting starts)
             peak_idx: Index of peak force
             baseline: Baseline force level
+            lifting_start_idx: Index where lifting phase actually starts (provided by layer boundary detection)
             
         Returns:
-            Index where force crosses baseline before peak
+            Index where force crosses baseline after lifting starts
         """
         # Small tolerance for numerical comparison (0.1% of baseline or minimum 0.001 N)
         tolerance = max(abs(baseline) * 0.001, 0.001)
         
-        # Search backwards from peak to find baseline crossing
-        search_start = max(0, peak_idx - 300)  # Limit search range
-        
-        # Special case: Check if the force at the beginning is already above baseline
-        # This happens with sandwich data where adhesion exists before lifting starts
-        if smoothed_force[search_start] > (baseline + tolerance):
-            # Force starts above baseline - use the beginning as pre-initiation
-            return search_start
-        
-        for i in range(peak_idx - 1, search_start, -1):
-            # Check if force is at or below baseline (within tolerance)
-            if smoothed_force[i] <= (baseline + tolerance):
-                return i  # Return the baseline crossing point
+        # Always search FORWARD from lifting start to find baseline crossing
+        # Even if force is already elevated, we want the crossing point AFTER lifting begins
+        for i in range(lifting_start_idx, peak_idx):
+            if smoothed_force[i] > (baseline + tolerance):
+                # Found baseline crossing after lifting started
+                return i
                 
-        # If no crossing found, return search start
-        return search_start
+        # If no crossing found after lifting starts, use lifting start point
+        # This means force never exceeded baseline (unusual but possible)
+        return lifting_start_idx
 
     def _find_propagation_end_reverse_search(self, 
                                            smoothed_force: np.ndarray, 

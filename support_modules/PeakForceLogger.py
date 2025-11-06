@@ -7,6 +7,7 @@ import numpy as np
 import sys
 from pathlib import Path
 import queue
+import warnings
 
 # Import the adhesion_metrics_calculator from the support_modules directory
 from support_modules.adhesion_metrics_calculator import AdhesionMetricsCalculator
@@ -226,21 +227,27 @@ class PeakForceLogger:
             # Get propagation distance - convert to absolute value
             propagation_distance = abs(results.get('propagation_distance', np.nan)) if not np.isnan(results.get('propagation_distance', np.nan)) else np.nan
             
-            # Write to CSV
-            # Note: All distances and durations are converted to absolute values for clarity
-            # Only peak_retraction_force retains its sign (negative for retraction)
+            # Validate metrics - warn about unexpected values
+            if peak_force < 0:
+                warnings.warn(f"Layer {layer_number}: Negative peak force detected ({peak_force:.4f} N)")
+            if work_of_adhesion < 0:
+                warnings.warn(f"Layer {layer_number}: Negative work of adhesion detected ({work_of_adhesion:.4f} mJ)")
+            
+            # Write to CSV with validated values (no abs() masking)
+            # Note: All distances and durations should already be positive from calculator
+            # Only peak_retraction_force is expected to be negative
             return self._write_corrected_csv_entry({
-                'peak_force': abs(peak_force),  # Force magnitude
-                'work_of_adhesion_mJ': abs(work_of_adhesion),  # Energy magnitude
-                'initiation_time_s': abs(pre_initiation_time) if not np.isnan(pre_initiation_time) else np.nan,
-                'propagation_end_time_s': abs(propagation_end_time) if not np.isnan(propagation_end_time) else np.nan,
+                'peak_force': peak_force,  # Keep sign - validate instead of mask
+                'work_of_adhesion_mJ': work_of_adhesion,  # Keep sign - validate instead of mask
+                'initiation_time_s': pre_initiation_time if not np.isnan(pre_initiation_time) else np.nan,
+                'propagation_end_time_s': propagation_end_time if not np.isnan(propagation_end_time) else np.nan,
                 'total_duration_s': total_duration,
                 'distance_to_peak_mm': pre_initiation_distance,
                 'distance_to_propagate_mm': propagation_distance,
                 'total_peel_distance_mm': total_peel_distance,
-                'peak_retraction_force': peak_retraction_force,  # Keep sign for retraction force
+                'peak_retraction_force': peak_retraction_force,  # Keep sign (expected negative)
                 'peak_position_mm': peak_position,
-                'propagation_start_time_s': abs(peak_force_time) if not np.isnan(peak_force_time) else np.nan,
+                'propagation_start_time_s': peak_force_time if not np.isnan(peak_force_time) else np.nan,
                 'propagation_duration_s': propagation_duration
             }, layer_number, output_csv, is_manual)
             

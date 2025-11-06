@@ -2,12 +2,10 @@
 __pycache__/
 *.pyc
 *.pyo
-*.pdp
-*.pyz
-*.pyw
-*.pyzw
 *.pyd
 *.so
+*.py[cod]
+*$py.class
 
 # Virtual environments
 .env
@@ -16,7 +14,7 @@ env/
 venv/
 ENV/
 VENV/
-*/activate_this.py
+.conda/
 
 # IDEs and editors
 .vscode/
@@ -26,6 +24,9 @@ VENV/
 *.njsproj
 *.sln
 *.sublime-workspace
+*.swp
+*.swo
+*~
 
 # Log files
 *.log
@@ -48,6 +49,47 @@ nosetests.xml
 coverage.xml
 *.cover
 *.hypothesis/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Data files (too large for Git - preserve structure but exclude contents)
+PrintingLogs_Backup/**/*.csv
+PrintingLogs_Backup/**/*.png
+archive/**/*.csv
+archive/**/*.png
+archive/debug_plots/
+archive/filtering_experimentation/
+archive/old_plots/
+
+# Generated outputs (can be regenerated from source)
+**/MASTER_*.csv
+**/*_ENHANCED.csv
+**/*_metrics.csv
+**/QC_Report.txt
+**/Statistical_Analysis_Report.txt
+**/Quick_Summary.txt
+**/scaling_analysis_*.csv
+**/ANOVA_results.csv
+**/pairwise_*.csv
+
+# Generated plots (can be regenerated)
+**/MASTER_*.png
+**/scaling_analysis_*.png
+**/*_analysis.png
+**/layer_*.png
+**/plots/
+
+# Temporary files
+*.tmp
+*.temp
+~$*
+
+# Jupyter Notebooks (if any)
+.ipynb_checkpoints/
+*.ipynb
 
 # Project-specific
 Printing_Logs/

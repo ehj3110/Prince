@@ -13,6 +13,7 @@ Date: September 18, 2025
 """
 
 import os
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,6 +21,9 @@ from scipy.signal import find_peaks, savgol_filter
 import re
 import warnings
 from pathlib import Path
+
+# Add support_modules to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'support_modules'))
 
 # Replace EnhancedAdhesionAnalyzer with AdhesionMetricsCalculator
 from adhesion_metrics_calculator import AdhesionMetricsCalculator
@@ -123,6 +127,7 @@ class BatchPrintingDataProcessor:
                 'Elapsed Time (s)': 'Time',
                 'Position (mm)': 'Position', 
                 'Force (N)': 'Force',
+                'Phase': 'Phase',  # Keep Phase column if present
                 'Time': 'Time',
                 'Position': 'Position',
                 'Force': 'Force'
@@ -660,8 +665,13 @@ def main():
     """
     Main function to run the batch processing
     """
-    # Master folder path (as specified by user)
-    master_folder_path = r"C:\Users\cheng sun\BoyuanSun\Slicing\Evan\5mmDiameterCylinder_SpeedTest_V3\Printing_Logs\DataToExport"
+    # Master folder path - UPDATE THIS to match your data location
+    # Default path for SteppedCone V2 tests (includes TEMPO and TEMPOV2):
+    master_folder_path = r"C:\Users\ehunt\OneDrive - Northwestern University\Lab Work\Nissan\Adhesion Tests\SteppedConeTests\V2"
+    
+    # Allow command-line override
+    if len(sys.argv) > 1:
+        master_folder_path = sys.argv[1]
     
     print("=== Batch Printing Data Analysis ===")
     print(f"Target directory: {master_folder_path}")

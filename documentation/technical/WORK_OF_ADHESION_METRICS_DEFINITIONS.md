@@ -93,11 +93,11 @@ This document defines all metrics used in the work of adhesion calculations for 
 
 #### **Pre-Initiation Phase**
 - **Definition:** Force buildup period during lifting stage onset
-- **Time Span:** From dynamic baseline crossing to peak force
+- **Time Span:** From baseline crossing to peak force
 - **Physical Process:** Elastic deformation and stress concentration buildup
 - **Force Behavior:** Gradual force increase as adhesive bonds stretch
 - **Mechanical Significance:** Represents elastic energy storage before crack initiation
-- **Detection Criteria:** Force exceeds dynamic baseline threshold
+- **Detection Criteria:** Point where force crosses baseline level (within small tolerance)
 
 #### **Initiation (Critical Moment)**
 - **Definition:** Instantaneous moment of peak force when crack initiation occurs
@@ -228,17 +228,17 @@ This document defines all metrics used in the work of adhesion calculations for 
 ## Work and Energy Metrics
 
 ### **Work of Adhesion (mJ)**
-- **Definition:** Energy required for complete layer separation during the sawtooth pattern
+- **Definition:** Energy required for complete layer separation during crack propagation
 - **Symbol:** W_adhesion
 - **Units:** Millijoules (mJ)
-- **Calculation:** `W_adhesion = ∫ F(z) dz` from Pre-Initiation start to Propagation end
-- **Integration Bounds:** Pre-Initiation threshold crossing to Propagation completion (detected via second derivative maximum)
+- **Calculation:** `W_adhesion = ∫ F(z) dz` from Peak Force to Propagation End
+- **Integration Bounds:** Peak force (crack initiation) to Propagation completion (detected via second derivative maximum)
 - **Integration Methods:**
   - **Trapezoidal Rule:** Standard numerical integration
   - **Simpson's Rule:** Higher accuracy for smooth data
-- **Physical Meaning:** Total mechanical energy input required for complete layer separation
-- **Research Significance:** Fundamental material property capturing full adhesion energy content
-- **Noise Avoidance:** Integration bounds exclude exposure/pause stages to minimize noise contribution
+- **Physical Meaning:** Total mechanical energy released during crack propagation and layer separation
+- **Research Significance:** Fundamental material property capturing adhesion energy during the separation process
+- **Note:** Integration starts at peak force (not pre-initiation) because work of adhesion specifically measures the energy during crack propagation, not the elastic loading phase
 
 ### **Baseline-Corrected Work of Adhesion (mJ)**
 - **Definition:** Work calculation using baseline-corrected force data
@@ -280,10 +280,11 @@ This document defines all metrics used in the work of adhesion calculations for 
 - **Definition:** Duration of the Pre-Initiation phase (force buildup period)
 - **Symbol:** t_pre_initiation
 - **Units:** Seconds (s)
-- **Calculation:** `t_pre_initiation = t_initiation - t_baseline_crossing`
+- **Calculation:** `t_pre_initiation = t_peak - t_baseline_crossing`
 - **Physical Meaning:** Time scale for elastic deformation and stress concentration buildup
 - **Research Significance:** Characterizes adhesion loading dynamics and material response time
 - **Stage Association:** Corresponds to **Pre-Initiation Phase** of sawtooth pattern
+- **Detection Method:** Backward search from peak to find point where force equals baseline (within tolerance)
 
 ### **Peel Time (s)**
 - **Definition:** Duration of the Propagation phase (crack propagation period)
@@ -311,10 +312,11 @@ This document defines all metrics used in the work of adhesion calculations for 
 - **Definition:** Z-axis travel distance during the Pre-Initiation phase
 - **Symbol:** Δz_pre_initiation
 - **Units:** Millimeters (mm)
-- **Calculation:** `Δz_pre_initiation = z_initiation - z_baseline_crossing`
+- **Calculation:** `Δz_pre_initiation = z_peak - z_baseline_crossing`
 - **Physical Meaning:** Spatial distance over which elastic deformation and stress buildup occurs
 - **Research Significance:** Characterizes the geometric scale of adhesion loading
 - **Stage Association:** Corresponds to **Pre-Initiation Phase** spatial extent
+- **Detection Method:** Distance from baseline crossing point to peak force position
 
 ### **Peak Force Position (mm)**
 - **Definition:** Z-axis position at maximum force
