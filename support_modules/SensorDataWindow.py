@@ -30,7 +30,7 @@ import os # Ensure os is imported
 import tkinter as tk # Ensure tkinter is imported as tk for tk.DISABLED
 
 class SensorDataWindow:
-    MAX_PLOT_POINTS = 5000 # Maximum number of data points to keep for plotting
+    MAX_PLOT_POINTS = 2000 # Maximum number of data points to keep for plotting (reduced from 5000 for better performance)
 
     def __init__(self, master_window, zaber_axis_ref, main_app_status_callback, prince_main_app_ref):
         self.master = master_window
@@ -175,6 +175,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         self.lbl_offset = Label(force_info_row2, text="Offset: N/A", font=control_box_font, anchor=W)
         self.lbl_offset.pack(side=LEFT, padx=10)
+        
+        # Bridge Gain Selector
+        Label(force_info_row2, text="Bridge Gain:", font=control_box_font).pack(side=LEFT, padx=(20, 5))
+        self.bridge_gain_var = StringVar(value="16")
+        bridge_gain_options = ["1", "2", "4", "8", "16", "32", "64", "128"]
+        self.bridge_gain_dropdown = ttk.Combobox(force_info_row2, textvariable=self.bridge_gain_var, 
+                                                 values=bridge_gain_options, width=5, state='readonly', font=control_box_font)
+        self.bridge_gain_dropdown.pack(side=LEFT, padx=(0, 5))
+        self.bridge_gain_dropdown.bind('<<ComboboxSelected>>', self.on_bridge_gain_change)
+        
+        Button(force_info_row2, text="Apply Gain", command=self.apply_bridge_gain, font=control_box_font).pack(side=LEFT, padx=5)
 
         # Row 3: Record Work Checkbox
         force_controls_row3 = Frame(force_gauge_main_frame)
@@ -243,6 +254,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.is_manual_recording_active = False # Specifically for manual button state
         self.plot_start_time = None
         self.last_y_rescale_time = 0
+        self.plot_update_counter = 0  # Counter for periodic matplotlib cleanup
+        self.last_aggressive_clear_time = time.time()  # Track when we last did aggressive cleanup
 
         self.date_specific_log_dir_for_windows_file = None # ADDED: To store the YYYY-MM-DD log path
         self.current_logging_windows_file = None # Ensure this is also initialized, though summary says it was
@@ -948,6 +961,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 if len(self.plot_data_y_force) > self.MAX_PLOT_POINTS:
                     self.plot_data_y_force = self.plot_data_y_force[-self.MAX_PLOT_POINTS:]
 
+                # Periodic aggressive cleanup every 5 minutes to prevent matplotlib memory buildup
+                current_time = time.time()
+                if current_time - self.last_aggressive_clear_time > 300:  # 300 seconds = 5 minutes
+                    # Keep only the most recent 50% of MAX_PLOT_POINTS for aggressive cleanup
+                    aggressive_limit = self.MAX_PLOT_POINTS // 2
+                    self.plot_data_x = self.plot_data_x[-aggressive_limit:]
+                    self.plot_data_y_position = self.plot_data_y_position[-aggressive_limit:]
+                    self.plot_data_y_force = self.plot_data_y_force[-aggressive_limit:]
+                    self.last_aggressive_clear_time = current_time
+                    print(f"[SensorDataWindow] Aggressive plot cleanup: trimmed to {aggressive_limit} points")
+
                 min_len = min(len(self.plot_data_x), len(self.plot_data_y_position), len(self.plot_data_y_force)) 
                 current_plot_x = self.plot_data_x[-min_len:] if min_len > 0 else []
                 current_plot_y_pos = self.plot_data_y_position[-min_len:] if min_len > 0 else []
@@ -1225,3 +1249,41 @@ Evan Jones, evanjones2026@u.northwestern.edu
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save calibration: {e}", parent=self.sensor_window)
             print(f"Error saving calibration: {e}")
+    
+    def on_bridge_gain_change(self, event=None):
+        """Called when bridge gain dropdown selection changes."""
+        # Just update the selection, actual application happens when Apply is clicked
+        pass
+    
+    def apply_bridge_gain(self):
+        """Apply the selected bridge gain to the force gauge."""
+        try:
+            if not self.force_gauge_manager:
+                messagebox.showerror("Error", "Force gauge manager not available.", parent=self.sensor_window)
+                return
+            
+            # Get selected gain value
+            gain_value = int(self.bridge_gain_var.get())
+            
+            # Apply the gain
+            success = self.force_gauge_manager.set_bridge_gain(gain_value)
+            
+            if success:
+                messagebox.showinfo("Bridge Gain Updated", 
+                    f"Bridge gain set to {gain_value}×\n\n"
+                    f"Expected resolution improvement: {gain_value}×\n"
+                    f"You may need to recalibrate for accurate force readings.", 
+                    parent=self.sensor_window)
+                print(f"Bridge gain applied: {gain_value}×")
+            else:
+                messagebox.showerror("Error", 
+                    f"Failed to set bridge gain to {gain_value}×\n"
+                    f"Make sure the force gauge is connected.", 
+                    parent=self.sensor_window)
+                
+        except ValueError:
+            messagebox.showerror("Error", "Invalid gain value selected.", parent=self.sensor_window)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to apply bridge gain: {e}", parent=self.sensor_window)
+            print(f"Error applying bridge gain: {e}")
+            traceback.print_exc()

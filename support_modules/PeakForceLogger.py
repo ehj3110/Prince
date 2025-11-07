@@ -33,10 +33,12 @@ class PeakForceLogger:
         self._analysis_thread = threading.Thread(target=self._analysis_worker, daemon=True)
         self._analysis_thread.start()
         
-        # Initialize the corrected adhesion calculator with light smoothing
+        # Initialize the corrected adhesion calculator with two-step filtering
         if self.use_corrected_calculator:
             self.calculator = AdhesionMetricsCalculator(
-                smoothing_sigma=0.5,     # Gaussian smoothing
+                median_kernel=5,         # Median filter for outlier rejection
+                savgol_window=9,         # Savitzky-Golay window
+                savgol_order=2,          # Polynomial order
                 baseline_threshold_factor=0.002,  # Standard threshold
                 min_peak_height=0.01,    # Minimum peak detection
                 min_peak_distance=50     # Standard distance

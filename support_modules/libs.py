@@ -79,6 +79,9 @@ class Application():
             step_type_list (list): List of step types per layer.
             pause_list (list): List of pause times per layer.
             intensity_list (list): List of intensity values per layer.
+            estimated_gap_list (list): List of estimated gaps to glass window per layer.
+            sandwich_force_list (list): List of sandwich force thresholds per layer.
+            sandwich_speed_list (list): List of sandwich approach speeds per layer.
         """
 
         print(f"DEBUG: Application.set_image_directory called with path: '{path}'")  # Add this
@@ -107,11 +110,14 @@ class Application():
         step_type_list = []
         pause_list = []
         intensity_list = []
+        # SANDWICH PARAMETER (only speed needed - all others hardcoded or from pre-cal)
+        sandwich_speed_list = []  # Base speed for sandwich routine
 
         # Process each line (excluding header)
         for line in lines_full[1:]:
             elements = line.split("\t")  # Use tab as the separator
 
+            # Support both old format (9 columns minimum) and new format (10 columns with sandwich speed)
             if len(elements) < 9:
                 raise ValueError(f"Incorrect format in line: {line}")
 
@@ -125,6 +131,14 @@ class Application():
             overstep_distance = elements[6]  # Overstep distance
             step_type = elements[7]  # Step type
             pause = elements[8]  # Pause time
+            
+            # New parameters (with defaults for backward compatibility)
+            # Column 9: sandwich_speed (only sandwich parameter in instruction file)
+            sandwich_speed = elements[9] if len(elements) > 9 else '500'
+            
+            # All other sandwich params are hardcoded:
+            # - Pre-cal: 5 touches, 0.2N max force, 0.075 N/s initial derivative threshold, 0.5mm gap estimate
+            # - Printing: 1 touch per layer, uses measured gap and derivative from pre-cal
 
             # Append extracted values to respective lists
             image_list.append(Path(path) / image_path)
@@ -135,13 +149,15 @@ class Application():
             step_type_list.append(int(step_type))
             pause_list.append(float(pause))
             intensity_list.append(float(intensity))
+            sandwich_speed_list.append(float(sandwich_speed))
 
         # Right before the final return statement in set_image_directory:
         print(f"DEBUG: Application.set_image_directory FINISHING. Image list length: {len(image_list)}")  # Add this
+        # UPDATED RETURN: Only sandwich_speed_list needed (all other params hardcoded)
         return (
             image_list, exposure_time_list, thickness_list,
             step_speed_list, overstep_distance_list, step_type_list,
-            pause_list, intensity_list
+            pause_list, intensity_list, sandwich_speed_list
         )
 
     def generate_debug_txt(self, path='', thickness='5', pause='0', material='1', time='1', intensity='0', base='60'):
@@ -175,10 +191,18 @@ class Application():
             print("The directory does not exist for creating the text file.")
 
     def generate_instructions(self, path='', thickness='5', base='60', time='1', intensity='0',
-                              step_speed='100', overstep_distance='0.1', step_type='0', pause='0'):
+                              step_speed='100', overstep_distance='0.1', step_type='0', pause='0',
+                              sandwich_speed='500'):
         """
         Generates an instruction text file for the 3D printer.
         It lists image files found in the 'path' directory, excluding any 'autologs' subdirectory.
+        
+        Sandwich parameter:
+            sandwich_speed (str): Base speed during sandwich in µm/s (default 500)
+            
+        Note: All other sandwich parameters are hardcoded:
+            - Pre-calibration: 5 touches, 0.2N max force, 0.075 N/s initial derivative
+            - During printing: 1 touch per layer, uses measured gap and derivative from pre-cal
         """
 
         # Generate the text file name based on the folder name
@@ -194,8 +218,8 @@ class Application():
             print(f"Error: Provided path is not a directory or does not exist: {path}")
             try:
                 with open(txt_path, 'w') as f:
-                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tStep Type\tPause\n')
-                    f.write("0\tERROR_INVALID_PATH\t0\t0\t0\t0\t0\t0\t0\n")  # Indicate error
+                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tStep Type\tPause\tSandwich Speed\n')
+                    f.write("0\tERROR_INVALID_PATH\t0\t0\t0\t0\t0\t0\t0\t500\n")  # Indicate error
                 print(f"Generated empty/error instruction file: {txt_path}")
             except Exception as e_write:
                 print(f"Could not write to instruction file {txt_path}: {e_write}")
@@ -217,8 +241,8 @@ class Application():
             print(f"No suitable image files found in '{path}' (after excluding 'autologs' and non-image files).")
             try:
                 with open(txt_path, 'w') as f:
-                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tStep Type\tPause\n')
-                    f.write("0\tNO_IMAGES_FOUND\t0\t0\t0\t0\t0\t0\t0\n")  # Indicate no images
+                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tStep Type\tPause\tSandwich Speed\n')
+                    f.write("0\tNO_IMAGES_FOUND\t0\t0\t0\t0\t0\t0\t0\t500\n")  # Indicate no images
                 print(f"Generated instruction file with no images: {txt_path}")
             except Exception as e_write:
                 print(f"Could not write to instruction file {txt_path}: {e_write}")
@@ -242,7 +266,7 @@ class Application():
 
         try:
             with open(txt_path, 'w') as f:
-                f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tStep Type\tPause\n')
+                f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tStep Type\tPause\tSandwich Speed\n')
                 layer = 1
 
                 for img_path_obj in image_paths_sorted:  # Iterate through sorted Path objects
@@ -250,7 +274,7 @@ class Application():
 
                     current_exposure_time = base if layer == 1 else time
 
-                    line = f"{str(layer)}\t{str(image_name)}\t{str(thickness)}\t{str(current_exposure_time)}\t{str(intensity)}\t{str(step_speed)}\t{str(overstep_distance)}\t{str(step_type)}\t{str(pause)}\n"
+                    line = f"{str(layer)}\t{str(image_name)}\t{str(thickness)}\t{str(current_exposure_time)}\t{str(intensity)}\t{str(step_speed)}\t{str(overstep_distance)}\t{str(step_type)}\t{str(pause)}\t{str(sandwich_speed)}\n"
                     f.write(line)
                     layer += 1
             print(f"Instruction file generated: {txt_path} with {layer - 1} layers.")

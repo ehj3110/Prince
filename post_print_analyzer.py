@@ -3,22 +3,20 @@ Post-Print Analysis and Plotting System
 =======================================
 
 This script automatically processes data from completed prints and generates
-comprehensive adhesion analysis plots using the corrected light smoothing settings.
+comprehensive adhesion analysis plots using the RawData_Processor workflow.
 
 Workflow:
 1. Detect completed prints from AutomatedLayerLogger CSV files
-2. Process data through corrected adhesion_metrics_calculator  
-3. Generate individual layer plots and summary analysis
-4. Create hybrid plotter visualizations with accurate propagation end times
+2. Process data through RawDataProcessor (same as batch processing)
+3. Generate comprehensive layer-by-layer plots
+4. Create summary analysis
 
 Author: Cheng Sun Lab Team
-Date: September 21, 2025
+Date: October 9, 2025
 """
 
 import os
 import sys
-import pandas as pd
-import numpy as np
 from pathlib import Path
 import argparse
 from datetime import datetime
@@ -29,13 +27,19 @@ import matplotlib
 if threading.current_thread() != threading.main_thread():
     matplotlib.use('Agg')  # Non-interactive backend for background threads
 
-# Import our corrected analysis tools
-from adhesion_metrics_calculator import AdhesionMetricsCalculator
-from hybrid_adhesion_plotter import HybridAdhesionPlotter
+# Add post-processing directory to path so we can import from it
+post_processing_dir = Path(__file__).parent / "post-processing"
+sys.path.insert(0, str(post_processing_dir))
+
+# Import our analysis tools using RawData_Processor workflow
+from support_modules.adhesion_metrics_calculator import AdhesionMetricsCalculator
+from RawData_Processor import RawDataProcessor
+from analysis_plotter import AnalysisPlotter
 
 class PostPrintAnalyzer:
     """
     Automated post-processing for 3D printing adhesion data.
+    Uses RawDataProcessor workflow for consistency with batch processing.
     """
     
     def __init__(self):
@@ -47,7 +51,11 @@ class PostPrintAnalyzer:
             min_peak_distance=50
         )
         
-        self.plotter = HybridAdhesionPlotter()
+        # Use AnalysisPlotter (same as batch processing)
+        self.plotter = AnalysisPlotter()
+        
+        # Initialize RawDataProcessor (handles all analysis and plotting)
+        self.processor = RawDataProcessor(self.calculator, self.plotter)
         
     def find_current_session_in_daily_dir(self, daily_dir):
         """
@@ -243,117 +251,42 @@ class PostPrintAnalyzer:
     
     def _analyze_csv_file(self, csv_file, output_dir):
         """
-        Analyze a single CSV file using corrected calculator and generate plots.
+        Analyze a single CSV file using RawDataProcessor (same as batch processing).
         """
-        # Load data
-        try:
-            df = pd.read_csv(csv_file)
-            
-            # Standardize column names
-            if 'Elapsed Time (s)' in df.columns:
-                df = df.rename(columns={
-                    'Elapsed Time (s)': 'Time',
-                    'Position (mm)': 'Position', 
-                    'Force (N)': 'Force'
-                })
-            
-            if len(df) < 10:
-                print(f"    Warning: Only {len(df)} data points - skipping")
-                return None
-                
-        except Exception as e:
-            print(f"    Error loading CSV: {e}")
-            return None
+        print(f"    Processing: {csv_file.name}")
         
-        # Generate plots using corrected hybrid plotter
+        # Generate plot using RawDataProcessor
         plot_title = f"Post-Print Analysis - {csv_file.stem}"
-        plot_path = output_dir / f"{csv_file.stem}_corrected_analysis.png"
+        plot_path = output_dir / f"{csv_file.stem}_analysis.png"
         
         try:
-            fig = self.plotter.plot_from_csv(
+            # Use RawDataProcessor to handle everything (analysis + plotting)
+            layers = self.processor.process_csv(
                 str(csv_file),
                 title=plot_title,
                 save_path=str(plot_path)
             )
             
-            print(f"    📊 Plot saved: {plot_path.name}")
+            if layers and plot_path.exists():
+                print(f"    📊 Plot saved: {plot_path.name}")
+                print(f"    ✅ Analysis complete - {len(layers)} layers processed")
+                
+                return {
+                    'csv_file': csv_file,
+                    'plot_path': plot_path,
+                    'layers': layers,
+                    'data_points': len(layers),  # Number of layers
+                    'time_range': f"Processed {len(layers)} layers"
+                }
+            else:
+                print(f"    ❌ Analysis failed - no layers detected")
+                return None
             
         except Exception as e:
-            print(f"    Warning: Plot generation failed: {e}")
-            plot_path = None
-        
-        # Extract layer-by-layer analysis (if we can segment the data)
-        layer_results = self._extract_layer_analysis(df)
-        
-        return {
-            'csv_file': csv_file,
-            'plot_path': plot_path,
-            'layers': layer_results,
-            'data_points': len(df),
-            'time_range': f"{df['Time'].min():.1f} to {df['Time'].max():.1f}s"
-        }
-    
-    def _extract_layer_analysis(self, df):
-        """
-        Extract individual layer analysis using corrected calculator.
-        """
-        layers = []
-        
-        # Layer boundary detection based on pause and retraction steps
-        forces = df['Force'].values
-        times = df['Time'].values
-        positions = df['Position'].values
-        
-        # Find retraction steps using position data
-        # Detect significant upward motion followed by downward motion
-        pos_diff = np.diff(positions)
-        pos_thresh = 0.05  # mm, threshold for significant motion
-        
-        retraction_ends = []  # Indices where retractions end
-        in_retraction = False
-        
-        for i, (diff_up, diff_down) in enumerate(zip(pos_diff[:-1], pos_diff[1:])):
-            if not in_retraction and diff_up > pos_thresh:  # Start of lift
-                in_retraction = True
-            elif in_retraction and diff_down < -pos_thresh:  # End of retraction
-                retraction_ends.append(i + 2)  # +2 to account for diff and lookahead
-                in_retraction = False
-        
-        try:
-            # Process each layer
-            for i in range(len(retraction_ends)):
-                if i == 0:  # First layer starts at beginning of file
-                    start_idx = 0
-                else:
-                    start_idx = retraction_ends[i-1]
-                
-                # Layer ends at its retraction end
-                end_idx = retraction_ends[i]
-                
-                # Extract layer data with pause-to-retraction boundaries
-                layer_times = times[start_idx:end_idx] - times[start_idx]  # Reset to 0
-                layer_positions = positions[start_idx:end_idx]
-                layer_forces = forces[start_idx:end_idx]
-                
-                if len(layer_times) > 10:
-                    # Calculate metrics using corrected calculator
-                    metrics = self.calculator.calculate_from_arrays(
-                        layer_times, layer_positions, layer_forces, 
-                        layer_number=i+1
-                    )
-                    
-                    layers.append({
-                        'layer_number': i+1,
-                        'peak_force': metrics['peak_force'],
-                        'propagation_end_time': metrics['propagation_end_time'],
-                        'work_of_adhesion': metrics['work_of_adhesion_corrected_mJ'],
-                        'baseline_force': metrics['baseline_force']
-                    })
-                    
-        except Exception as e:
-            print(f"    Layer extraction failed: {e}")
-        
-        return layers
+            print(f"    ❌ Error during processing: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     
     def _generate_session_summary(self, session, analysis_results):
         """
@@ -362,36 +295,23 @@ class PostPrintAnalyzer:
         summary_path = session['path'] / "POST_PROCESSING_SUMMARY.md"
         
         with open(summary_path, 'w') as f:
-            f.write(f"# Post-Print Analysis Summary\\n")
-            f.write(f"**Session:** {session['date']} / {session['print_number']}\\n")
-            f.write(f"**Analysis Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\\n")
-            f.write(f"**Calculator Settings:** Light smoothing (window=3, polyorder=1)\\n\\n")
+            f.write(f"# Post-Print Analysis Summary\n")
+            f.write(f"**Session:** {session['date']} / {session['print_number']}\n")
+            f.write(f"**Analysis Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"**Processing Method:** RawDataProcessor (same as batch processing)\n\n")
             
-            f.write(f"## Files Processed\\n")
+            f.write(f"## Files Processed\n")
             for result in analysis_results:
-                f.write(f"- **{result['csv_file'].name}**\\n")
-                f.write(f"  - Data points: {result['data_points']}\\n")
-                f.write(f"  - Time range: {result['time_range']}\\n")
-                f.write(f"  - Layers detected: {len(result['layers'])}\\n")
+                f.write(f"- **{result['csv_file'].name}**\n")
+                f.write(f"  - {result['time_range']}\n")
                 if result['plot_path']:
-                    f.write(f"  - Plot: {result['plot_path'].name}\\n")
-                f.write(f"\\n")
+                    f.write(f"  - Plot: {result['plot_path'].name}\n")
+                f.write(f"\n")
             
-            f.write(f"## Layer Analysis Summary\\n")
-            for result in analysis_results:
-                if result['layers']:
-                    f.write(f"### {result['csv_file'].name}\\n")
-                    for layer in result['layers']:
-                        f.write(f"- **Layer {layer['layer_number']}**: ")
-                        f.write(f"Peak={layer['peak_force']:.3f}N, ")
-                        f.write(f"PropEnd={layer['propagation_end_time']:.3f}s, ")
-                        f.write(f"Work={layer['work_of_adhesion']:.3f}mJ\\n")
-                    f.write(f"\\n")
-            
-            f.write(f"## Notes\\n")
-            f.write(f"- Analysis performed with corrected light smoothing settings\\n")
-            f.write(f"- Propagation end times should be accurate (~11.7s for similar conditions)\\n")
-            f.write(f"- All plots generated with corrected hybrid_adhesion_plotter\\n")
+            f.write(f"## Notes\n")
+            f.write(f"- Analysis performed with RawDataProcessor workflow\n")
+            f.write(f"- Consistent with batch processing methodology\n")
+            f.write(f"- Automatic layer detection and segmentation\n")
         
         print(f"  📋 Summary saved: {summary_path.name}")
 

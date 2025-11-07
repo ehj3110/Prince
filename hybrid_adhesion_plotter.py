@@ -143,7 +143,7 @@ class HybridAdhesionPlotter:
         print(f"Force range: {force_data.min():.6f} to {force_data.max():.6f} N")
         
         # Step 1: Use calculator's smoothing for consistency with post-processing
-        smoothed_force = self.calculator.apply_smoothing(force_data)
+        smoothed_force = self.calculator._apply_smoothing(force_data)
         
         # Step 2: Detect peaks using robust method from original
         peaks = self._detect_peaks(force_data, smoothed_force)

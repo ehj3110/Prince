@@ -72,16 +72,12 @@ class RawDataProcessor:
             layer_num = layer_numbers[i]
             lifting_start, lifting_end = boundary_dict['lifting']
             retraction_start, retraction_end = boundary_dict['retraction']
-            pause_start, pause_end = boundary_dict.get('pause_expose', (retraction_end, retraction_end))
             sandwich_start, sandwich_end = boundary_dict['sandwich']
             
             print(f"\n--- Analyzing Layer {layer_num} ---")
             print(f"    Lifting phase: {lifting_start}-{lifting_end}")
             print(f"    Retraction phase: {retraction_start}-{retraction_end}")
-            if pause_end > pause_start:
-                print(f"    Pause/Expose phase: {pause_start}-{pause_end}")
-            if sandwich_end > sandwich_start:
-                print(f"    Sandwich phase: {sandwich_start}-{sandwich_end}")
+            print(f"    Sandwich phase: {sandwich_start}-{sandwich_end}")
 
             # Extract LIFTING PHASE data only for adhesion metrics
             lifting_time = time_data[lifting_start:lifting_end+1]
@@ -252,50 +248,28 @@ class RawDataProcessor:
     def _find_layer_boundaries(self, peaks: np.ndarray, position_data: np.ndarray,
                              time_data: np.ndarray, layer_numbers: List[int]) -> List[dict]:
         """
-        Finds layer boundaries based on lift/retract motions with AUTOMATIC distance detection.
+        Finds layer boundaries based on ~6mm lift/retract motions ONLY.
         
-        ROBUST STRATEGY (updated for variable lift distances):
-        - Auto-detect the typical lift distance from the data (handles 2mm, 3mm, 6mm, etc.)
-        - Find all motions matching the detected distance (within tolerance)
-        - Pair them sequentially: first motion = lift, second motion = retract
+        NEW SIMPLIFIED STRATEGY (per user request):
+        - The adhesion test uses a known 6mm lift distance (from instruction file)
+        - Find all ~6mm stage movements (within tolerance)
+        - Pair them sequentially: first 6mm motion = lift, second 6mm motion = retract
         - Ignore everything else (sandwich touches <1mm, pauses, adjustments)
+        - Don't try to classify motion direction - just find the 6mm cycles
         
-        This approach works for ACF (3mm), standard (6mm), and future test variations.
+        This approach works for both standard and sandwich data without special cases.
         """
-        print("\n=== Detecting Adhesion Test Cycles ===")
+        print("\n=== Detecting ~6mm Adhesion Test Cycles ===")
         
-        # STEP 1: Auto-detect the typical lift distance from position data
-        # Find the MAXIMUM position span - this gives us the total test range
-        pos_min = np.min(position_data)
-        pos_max = np.max(position_data)
-        total_span = pos_max - pos_min
-        
-        print(f"Total position span: {total_span:.2f} mm")
-        
-        # The lift distance should be close to the total span
-        # (assuming data starts/ends near extremes)
-        # Round to nearest integer for common values (2mm, 3mm, 6mm, etc.)
-        if total_span >= 5.5:
-            detected_distance = 6.0
-        elif total_span >= 2.5:
-            detected_distance = 3.0
-        elif total_span >= 1.5:
-            detected_distance = 2.0
-        else:
-            detected_distance = round(total_span)
-        
-        print(f"Auto-detected lift distance: {detected_distance:.1f} mm")
-        
-        # Set tolerance based on detected distance (±15% or minimum 0.4mm)
-        DISTANCE_TOLERANCE = max(0.4, detected_distance * 0.15)
-        MIN_DISTANCE = detected_distance - DISTANCE_TOLERANCE
-        MAX_DISTANCE = detected_distance + DISTANCE_TOLERANCE
-        
-        print(f"Searching for motions: {MIN_DISTANCE:.2f} - {MAX_DISTANCE:.2f} mm")
+        # Parameters based on instruction file values
+        EXPECTED_LIFT_DISTANCE = 6.0  # mm (from instruction file)
+        DISTANCE_TOLERANCE = 0.5      # Allow 5.5-6.5mm
+        MIN_DISTANCE = EXPECTED_LIFT_DISTANCE - DISTANCE_TOLERANCE
+        MAX_DISTANCE = EXPECTED_LIFT_DISTANCE + DISTANCE_TOLERANCE
         
         window_size = 20  # Window to smooth position measurements
         
-        # Find all motions matching the detected distance
+        # Find all ~6mm motions (adhesion test cycles)
         adhesion_motions = []  # List of (start_idx, end_idx, distance_mm)
         
         i = 10  # Skip initial noise
@@ -307,23 +281,23 @@ class RawDataProcessor:
                 end_pos = np.mean(position_data[j:j+window_size])
                 distance = abs(end_pos - start_pos)
                 
-                # Check if this matches our detected adhesion test motion distance
+                # Check if this is a ~6mm adhesion test motion
                 if MIN_DISTANCE <= distance <= MAX_DISTANCE:
                     # EXTEND the endpoint to where motion actually stops
                     actual_end = self._find_motion_end(j, position_data, min_stable_points=3)
                     actual_distance = abs(position_data[actual_end] - position_data[i])
                     
-                    # Verify the extended motion is still within range
+                    # Verify the extended motion is still ~6mm
                     if MIN_DISTANCE <= actual_distance <= MAX_DISTANCE:
                         adhesion_motions.append((i, actual_end, actual_distance))
-                        print(f"{actual_distance:.2f}mm motion: idx {i}-{actual_end}")
+                        print(f"6mm motion: idx {i}-{actual_end}, distance {actual_distance:.2f} mm")
                         i = actual_end + 10  # Skip past this motion
                         break
             else:
-                # No matching motion found, advance
+                # No 6mm motion found, advance
                 i += 50
         
-        print(f"\nFound {len(adhesion_motions)} motions matching {detected_distance:.1f}mm (adhesion test cycles)")
+        print(f"\nFound {len(adhesion_motions)} ~6mm motions (adhesion test cycles)")
         
         # NEW SIMPLIFIED PAIRING: Just pair motions sequentially
         # Motion 1 = lift, Motion 2 = retract, Motion 3 = lift, Motion 4 = retract, etc.
@@ -342,56 +316,16 @@ class RawDataProcessor:
             retract_start = retract_motion[0]
             retract_end = retract_motion[1]
             
-            # Detect sandwich and pause/expose phases
-            # Between retraction_end and next lift_start (if available)
-            pause_start = retract_end
-            pause_end = retract_end  # Default: no pause
-            sandwich_start = lift_start  # Default: no sandwich
-            sandwich_end = lift_start
-            
-            # Check if there's a next layer to determine pause phase
-            if i + 2 < len(adhesion_motions):
-                next_lift_start = adhesion_motions[i + 2][0]
-                
-                # Everything between retraction_end and next_lift_start is pause/expose
-                pause_start = retract_end
-                pause_end = next_lift_start
-                
-                # Check for sandwich phase (small <1mm motion between pause and next lift)
-                # Look for small position changes in the pause region
-                pause_region_pos = position_data[pause_start:pause_end]
-                if len(pause_region_pos) > 20:
-                    # Check if there's a small downward motion (sandwich touch)
-                    pos_changes = np.diff(pause_region_pos)
-                    
-                    # Look for a small downward excursion (negative change followed by positive)
-                    # that's less than 1mm total
-                    for j in range(len(pos_changes) - 10):
-                        window = pause_region_pos[j:j+10]
-                        excursion = np.max(window) - np.min(window)
-                        
-                        if 0.1 < excursion < 1.0:  # Small motion, likely sandwich
-                            sandwich_start = pause_start + j
-                            sandwich_end = pause_start + j + 10
-                            pause_end = sandwich_start  # Pause ends when sandwich starts
-                            break
-            
             boundary_dict = {
                 'lifting': (lift_start, lift_end),
                 'retraction': (retract_start, retract_end),
-                'pause_expose': (pause_start, pause_end),
-                'sandwich': (sandwich_start, sandwich_end),
+                'sandwich': (lift_start, lift_start),  # No separate sandwich phase
                 'full': (lift_start, retract_end)
             }
             boundaries.append(boundary_dict)
             print(f"\nLayer {len(boundaries)}:")
             print(f"  Lifting: {lift_start}-{lift_end} ({lift_motion[2]:.2f} mm)")
             print(f"  Retraction: {retract_start}-{retract_end} ({retract_motion[2]:.2f} mm)")
-            if pause_end > pause_start:
-                pause_duration = time_data[pause_end] - time_data[pause_start]
-                print(f"  Pause/Expose: {pause_start}-{pause_end} ({pause_duration:.1f} s)")
-            if sandwich_end > sandwich_start:
-                print(f"  Sandwich: {sandwich_start}-{sandwich_end}")
         
         # Handle odd number of motions (unpaired final motion)
         if len(adhesion_motions) % 2 == 1:
