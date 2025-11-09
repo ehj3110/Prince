@@ -50,15 +50,25 @@ class RawDataProcessor:
         force_data = df['Force (N)'].to_numpy()
         position_data = df['Position (mm)'].to_numpy()
 
-        # 2. Find Layer Boundaries with phase segregation
+        # 2. Find Layer Boundaries - use phase-aware detection if available
         # Use calculator's smoothing for consistency with live analysis
         smoothed_force = self.calculator._apply_smoothing(force_data)
         
         # Get layer numbers from filename
         layer_numbers = self._extract_layer_numbers_from_filename(csv_filepath)
 
-        # Find layer boundaries with phase segregation (lifting, retraction, sandwich)
-        layer_boundaries = self._find_layer_boundaries([], position_data, time_data, layer_numbers)
+        # Check if Phase column exists - use phase-aware detection if available
+        if 'Phase' in df.columns:
+            print("Using phase-aware boundary detection (Phase column found)")
+            phase_data = df['Phase'].to_numpy()
+            layer_boundaries = self._detect_boundaries_from_phases(
+                time_data, position_data, force_data, phase_data
+            )
+        else:
+            print("Phase column not found - using adaptive detection")
+            layer_boundaries = self._detect_boundaries_adaptive(
+                time_data, position_data, force_data
+            )
         
         # Limit to expected number of layers
         if len(layer_numbers) > len(layer_boundaries):
@@ -244,6 +254,163 @@ class RawDataProcessor:
         
         # If no stable region found, return search limit
         return min(start_idx + max_search, len(position_data) - 1)
+    
+    def _detect_boundaries_from_phases(self, time_data: np.ndarray, position_data: np.ndarray, 
+                                      force_data: np.ndarray, phase_data: np.ndarray) -> List[dict]:
+        """
+        Detect layer boundaries using explicit phase markers from CSV.
+        
+        This is the PREFERRED method when Phase column is available in the CSV.
+        Uses explicit phase transitions (Lift→Retract) to identify layers.
+        
+        Args:
+            time_data: Time array
+            position_data: Position array  
+            force_data: Force array
+            phase_data: Array of phase strings ('Lift', 'Retract', 'Pause', 'Sandwich', 'Exposure')
+        
+        Returns:
+            List of boundary dictionaries with lifting/retraction/sandwich/full ranges
+        """
+        print("\n=== Detecting Boundaries from Phase Markers ===")
+        
+        boundaries = []
+        i = 0
+        
+        while i < len(phase_data):
+            # Look for start of Lift phase
+            if phase_data[i] == 'Lift':
+                lift_start = i
+                
+                # Find end of Lift phase
+                lift_end = lift_start
+                while lift_end < len(phase_data) and phase_data[lift_end] == 'Lift':
+                    lift_end += 1
+                lift_end -= 1  # Back to last Lift index
+                
+                # Look for subsequent Retract phase
+                retract_start = lift_end + 1
+                while retract_start < len(phase_data) and phase_data[retract_start] not in ['Retract', 'Lift']:
+                    retract_start += 1
+                
+                if retract_start < len(phase_data) and phase_data[retract_start] == 'Retract':
+                    # Find end of Retract phase
+                    retract_end = retract_start
+                    while retract_end < len(phase_data) and phase_data[retract_end] == 'Retract':
+                        retract_end += 1
+                    retract_end -= 1  # Back to last Retract index
+                    
+                    # Found complete layer
+                    boundary_dict = {
+                        'lifting': (lift_start, lift_end),
+                        'retraction': (retract_start, retract_end),
+                        'sandwich': (lift_start, lift_start),  # No separate sandwich in phase-based detection
+                        'full': (lift_start, retract_end)
+                    }
+                    boundaries.append(boundary_dict)
+                    
+                    lift_distance = abs(position_data[lift_end] - position_data[lift_start])
+                    retract_distance = abs(position_data[retract_end] - position_data[retract_start])
+                    print(f"Layer {len(boundaries)}: Lift[{lift_start}-{lift_end}, {lift_distance:.2f}mm], "
+                          f"Retract[{retract_start}-{retract_end}, {retract_distance:.2f}mm]")
+                    i = retract_end + 1
+                else:
+                    # Incomplete layer (Lift without Retract) - skip it
+                    lift_duration = lift_end - lift_start + 1
+                    print(f"WARNING: Lift phase at {lift_start} ({lift_duration} points) has no matching Retract - skipping")
+                    i = lift_end + 1
+            else:
+                i += 1
+        
+        print(f"\n=== Total layers detected: {len(boundaries)} ===")
+        return boundaries
+    
+    def _detect_boundaries_adaptive(self, time_data: np.ndarray, position_data: np.ndarray, 
+                                   force_data: np.ndarray) -> List[dict]:
+        """
+        Detect layer boundaries adaptively based on significant position changes.
+        Does not rely on hardcoded distance values.
+        
+        This is the FALLBACK method when Phase column is not available in CSV.
+        Finds significant motions (>50% of maximum motion) and pairs them as lift-retract cycles.
+        
+        Args:
+            time_data: Time array
+            position_data: Position array
+            force_data: Force array
+        
+        Returns:
+            List of boundary dictionaries
+        """
+        print("\n=== Adaptive Boundary Detection ===")
+        
+        # Calculate all position changes
+        motion_threshold = 0.01  # mm/sample (consider motion if change > this)
+        
+        # Find motion segments (continuous motion periods)
+        motion_starts = []
+        motion_ends = []
+        in_motion = False
+        motion_start_idx = 0
+        
+        for i in range(1, len(position_data)):
+            pos_change = abs(position_data[i] - position_data[i-1])
+            
+            if pos_change > motion_threshold and not in_motion:
+                # Motion starts
+                motion_start_idx = i
+                in_motion = True
+            elif pos_change <= motion_threshold and in_motion:
+                # Check if motion has really stopped (3 consecutive stable points)
+                if i + 2 < len(position_data):
+                    next_changes = [abs(position_data[i+j] - position_data[i+j-1]) for j in range(1, 3)]
+                    if all(c <= motion_threshold for c in next_changes):
+                        # Motion truly stopped
+                        motion_starts.append(motion_start_idx)
+                        motion_ends.append(i)
+                        in_motion = False
+        
+        # Calculate distance for each motion segment
+        motion_segments = []
+        for start, end in zip(motion_starts, motion_ends):
+            distance = abs(position_data[end] - position_data[start])
+            motion_segments.append((start, end, distance))
+        
+        if not motion_segments:
+            print("ERROR: No motion segments detected")
+            return []
+        
+        # Find significant motions (>50% of maximum motion)
+        max_distance = max([dist for _, _, dist in motion_segments])
+        significant_threshold = 0.5 * max_distance  # Adaptive threshold
+        
+        significant_motions = [
+            seg for seg in motion_segments 
+            if seg[2] >= significant_threshold
+        ]
+        
+        print(f"Found {len(significant_motions)} significant motions (>{significant_threshold:.2f}mm)")
+        for i, (start, end, dist) in enumerate(significant_motions):
+            print(f"  Motion {i+1}: idx {start}-{end}, distance {dist:.2f}mm")
+        
+        # Pair consecutive motions as lift-retract cycles
+        boundaries = []
+        for i in range(0, len(significant_motions) - 1, 2):
+            lift_motion = significant_motions[i]
+            retract_motion = significant_motions[i + 1]
+            
+            boundary_dict = {
+                'lifting': (lift_motion[0], lift_motion[1]),
+                'retraction': (retract_motion[0], retract_motion[1]),
+                'sandwich': (lift_motion[0], lift_motion[0]),
+                'full': (lift_motion[0], retract_motion[1])
+            }
+            boundaries.append(boundary_dict)
+            print(f"Layer {len(boundaries)}: Lift[{lift_motion[0]}-{lift_motion[1]}, {lift_motion[2]:.2f}mm], "
+                  f"Retract[{retract_motion[0]}-{retract_motion[1]}, {retract_motion[2]:.2f}mm]")
+        
+        print(f"\n=== Total layers detected: {len(boundaries)} ===")
+        return boundaries
 
     def _find_layer_boundaries(self, peaks: np.ndarray, position_data: np.ndarray,
                              time_data: np.ndarray, layer_numbers: List[int]) -> List[dict]:

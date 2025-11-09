@@ -59,7 +59,8 @@ class AdhesionMetricsCalculator:
                             position_data: np.ndarray, 
                             force_data: np.ndarray,
                             layer_number: Optional[int] = None,
-                            motion_end_idx: Optional[int] = None) -> Dict:
+                            motion_end_idx: Optional[int] = None,
+                            lifting_start_idx: Optional[int] = None) -> Dict:
         """
         Calculate adhesion metrics from numpy arrays (live data or pre-loaded).
         
@@ -69,6 +70,8 @@ class AdhesionMetricsCalculator:
             force_data: Force values (N).
             layer_number: Layer identifier (optional).
             motion_end_idx: Index where stage motion ends (optional, uses full data if None).
+            lifting_start_idx: Index where lifting phase started (optional, prevents pre-initiation 
+                             from searching before this point).
             
         Returns:
             Dictionary containing all calculated metrics.
@@ -96,9 +99,9 @@ class AdhesionMetricsCalculator:
         # Apply smoothing using Gaussian filter
         smoothed_force = self._apply_smoothing(forces)
         
-        # Calculate metrics using the new methodology
+        # Calculate metrics using the new methodology with phase awareness
         return self._calculate_metrics(times, positions, forces, smoothed_force, 
-                                     layer_number, motion_end_idx)
+                                     layer_number, motion_end_idx, lifting_start_idx)
     
     def calculate_from_csv(self, 
                           csv_filepath: Union[str, Path],
@@ -195,9 +198,19 @@ class AdhesionMetricsCalculator:
                          forces: np.ndarray, 
                          smoothed_force: np.ndarray,
                          layer_number: Optional[int],
-                         motion_end_idx: Optional[int]) -> Dict:
+                         motion_end_idx: Optional[int],
+                         lifting_start_idx: Optional[int] = None) -> Dict:
         """
         Calculate all adhesion metrics using the new methodology.
+        
+        Args:
+            times: Time array
+            positions: Position array  
+            forces: Force array
+            smoothed_force: Smoothed force data
+            layer_number: Layer identifier
+            motion_end_idx: Index where motion ends
+            lifting_start_idx: Index where lifting phase started (phase awareness)
         """
         results = {'layer_number': layer_number}
         
@@ -218,8 +231,8 @@ class AdhesionMetricsCalculator:
         results['baseline_force'] = baseline
         results['peak_force_corrected'] = peak_force - baseline
         
-        # Step 4: Find pre-initiation start
-        pre_init_idx = self._find_pre_initiation(smoothed_force, peak_idx, baseline)
+        # Step 4: Find pre-initiation start (with phase awareness)
+        pre_init_idx = self._find_pre_initiation(smoothed_force, peak_idx, baseline, lifting_start_idx)
         results['pre_initiation_position'] = positions[pre_init_idx]
         results['pre_initiation_time'] = times[pre_init_idx] - times[0]
         results['pre_initiation_force'] = smoothed_force[pre_init_idx]
@@ -270,7 +283,8 @@ class AdhesionMetricsCalculator:
         peak_force = smoothed_force[peak_idx]
         return peak_idx, peak_force
     
-    def _find_pre_initiation(self, smoothed_force: np.ndarray, peak_idx: int, baseline: float) -> int:
+    def _find_pre_initiation(self, smoothed_force: np.ndarray, peak_idx: int, baseline: float, 
+                            lifting_start_idx: Optional[int] = None) -> int:
         """
         Find pre-initiation start - the point where force crosses baseline.
         
@@ -281,10 +295,15 @@ class AdhesionMetricsCalculator:
         (indicating pre-existing adhesion), use the beginning of the data as the
         pre-initiation point.
         
+        NEW: Phase awareness - if lifting_start_idx is provided, the search will not
+        go before this point. This prevents searching past Exposure/Pause/Sandwich phases
+        when those phases create pre-existing force above baseline.
+        
         Args:
             smoothed_force: Smoothed force array
             peak_idx: Index of peak force
             baseline: Baseline force level
+            lifting_start_idx: Optional index where lifting phase started (phase boundary)
             
         Returns:
             Index where force crosses baseline before peak
@@ -293,7 +312,12 @@ class AdhesionMetricsCalculator:
         tolerance = max(abs(baseline) * 0.001, 0.001)
         
         # Search backwards from peak to find baseline crossing
-        search_start = max(0, peak_idx - 300)  # Limit search range
+        search_start = max(0, peak_idx - 300)  # Limit search range (default)
+        
+        # If lifting start is provided, don't search before it (phase awareness)
+        if lifting_start_idx is not None:
+            search_start = max(search_start, lifting_start_idx)
+            print(f"Pre-initiation search limited to indices {search_start}-{peak_idx} (lifting started at {lifting_start_idx})")
         
         # Special case: Check if the force at the beginning is already above baseline
         # This happens with sandwich data where adhesion exists before lifting starts
@@ -315,18 +339,18 @@ class AdhesionMetricsCalculator:
                                            positions: np.ndarray,
                                            motion_end_idx: Optional[int]) -> int:
         """
-        Find propagation end using second derivative 10% threshold method.
+        Find propagation end using first derivative prominent peak method.
         
         Method:
-        1. Find the HIGHEST POSITIVE PEAK of the second derivative after peak force
-        2. Calculate 10% threshold of that peak value
-        3. Find the LAST point BEFORE the derivative drops below this threshold
-        4. This is where propagation ends
+        1. Find the MOST PROMINENT NEGATIVE PEAK in the first derivative 
+           (steepest downward slope) between peak force and 80% of lifting phase
+        2. Calculate 10% threshold of that peak's magnitude
+        3. Search forward from the peak to find where derivative rises back to threshold
+        4. This is where propagation ends (force decay has slowed to 10% of maximum rate)
         
-        Physical meaning: The highest positive 2nd derivative peak is where force is 
-        decaying fastest. The 10% threshold marks when the decay rate has diminished
-        to just 10% of its maximum, indicating propagation has essentially completed.
-        Using the last point BEFORE crossing ensures we capture the full propagation zone.
+        Physical meaning: The most prominent negative peak in dF/dt is where the force
+        is dropping fastest during propagation. When the rate rises back to 10% of that
+        maximum, propagation is essentially complete.
         """
         # 1. Define the full search region from the peak to the end of motion
         search_start_abs = peak_idx
@@ -361,46 +385,51 @@ class AdhesionMetricsCalculator:
         except Exception:
             lifting_80pct_idx = search_end_abs
 
-        # 3. Calculate second derivative for the region of interest
+        # 3. Calculate first derivative for the region of interest
         try:
             # Region is from peak to 80% lifting point
             region_of_interest = smoothed_force[peak_idx:lifting_80pct_idx+1]
             if len(region_of_interest) < 5:
                 return lifting_80pct_idx
 
-            # Calculate second derivative using np.gradient
-            second_derivative = np.gradient(np.gradient(region_of_interest))
+            # Calculate first derivative using np.gradient
+            first_derivative = np.gradient(region_of_interest)
             
-            # 4. Find the HIGHEST POSITIVE PEAK of the second derivative
-            # Only consider positive values
-            positive_mask = second_derivative > 0
-            if not np.any(positive_mask):
-                # No positive peaks found, use the maximum value
-                max_second_deriv_idx = np.argmax(second_derivative)
-                max_second_deriv_value = second_derivative[max_second_deriv_idx]
+            # 4. Find the MOST PROMINENT NEGATIVE PEAK in the first derivative
+            # Use scipy's find_peaks on the inverted signal to find negative peaks
+            from scipy.signal import find_peaks
+            
+            # Invert to find negative peaks
+            inverted_deriv = -first_derivative
+            
+            # Find peaks with prominence to get the most significant one
+            peaks, properties = find_peaks(inverted_deriv, prominence=0.001)
+            
+            if len(peaks) > 0:
+                # Get the most prominent peak (highest prominence)
+                most_prominent_idx = peaks[np.argmax(properties['prominences'])]
+                most_prominent_value = first_derivative[most_prominent_idx]  # This will be negative
             else:
-                # Find the index of the maximum among positive values
-                positive_second_deriv = second_derivative.copy()
-                positive_second_deriv[~positive_mask] = -np.inf
-                max_second_deriv_idx = np.argmax(positive_second_deriv)
-                max_second_deriv_value = second_derivative[max_second_deriv_idx]
+                # No prominent peaks found, use the minimum (most negative) value
+                most_prominent_idx = np.argmin(first_derivative)
+                most_prominent_value = first_derivative[most_prominent_idx]
             
-            # 5. Calculate 10% threshold and find LAST point BEFORE crossing
-            threshold = max_second_deriv_value * 0.10
+            # 5. Calculate 10% threshold (10% of the magnitude)
+            # Since the value is negative, threshold is closer to zero
+            threshold = most_prominent_value * 0.10  # e.g., if peak is -0.5, threshold is -0.05
             
-            # Search forward from the maximum to find where it drops below threshold
+            # 6. Search forward from the prominent peak to find where derivative rises above threshold
             threshold_idx = None
-            for i in range(max_second_deriv_idx + 1, len(second_derivative)):
-                if second_derivative[i] < threshold:
-                    # Found the crossing point - return the PREVIOUS index
-                    # (last point before it drops below threshold)
-                    threshold_idx = max(0, i - 1)
+            for i in range(most_prominent_idx + 1, len(first_derivative)):
+                if first_derivative[i] > threshold:
+                    # Found where derivative rises above threshold (decay rate has slowed)
+                    threshold_idx = i
                     break
             
             # If no threshold crossing found, use a conservative estimate
             if threshold_idx is None:
-                # Use a point that's halfway from max to end
-                threshold_idx = max_second_deriv_idx + int(0.5 * (len(second_derivative) - max_second_deriv_idx))
+                # Use a point that's 50% from peak to end
+                threshold_idx = most_prominent_idx + int(0.5 * (len(first_derivative) - most_prominent_idx))
             
             # Convert back to absolute index in the original array
             propagation_end_idx = peak_idx + threshold_idx

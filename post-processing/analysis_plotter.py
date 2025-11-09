@@ -236,8 +236,8 @@ class AnalysisPlotter:
         y_max = max(layer['peak_force'] + y_margin, np.max(window_force))
         ax.set_ylim(y_min, y_max)
 
-        # X-limits with 20% margin of peeling duration
-        x_margin = (layer['prop_end_time'] - layer['pre_init_time']) * 0.2
+        # X-limits with 50% margin on each side to show more pre-initiation
+        x_margin = (layer['prop_end_time'] - layer['pre_init_time']) * 0.5
         ax.set_xlim(layer['pre_init_time'] - x_margin, layer['prop_end_time'] + x_margin)
 
 

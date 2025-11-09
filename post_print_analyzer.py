@@ -246,6 +246,9 @@ class PostPrintAnalyzer:
         # Generate session summary
         if analysis_results:
             self._generate_session_summary(session, analysis_results)
+            
+        # Generate master plot with work of adhesion data if available
+        self._generate_master_plot(session)
         
         return analysis_results
     
@@ -314,6 +317,127 @@ class PostPrintAnalyzer:
             f.write(f"- Automatic layer detection and segmentation\n")
         
         print(f"  📋 Summary saved: {summary_path.name}")
+    
+    def _generate_master_plot(self, session):
+        """
+        Generate a master plot combining all work of adhesion data for the session.
+        Similar to batch processor master plots but for a single print session.
+        
+        Args:
+            session: Dictionary with session information
+        """
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        session_path = session['path']
+        
+        # Find the automated work of adhesion CSV file
+        woa_files = list(session_path.glob("automated_work_of_adhesion*.csv"))
+        
+        if not woa_files:
+            print("  ℹ️  No work of adhesion data found for master plot")
+            return
+        
+        woa_file = woa_files[0]  # Use the first one found
+        print(f"\n  📊 Generating master plot with work of adhesion data from: {woa_file.name}")
+        
+        try:
+            # Load work of adhesion data
+            df = pd.read_csv(woa_file)
+            
+            if df.empty or len(df) == 0:
+                print("    ⚠️  Work of adhesion file is empty")
+                return
+            
+            # Required columns
+            required_cols = ['Layer', 'Peak_Force_N', 'Work_of_Adhesion_mJ']
+            if not all(col in df.columns for col in required_cols):
+                print(f"    ⚠️  Missing required columns in work of adhesion file")
+                return
+            
+            # Create figure with 3 subplots (Peak Force, Work of Adhesion, Duration)
+            fig, axes = plt.subplots(3, 1, figsize=(12, 14))
+            
+            layers = df['Layer'].values
+            peak_force = df['Peak_Force_N'].values
+            work_of_adhesion = df['Work_of_Adhesion_mJ'].values
+            
+            # Plot 1: Peak Force vs Layer
+            axes[0].plot(layers, peak_force, 'o-', color='#2E86AB', linewidth=2, markersize=8,
+                        markerfacecolor='#A23B72', markeredgecolor='white', markeredgewidth=1.5)
+            axes[0].set_xlabel('Layer Number', fontsize=12, fontweight='bold')
+            axes[0].set_ylabel('Peak Force (N)', fontsize=12, fontweight='bold')
+            axes[0].set_title('Peak Adhesion Force by Layer', fontsize=14, fontweight='bold')
+            axes[0].grid(True, alpha=0.3)
+            
+            # Add mean line
+            mean_force = np.mean(peak_force)
+            axes[0].axhline(y=mean_force, color='red', linestyle='--', linewidth=2, alpha=0.7,
+                           label=f'Mean: {mean_force:.4f} N')
+            axes[0].legend(fontsize=10)
+            
+            # Plot 2: Work of Adhesion vs Layer
+            axes[1].plot(layers, work_of_adhesion, 's-', color='#F18F01', linewidth=2, markersize=8,
+                        markerfacecolor='#C73E1D', markeredgecolor='white', markeredgewidth=1.5)
+            axes[1].set_xlabel('Layer Number', fontsize=12, fontweight='bold')
+            axes[1].set_ylabel('Work of Adhesion (mJ)', fontsize=12, fontweight='bold')
+            axes[1].set_title('Work of Adhesion by Layer', fontsize=14, fontweight='bold')
+            axes[1].grid(True, alpha=0.3)
+            
+            # Add mean line
+            mean_woa = np.mean(work_of_adhesion)
+            axes[1].axhline(y=mean_woa, color='red', linestyle='--', linewidth=2, alpha=0.7,
+                           label=f'Mean: {mean_woa:.4f} mJ')
+            axes[1].legend(fontsize=10)
+            
+            # Plot 3: Pre-initiation and Propagation Duration (if available)
+            if 'Pre_Initiation_Time_s' in df.columns and 'Propagation_Duration_s' in df.columns:
+                pre_init = df['Pre_Initiation_Time_s'].values
+                prop_duration = df['Propagation_Duration_s'].values
+                
+                x = np.arange(len(layers))
+                width = 0.35
+                
+                axes[2].bar(x - width/2, pre_init, width, label='Pre-Initiation', 
+                           color='#5BC0EB', edgecolor='white', linewidth=1.5)
+                axes[2].bar(x + width/2, prop_duration, width, label='Propagation',
+                           color='#FDE74C', edgecolor='white', linewidth=1.5)
+                
+                axes[2].set_xlabel('Layer Number', fontsize=12, fontweight='bold')
+                axes[2].set_ylabel('Time (s)', fontsize=12, fontweight='bold')
+                axes[2].set_title('Peeling Phase Durations by Layer', fontsize=14, fontweight='bold')
+                axes[2].set_xticks(x)
+                axes[2].set_xticklabels(layers)
+                axes[2].legend(fontsize=10)
+                axes[2].grid(True, alpha=0.3, axis='y')
+            else:
+                # If duration data not available, show total duration or a message
+                axes[2].text(0.5, 0.5, 'Duration data not available in work of adhesion file',
+                            ha='center', va='center', fontsize=12, transform=axes[2].transAxes)
+                axes[2].set_xlim(0, 1)
+                axes[2].set_ylim(0, 1)
+                axes[2].axis('off')
+            
+            # Overall title
+            fig.suptitle(f'{session["date"]} / {session["print_number"]} - Master Analysis\nWork of Adhesion Summary',
+                        fontsize=16, fontweight='bold', y=0.995)
+            
+            # Adjust layout
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.96, hspace=0.3)
+            
+            # Save plot
+            master_plot_path = session_path / "MASTER_work_of_adhesion_analysis.png"
+            plt.savefig(master_plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+            plt.close()
+            
+            print(f"    ✅ Master plot saved: {master_plot_path.name}")
+            
+        except Exception as e:
+            print(f"    ❌ Error generating master plot: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 def main():

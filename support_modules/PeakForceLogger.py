@@ -18,7 +18,7 @@ class PeakForceLogger:
     for consistent analysis across all system components.
     """
     DATA_CHUNK_SIZE = 5000  # Number of data points to hold in memory before flushing
-    def __init__(self, output_csv_filepath, is_manual_log=False, use_corrected_calculator=True):
+    def __init__(self, output_csv_filepath, is_manual_log=False, use_corrected_calculator=True, phase_event_queue_ref=None):
         self.output_csv_filepath = output_csv_filepath
         self.is_manual_log = is_manual_log
         self.use_corrected_calculator = use_corrected_calculator
@@ -27,6 +27,11 @@ class PeakForceLogger:
         self._lock = threading.Lock()
         self._data_buffer = []  # Stores (timestamp, position, force) tuples for the current layer
         self.log_file_exists = os.path.exists(self.output_csv_filepath)
+        
+        # Phase event tracking
+        self.phase_event_queue_ref = phase_event_queue_ref
+        self._current_lifting_start_idx = None  # Data buffer index where lifting started
+        self._current_lifting_start_time = None  # Timestamp when lifting started
 
         # --- Analysis Worker Thread Setup ---
         self._analysis_queue = queue.Queue()
@@ -97,12 +102,65 @@ class PeakForceLogger:
             self._data_buffer.clear()
             self.plot_time_data.clear()
             self.plot_force_data.clear()
+            # Reset phase tracking for new layer
+            self._current_lifting_start_idx = None
+            self._current_lifting_start_time = None
         print(f"PFL: Started monitoring layer {layer_number} (peel: {z_peel_peak}mm, return: {z_return_pos}mm)")
+    
+    def _update_phase_info(self):
+        """Check for phase events and update lifting start marker."""
+        if self.phase_event_queue_ref is None:
+            return
+        
+        # Process all pending phase events
+        while not self.phase_event_queue_ref.empty():
+            try:
+                event = self.phase_event_queue_ref.get_nowait()
+                
+                # If we just started lifting, mark the data buffer index
+                if event['phase'] == 'Lift':
+                    # Mark the time when Lift phase was declared
+                    self._current_lifting_start_time = event['timestamp']
+                    
+                    # Find the first data point at or after the phase event
+                    # Then look backwards to find where motion actually started
+                    with self._lock:
+                        # First, find index at or after phase event
+                        phase_event_idx = None
+                        for idx, (ts, pos, force) in enumerate(self._data_buffer):
+                            if ts >= event['timestamp']:
+                                phase_event_idx = idx
+                                break
+                        
+                        if phase_event_idx is not None:
+                            # Now search backwards from this point to find where position started changing
+                            # Look for the last stationary point before motion began
+                            motion_start_idx = phase_event_idx
+                            if phase_event_idx > 5:  # Need some history to detect motion start
+                                prev_pos = self._data_buffer[phase_event_idx][1]
+                                for idx in range(phase_event_idx - 1, max(0, phase_event_idx - 20), -1):
+                                    curr_pos = self._data_buffer[idx][1]
+                                    if curr_pos is not None and prev_pos is not None:
+                                        pos_change = abs(curr_pos - prev_pos)
+                                        if pos_change < 0.01:  # Found stationary point (< 0.01mm change)
+                                            motion_start_idx = idx + 1  # Motion starts after this stationary point
+                                            break
+                                        prev_pos = curr_pos
+                            
+                            self._current_lifting_start_idx = motion_start_idx
+                            ts = self._data_buffer[motion_start_idx][0]
+                            print(f"PFL: Lifting motion detected starting at buffer idx {motion_start_idx}, time {ts:.3f}s")
+                                
+            except queue.Empty:
+                break
 
     def add_data_point(self, timestamp, position, force):
         """Add a data point during monitoring and flush buffer if chunk size is reached."""
         if not self._monitoring:
             return
+        
+        # Update phase information from queue
+        self._update_phase_info()
 
         with self._lock:
             # Store all data for analysis
@@ -156,11 +214,26 @@ class PeakForceLogger:
 
         with self._lock:
             self._monitoring = False
+            lifting_start_idx = self._current_lifting_start_idx  # Capture phase info
             
             # Flush any remaining data in the buffer before stopping
             if self._data_buffer:
                 print(f"PFL: Flushing remaining {len(self._data_buffer)} data points before stopping.")
-                self._flush_buffer_to_analysis_thread()
+                # Include lifting_start_idx in the flush
+                if not self._data_buffer:
+                    return False
+                
+                # Create a copy of the data to avoid race conditions
+                data_to_process = {
+                    "layer_number": self.current_layer_number,
+                    "data_buffer": list(self._data_buffer),
+                    "is_manual": self.is_manual_log,
+                    "output_csv": self.output_csv_filepath,
+                    "lifting_start_idx": lifting_start_idx  # NEW: Pass phase info
+                }
+                self._analysis_queue.put(data_to_process)
+                self._data_buffer.clear()
+                print(f"PFL: Flushed {len(data_to_process['data_buffer'])} data points for layer {self.current_layer_number} to analysis queue.")
             else:
                 print(f"PFL: No remaining data to flush for layer {self.current_layer_number}")
 
@@ -178,6 +251,7 @@ class PeakForceLogger:
 
                 layer_num = job["layer_number"]
                 data_buffer = job["data_buffer"]
+                lifting_start_idx = job.get("lifting_start_idx")  # Get phase info
                 
                 # Extract data arrays
                 timestamps = np.array([dp[0] for dp in data_buffer])
@@ -190,7 +264,10 @@ class PeakForceLogger:
 
                 success = False
                 if self.use_corrected_calculator and self.calculator:
-                    success = self._analyze_with_corrected_calculator(timestamps, positions, forces, layer_num, job["output_csv"], job["is_manual"])
+                    success = self._analyze_with_corrected_calculator(
+                        timestamps, positions, forces, layer_num, 
+                        job["output_csv"], job["is_manual"], lifting_start_idx
+                    )
                 else:
                     success = self._analyze_with_original_method(timestamps, positions, forces, layer_num, job["output_csv"], job["is_manual"])
                 
@@ -199,12 +276,13 @@ class PeakForceLogger:
             except Exception as e:
                 print(f"PFL Worker: Error during analysis: {e}")
 
-    def _analyze_with_corrected_calculator(self, timestamps, positions, forces, layer_number, output_csv, is_manual):
+    def _analyze_with_corrected_calculator(self, timestamps, positions, forces, layer_number, output_csv, is_manual, lifting_start_idx=None):
         """Analyze data using the corrected AdhesionMetricsCalculator."""
         try:
-            # Use the corrected calculator
+            # Use the corrected calculator with phase awareness
             results = self.calculator.calculate_from_arrays(
-                timestamps, positions, forces, layer_number=layer_number
+                timestamps, positions, forces, layer_number=layer_number,
+                lifting_start_idx=lifting_start_idx  # NEW: Pass phase info
             )
             
             # Extract key metrics with fallbacks

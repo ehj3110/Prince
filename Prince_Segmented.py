@@ -785,9 +785,20 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     else:
                         cv2.imshow(self.window_name, image_to_show)
                     cv2.waitKey(1) # Essential for OpenCV to process imshow
+                    
+                    # Set phase to Exposure (continuous mode combines exposure + lift)
+                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                            self.sensor_data_window_instance.position_logger_thread.set_phase("Exposure")
 
                     # 3. Start Z-axis movement (non-blocking)
                     self.update_status_message(f"L{current_layer_num_for_display} (Cont.): Moving to {current_target_z_microns / 1000.0:.4f} mm at {calculated_continuous_velocity_um_s:.2f} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²")
+                    
+                    # Set phase to Lift (movement starts)
+                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                            self.sensor_data_window_instance.position_logger_thread.set_phase("Lift")
+                    
                     self.axis.move_absolute(
                         position=current_target_z_microns,
                         unit=Units.LENGTH_MICROMETRES,
@@ -823,6 +834,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     else:
                         cv2.imshow(self.window_name, image_to_show)
                     cv2.waitKey(1)
+                    
+                    # Set phase to Exposure
+                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                            self.sensor_data_window_instance.position_logger_thread.set_phase("Exposure")
 
                     # 2. Exposure
                     if current_exposure_s > 0:
@@ -833,6 +849,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     # 3. Show black image after exposure for stepped mode
                     cv2.imshow(self.window_name, self.black_image)
                     cv2.waitKey(1)
+                    
+                    # Set phase to Pause (blackout period)
+                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                            self.sensor_data_window_instance.position_logger_thread.set_phase("Pause")
                     
                     # 3b. Turn off DLP power to eliminate background light during movement
                     if hasattr(self, 'controller'):
@@ -865,6 +886,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         self.update_status_message(f"DEBUG L{current_layer_num_for_display}: Pre-movement diagnostics failed: {diag_e}")
                     
                     self.update_status_message(f"Stepped L{current_layer_num_for_display}: Peeling up to {z_peel_peak / 1000.0:.4f} mm (Speed: {actual_step_speed_um_s} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
+                    
+                    # Set phase to Lift (peel movement starts)
+                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                            self.sensor_data_window_instance.position_logger_thread.set_phase("Lift")
                     
                     try:
                         self.axis.move_absolute(
@@ -905,6 +931,16 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     
                     self.update_status_message(f"Stepped L{current_layer_num_for_display}: Returning to {z_return_pos / 1000.0:.4f} mm (Target for next layer, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
                     
+                    # Set phase to Pause (brief pause at peak before retract)
+                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                            self.sensor_data_window_instance.position_logger_thread.set_phase("Pause")
+                    
+                    # Set phase to Retract (return movement starts)
+                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                            self.sensor_data_window_instance.position_logger_thread.set_phase("Retract")
+                    
                     try:
                         self.axis.move_absolute(
                             position=z_return_pos, 
@@ -922,6 +958,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         if self.measured_gap_mm is not None:
                             # IMPORTANT: Wait 1 second after retraction to let forces settle
                             self.update_status_message(f"L{current_layer_num_for_display}: Waiting 1s for forces to settle before sandwich...")
+                            
+                            # Set phase to Pause (settling time)
+                            if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                                if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                                    self.sensor_data_window_instance.position_logger_thread.set_phase("Pause")
+                            
                             time.sleep(1.0)
                             
                             # Get sandwich parameters
@@ -933,6 +975,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             measured_gap = self.measured_gap_mm
                             
                             self.update_status_message(f"L{current_layer_num_for_display}: Starting sandwich (Gap:{measured_gap:.3f}mm, ContactForce:{abs(contact_force_threshold):.3f}N, Speed:{actual_sandwich_speed_um_s}µm/s)")
+                            
+                            # Set phase to Sandwich (sandwich routine starts)
+                            if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                                if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                                    self.sensor_data_window_instance.position_logger_thread.set_phase("Sandwich")
                             
                             # Calculate sandwich target position (where we want to end up after sandwich)
                             sandwich_target_position_um = z_return_pos
@@ -1221,6 +1268,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     )
 
                 if actual_layer_pause_s > 0:
+                    # Set phase to Pause (layer pause period before next exposure)
+                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
+                            self.sensor_data_window_instance.position_logger_thread.set_phase("Pause")
+                    
                     time.sleep(actual_layer_pause_s)
                                 
                 progress_val = (i + 1) * 100 / num_layers 
