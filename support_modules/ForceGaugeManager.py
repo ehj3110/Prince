@@ -2,7 +2,6 @@ import time
 import traceback
 import queue
 import threading
-import math
 from collections import deque
 from tkinter import messagebox, simpledialog
 from Phidget22.Phidget import *
@@ -23,7 +22,6 @@ except ImportError:
 
 class ForceGaugeManager:
     def __init__(self, gain_label, offset_label, force_status_label, large_force_readout_label, output_force_queue, parent_window, sensor_window_ref):
-        # Note: gain_label and offset_label are kept for compatibility but not used
         self.gain_label = gain_label
         self.offset_label = offset_label
         self.force_status_label = force_status_label
@@ -32,31 +30,11 @@ class ForceGaugeManager:
         self.parent_window = parent_window
         self.sensor_window_ref = sensor_window_ref
 
-        # Single load cell configuration (original 2kg sensor on Port 0)
-        self.USE_TRIPLE_CELL = False
-        
-        if self.USE_TRIPLE_CELL:
-            print("=== TRIPLE LOAD CELL MODE ===")
-            self.GAINS = [None, None, None]
-            self.OFFSETS = [None, None, None]
-            self.voltage_ratio_inputs = [None, None, None]
-            self.latest_forces = [0.0, 0.0, 0.0]  # Individual cell forces
-        else:
-            print("=== SINGLE LOAD CELL MODE ===")
-            self.GAIN = None
-            self.OFFSET = None
-            self.voltage_ratio_input = None
-        
+        self.GAIN = None
+        self.OFFSET = None
+        self.voltage_ratio_input = None
         self.latest_calibrated_force = 0.0 # Initialize to a default float value
         self.calibrated_once = False
-        
-        # === DECIMATION (OVERSAMPLING) CONFIGURATION ===
-        self.USE_DECIMATION = True  # Enable decimation for noise reduction
-        self.decimation_factor = 12  # Average 12 samples (gives ~100Hz at 1200Hz sampling)
-        self.decimation_buffer = deque(maxlen=50)  # Buffer for collecting samples
-        self.decimation_counter = 0
-        self.latest_averaged_voltage = None  # Stores the latest averaged (clean) voltage for GUI
-        print(f"Decimation enabled: Factor={self.decimation_factor} (expected {1200/self.decimation_factor:.0f}Hz output)")
         
         # === HIGH-PERFORMANCE MULTI-THREADING ARCHITECTURE ===
         
@@ -128,10 +106,6 @@ class ForceGaugeManager:
         batch_size = 10
         raw_data_batch = []
         
-        # For triple cell: track latest voltage per channel
-        if self.USE_TRIPLE_CELL:
-            latest_voltages = [0.0, 0.0, 0.0]
-        
         while self.running:
             try:
                 # Collect a batch of data points
@@ -140,8 +114,8 @@ class ForceGaugeManager:
                 
                 while len(raw_data_batch) < batch_size and (time.time() - batch_start_time) < batch_timeout:
                     try:
-                        data = self.raw_data_queue.get(timeout=0.001)
-                        raw_data_batch.append(data)
+                        timestamp, voltage_ratio = self.raw_data_queue.get(timeout=0.001)
+                        raw_data_batch.append((timestamp, voltage_ratio))
                         self.data_rate_counter += 1
                     except queue.Empty:
                         break  # No more data available right now
@@ -152,128 +126,58 @@ class ForceGaugeManager:
                     with self.buffer_lock:
                         self.high_freq_buffer.extend(raw_data_batch)
                     
-                    if self.USE_TRIPLE_CELL:
-                        # === TRIPLE CELL MODE ===
-                        # Update latest voltages from all data in batch
-                        for data in raw_data_batch:
-                            if len(data) == 3:
-                                timestamp, voltage_ratio, channel_index = data
-                                latest_voltages[channel_index] = voltage_ratio
-                        
-                        # Get latest timestamp
-                        latest_timestamp = raw_data_batch[-1][0]
-                        
-                        # Force calculation for all three channels
-                        all_calibrated = all(g is not None and o is not None for g, o in zip(self.GAINS, self.OFFSETS))
-                        
-                        if all_calibrated:
-                            # Calculate force for each cell
-                            for i in range(3):
-                                self.latest_forces[i] = self.GAINS[i] * (latest_voltages[i] - self.OFFSETS[i])
-                            
-                            # Sum for total force
-                            total_force = sum(self.latest_forces)
-                            self.latest_calibrated_force = total_force
-                            
-                            # Check if we should update GUI (force-based triggering)
-                            should_update_gui = True
-                            if self.use_force_based_trigger and self.last_displayed_force is not None:
-                                force_change = abs(total_force - self.last_displayed_force)
-                                should_update_gui = force_change >= self.force_change_trigger_N
-                            
-                            # Rate-limited GUI updates
-                            current_time = time.time()
-                            if should_update_gui and (current_time - self.last_gui_update > self.gui_update_interval):
-                                self.last_gui_update = current_time
-                                self.last_displayed_force = total_force
-                                
-                                # Send GUI update command (non-blocking)
-                                gui_command = ("update_force", f"Force: {total_force:.6f} N")
-                                try:
-                                    self.gui_update_queue.put_nowait(gui_command)
-                                except queue.Full:
-                                    pass  # Skip GUI update if queue is full
-                            
-                            # High-frequency logging queue pushes
-                            if self.output_force_queue:
-                                for data in raw_data_batch:
-                                    if len(data) == 3:
-                                        timestamp, voltage_ratio, channel_index = data
-                                        # For logging, we push the total force at each timestamp
-                                        # (Note: this is approximate since channels update asynchronously)
-                                        try:
-                                            self.output_force_queue.put_nowait(("force_calibrated", total_force))
-                                        except queue.Full:
-                                            if int(current_time) % 5 == 0:
-                                                print("Warning: Output force queue full, dropping data")
-                                            break
-                        else:
-                            # Not calibrated - update GUI with voltage ratios
-                            current_time = time.time()
-                            if current_time - self.last_gui_update > self.gui_update_interval:
-                                self.last_gui_update = current_time
-                                
-                                voltage_text = f"Voltages: [{latest_voltages[0]:.6f}, {latest_voltages[1]:.6f}, {latest_voltages[2]:.6f}] (Calibration needed)"
-                                gui_command = ("update_voltage", voltage_text)
-                                try:
-                                    self.gui_update_queue.put_nowait(gui_command)
-                                except queue.Full:
-                                    pass
+                    # Process only the latest data point for GUI/logging
+                    latest_timestamp, latest_voltage_ratio = raw_data_batch[-1]
                     
-                    else:
-                        # === SINGLE CELL MODE ===
-                        # Process only the latest data point for GUI/logging
-                        latest_timestamp, latest_voltage_ratio = raw_data_batch[-1]
+                    # Force calculation for latest point
+                    if self.GAIN is not None and self.OFFSET is not None:
+                        force = (latest_voltage_ratio - self.OFFSET) * self.GAIN
+                        self.latest_calibrated_force = force
                         
-                        # Force calculation for latest point
-                        if self.GAIN is not None and self.OFFSET is not None:
-                            force = (latest_voltage_ratio - self.OFFSET) * self.GAIN
-                            self.latest_calibrated_force = force
+                        # Check if we should update GUI (force-based triggering)
+                        should_update_gui = True
+                        if self.use_force_based_trigger and self.last_displayed_force is not None:
+                            force_change = abs(force - self.last_displayed_force)
+                            should_update_gui = force_change >= self.force_change_trigger_N
+                        
+                        # Rate-limited GUI updates
+                        current_time = time.time()
+                        if should_update_gui and (current_time - self.last_gui_update > self.gui_update_interval):
+                            self.last_gui_update = current_time
+                            self.last_displayed_force = force
                             
-                            # Check if we should update GUI (force-based triggering)
-                            should_update_gui = True
-                            if self.use_force_based_trigger and self.last_displayed_force is not None:
-                                force_change = abs(force - self.last_displayed_force)
-                                should_update_gui = force_change >= self.force_change_trigger_N
+                            # Send GUI update command (non-blocking)
+                            gui_command = ("update_force", f"Force: {force:.6f} N")
+                            try:
+                                self.gui_update_queue.put_nowait(gui_command)
+                            except queue.Full:
+                                pass  # Skip GUI update if queue is full
+                        
+                        # High-frequency logging queue pushes - push every data point from batch
+                        if self.output_force_queue:
+                            for timestamp, voltage_ratio in raw_data_batch:
+                                if self.GAIN is not None and self.OFFSET is not None:
+                                    batch_force = (voltage_ratio - self.OFFSET) * self.GAIN
+                                    try:
+                                        self.output_force_queue.put_nowait(("force_calibrated", batch_force))
+                                    except queue.Full:
+                                        # Only log queue full warning occasionally
+                                        if int(current_time) % 5 == 0:  # Every 5 seconds
+                                            print("Warning: Output force queue full, dropping data")
+                                        break  # Stop processing batch if queue is full
+                                        
+                    else:
+                        # Not calibrated - update GUI with latest voltage ratio
+                        current_time = time.time()
+                        if current_time - self.last_gui_update > self.gui_update_interval:
+                            self.last_gui_update = current_time
                             
-                            # Rate-limited GUI updates
-                            current_time = time.time()
-                            if should_update_gui and (current_time - self.last_gui_update > self.gui_update_interval):
-                                self.last_gui_update = current_time
-                                self.last_displayed_force = force
-                                
-                                # Send GUI update command (non-blocking)
-                                gui_command = ("update_force", f"Force: {force:.6f} N")
-                                try:
-                                    self.gui_update_queue.put_nowait(gui_command)
-                                except queue.Full:
-                                    pass  # Skip GUI update if queue is full
-                            
-                            # High-frequency logging queue pushes - push every data point from batch
-                            if self.output_force_queue:
-                                for timestamp, voltage_ratio in raw_data_batch:
-                                    if self.GAIN is not None and self.OFFSET is not None:
-                                        batch_force = (voltage_ratio - self.OFFSET) * self.GAIN
-                                        try:
-                                            self.output_force_queue.put_nowait(("force_calibrated", batch_force))
-                                        except queue.Full:
-                                            # Only log queue full warning occasionally
-                                            if int(current_time) % 5 == 0:  # Every 5 seconds
-                                                print("Warning: Output force queue full, dropping data")
-                                            break  # Stop processing batch if queue is full
-                                            
-                        else:
-                            # Not calibrated - update GUI with latest voltage ratio
-                            current_time = time.time()
-                            if current_time - self.last_gui_update > self.gui_update_interval:
-                                self.last_gui_update = current_time
-                                
-                                voltage_text = f"Voltage Ratio: {latest_voltage_ratio:.8f} (Calibration needed)"
-                                gui_command = ("update_voltage", voltage_text)
-                                try:
-                                    self.gui_update_queue.put_nowait(gui_command)
-                                except queue.Full:
-                                    pass
+                            voltage_text = f"Voltage Ratio: {latest_voltage_ratio:.8f} (Calibration needed)"
+                            gui_command = ("update_voltage", voltage_text)
+                            try:
+                                self.gui_update_queue.put_nowait(gui_command)
+                            except queue.Full:
+                                pass
                     
                     # Clear the batch
                     raw_data_batch.clear()
@@ -413,96 +317,60 @@ class ForceGaugeManager:
 
     def initialize_phidget(self):
         try:
-            if self.USE_TRIPLE_CELL:
-                print("Initializing TRIPLE VoltageRatioInput channels (ForceGaugeManager)...")
-                print("Device: 4x Bridge Phidget (VID_06C2&PID_003B)")
-                print("Channels: 0, 1, 2 (three load cells in parallel)")
-                
-                # Initialize each channel
-                for i in range(3):
-                    print(f"\n--- Initializing Channel {i} ---")
-                    self.voltage_ratio_inputs[i] = VoltageRatioInput()
-                    self.voltage_ratio_inputs[i].setHubPort(-1)  # Direct USB connection
-                    self.voltage_ratio_inputs[i].setChannel(i)
-                    
-                    # Use lambda with default argument to capture channel index
-                    self.voltage_ratio_inputs[i].setOnVoltageRatioChangeHandler(
-                        lambda phidget, voltageRatio, channel=i: self._onVoltageRatioChange_multi(phidget, voltageRatio, channel)
-                    )
-                    self.voltage_ratio_inputs[i].setOnAttachHandler(
-                        lambda phidget, channel=i: self._onAttach_multi(phidget, channel)
-                    )
-                    self.voltage_ratio_inputs[i].setOnDetachHandler(
-                        lambda phidget, channel=i: self._onDetach_multi(phidget, channel)
-                    )
-                    self.voltage_ratio_inputs[i].setOnErrorHandler(
-                        lambda phidget, errorCode, errorString, channel=i: self._onError_multi(phidget, errorCode, errorString, channel)
-                    )
-                    
-                    # Try connection
-                    print(f"Connecting to channel {i}...")
-                    self.voltage_ratio_inputs[i].openWaitForAttachment(8000)
-                    print(f"Channel {i} connected successfully!")
-                
-                print("\n=== ALL THREE CHANNELS CONNECTED ===\n")
-                
-            else:
-                # Single cell mode (original code)
-                print("Initializing VoltageRatioInput (ForceGaugeManager)...")
-                print("Device detected in Windows: 4x Bridge Phidget (VID_06C2&PID_003B)")
-                
-                # Create the VoltageRatioInput object
-                self.voltage_ratio_input = VoltageRatioInput()
-                
-                # Set device parameters
-                print("Setting device parameters...")
-                self.voltage_ratio_input.setHubPort(-1)  # Direct USB connection
-                self.voltage_ratio_input.setChannel(0)   # Channel 0 for force sensor (2kg load cell)
-                
-                # Set event handlers
-                self.voltage_ratio_input.setOnVoltageRatioChangeHandler(self._onVoltageRatioChange)
-                self.voltage_ratio_input.setOnAttachHandler(self._onAttach)
-                self.voltage_ratio_input.setOnDetachHandler(self._onDetach)
-                self.voltage_ratio_input.setOnErrorHandler(self._onError)
-                
-                # Try connection with reasonable timeout
-                print("Attempting connection with 8s timeout...")
-                self.voltage_ratio_input.openWaitForAttachment(8000)
-                
-                print("Phidget connected successfully (ForceGaugeManager)!")
+            print("Initializing VoltageRatioInput (ForceGaugeManager)...")
+            print("Device detected in Windows: 4x Bridge Phidget (VID_06C2&PID_003B)")
+            
+            # Create the VoltageRatioInput object
+            self.voltage_ratio_input = VoltageRatioInput()
+            
+            # Set device parameters
+            print("Setting device parameters...")
+            self.voltage_ratio_input.setHubPort(-1)  # Direct USB connection
+            self.voltage_ratio_input.setChannel(2)   # Channel 2 for force sensor
+            
+            # Set event handlers
+            self.voltage_ratio_input.setOnVoltageRatioChangeHandler(self._onVoltageRatioChange)
+            self.voltage_ratio_input.setOnAttachHandler(self._onAttach)
+            self.voltage_ratio_input.setOnDetachHandler(self._onDetach)
+            self.voltage_ratio_input.setOnErrorHandler(self._onError)
+            
+            # Try connection with reasonable timeout
+            print("Attempting connection with 8s timeout...")
+            self.voltage_ratio_input.openWaitForAttachment(8000)
+            
+            print("Phidget connected successfully (ForceGaugeManager)!")
             
         except PhidgetException as ex:
             if ex.code == 3:  # Timeout error
                 print("Connection timed out. Trying alternative channels...")
-                # Try other channels if channel 2 fails (single cell mode only)
-                if not self.USE_TRIPLE_CELL:
-                    for alt_channel in [0, 1, 3]:
+                # Try other channels if channel 2 fails
+                for alt_channel in [0, 1, 3]:
+                    try:
+                        print(f"Trying channel {alt_channel}...")
+                        
+                        # Clean up previous attempt
                         try:
-                            print(f"Trying channel {alt_channel}...")
-                            
-                            # Clean up previous attempt
-                            try:
-                                if hasattr(self, 'voltage_ratio_input'):
-                                    self.voltage_ratio_input.close()
-                            except:
-                                pass
-                            
-                            # Create new connection
-                            self.voltage_ratio_input = VoltageRatioInput()
-                            self.voltage_ratio_input.setHubPort(-1)
-                            self.voltage_ratio_input.setChannel(alt_channel)
-                            self.voltage_ratio_input.setOnVoltageRatioChangeHandler(self._onVoltageRatioChange)
-                            self.voltage_ratio_input.setOnAttachHandler(self._onAttach)
-                            self.voltage_ratio_input.setOnDetachHandler(self._onDetach)
-                            self.voltage_ratio_input.setOnErrorHandler(self._onError)
-                            
-                            self.voltage_ratio_input.openWaitForAttachment(5000)
-                            print(f"Success with channel {alt_channel}!")
-                            return
-                            
-                        except PhidgetException:
-                            print(f"Channel {alt_channel} also failed")
-                            continue
+                            if hasattr(self, 'voltage_ratio_input'):
+                                self.voltage_ratio_input.close()
+                        except:
+                            pass
+                        
+                        # Create new connection
+                        self.voltage_ratio_input = VoltageRatioInput()
+                        self.voltage_ratio_input.setHubPort(-1)
+                        self.voltage_ratio_input.setChannel(alt_channel)
+                        self.voltage_ratio_input.setOnVoltageRatioChangeHandler(self._onVoltageRatioChange)
+                        self.voltage_ratio_input.setOnAttachHandler(self._onAttach)
+                        self.voltage_ratio_input.setOnDetachHandler(self._onDetach)
+                        self.voltage_ratio_input.setOnErrorHandler(self._onError)
+                        
+                        self.voltage_ratio_input.openWaitForAttachment(5000)
+                        print(f"Success with channel {alt_channel}!")
+                        return
+                        
+                    except PhidgetException:
+                        print(f"Channel {alt_channel} also failed")
+                        continue
             
             # If we get here, all attempts failed
             traceback.print_exc()
@@ -526,35 +394,22 @@ class ForceGaugeManager:
             # Do minimal configuration in the callback to avoid blocking
             print("Setting basic bridge configuration...")
             
-            # Set bridge gain (BRIDGE_GAIN_16 for fine resolution with 20mN+ forces)
-            phidget.setBridgeGain(BridgeGain.BRIDGE_GAIN_16)
+            # Set bridge gain
+            phidget.setBridgeGain(BridgeGain.BRIDGE_GAIN_1)
+            
+            # Set a reasonable default data interval (will be updated later)
+            phidget.setDataInterval(25)  # 40Hz default
             
             # Enable bridge if available
             if hasattr(phidget, 'setBridgeEnabled'):
                 phidget.setBridgeEnabled(True)
                 print("Bridge mode enabled")
             
-            # Configure for maximum speed if using decimation
-            if self.USE_DECIMATION:
-                # KEY: Set trigger to 0.0 for MAXIMUM hardware speed (~1200 Hz)
-                if hasattr(phidget, 'setVoltageRatioChangeTrigger'):
-                    phidget.setVoltageRatioChangeTrigger(0.0)
-                    print("Decimation mode: Trigger=0.0 for maximum hardware speed (~1200Hz)")
+            # Start with continuous updates
+            if hasattr(phidget, 'setVoltageRatioChangeTrigger'):
+                phidget.setVoltageRatioChangeTrigger(0.0)
+                print("Change trigger set to 0 for continuous updates")
                 
-                # Set minimum data interval (advisory with trigger=0)
-                phidget.setDataInterval(1)
-                print(f"Hardware sampling: ~1200Hz, Output after decimation: ~{1200/self.decimation_factor:.0f}Hz")
-            else:
-                # Standard mode: use GUI-configured sampling rate
-                phidget.setDataInterval(25)  # 40Hz default
-                
-                # Start with continuous updates
-                if hasattr(phidget, 'setVoltageRatioChangeTrigger'):
-                    phidget.setVoltageRatioChangeTrigger(0.0)
-                    print("Change trigger set to 0 for continuous updates")
-                
-                print("Standard sampling mode")
-            
             print("Basic Phidget configuration complete")
             
             # Schedule GUI sampling rate update for later (thread-safe)
@@ -563,31 +418,6 @@ class ForceGaugeManager:
             
         except Exception as e:
             print(f"Warning: Could not configure Phidget settings: {e}")
-    
-    def _onAttach_multi(self, phidget, channel_index):
-        """Multi-channel attach handler."""
-        print(f"Channel {channel_index} attached (ForceGaugeManager).")
-        try:
-            # Configure this channel
-            print(f"Configuring channel {channel_index}...")
-            
-            phidget.setBridgeGain(BridgeGain.BRIDGE_GAIN_16)
-            phidget.setDataInterval(25)  # 40Hz default
-            
-            if hasattr(phidget, 'setBridgeEnabled'):
-                phidget.setBridgeEnabled(True)
-            
-            if hasattr(phidget, 'setVoltageRatioChangeTrigger'):
-                phidget.setVoltageRatioChangeTrigger(0.0)
-            
-            print(f"Channel {channel_index} configuration complete")
-            
-            # Schedule sampling rate update (only do once for all channels)
-            if channel_index == 2 and hasattr(self, 'parent_window') and self.parent_window:
-                self.parent_window.after(100, self._update_sampling_rate_from_gui_safe)
-            
-        except Exception as e:
-            print(f"Warning: Could not configure channel {channel_index}: {e}")
 
     def _update_sampling_rate_from_gui_safe(self):
         """Thread-safe method to update sampling rate from GUI."""
@@ -608,74 +438,28 @@ class ForceGaugeManager:
     def _onDetach(self, phidget):
         print("Phidget device detached (ForceGaugeManager).")
         # Update status label, disable calibration buttons, etc.
-    
-    def _onDetach_multi(self, phidget, channel_index):
-        """Multi-channel detach handler."""
-        print(f"Channel {channel_index} detached (ForceGaugeManager).")
 
     def _onError(self, phidget, errorCode, errorString):
         print(f"Phidget Error (ForceGaugeManager): {errorString} (Code: {errorCode})")
         # Potentially show a messagebox or update a status label
-    
-    def _onError_multi(self, phidget, errorCode, errorString, channel_index):
-        """Multi-channel error handler."""
-        print(f"Channel {channel_index} Error: {errorString} (Code: {errorCode})")
 
     def _onVoltageRatioChange(self, phidget, voltageRatio):
-        """Ultra-fast callback - implements decimation if enabled (single cell mode)."""
+        """Ultra-fast callback - just capture data and queue it."""
         try:
+            # Just capture timestamp and voltage ratio - minimize processing in callback
             timestamp = time.time()
             
-            if self.USE_DECIMATION:
-                # === DECIMATION MODE: Average N samples, but ALSO queue individual samples ===
-                # Add to decimation buffer for averaging
-                self.decimation_buffer.append(voltageRatio)
-                self.decimation_counter += 1
-                
-                # ALWAYS queue the raw sample (for high-frequency logging)
-                # This preserves the 1200Hz logging rate
-                try:
-                    self.raw_data_queue.put_nowait((timestamp, voltageRatio))
-                except queue.Full:
-                    pass
-                
-                # When we have enough samples, calculate and store the averaged value
-                # This averaged value will be used for GUI display (smoother, less noisy)
-                if self.decimation_counter >= self.decimation_factor:
-                    if len(self.decimation_buffer) > 0:
-                        averaged_voltage = sum(self.decimation_buffer) / len(self.decimation_buffer)
-                        # Store the clean averaged value for GUI
-                        self.latest_averaged_voltage = averaged_voltage
-                    
-                    # Reset counter (buffer keeps recent history via maxlen)
-                    self.decimation_counter = 0
-                    
-            else:
-                # === STANDARD MODE: Queue every sample ===
-                try:
-                    self.raw_data_queue.put_nowait((timestamp, voltageRatio))
-                except queue.Full:
-                    # If queue is full, we're getting data faster than we can process
-                    # This is actually good - means we're not losing the high frequency data
-                    pass
+            # Push to raw data queue (non-blocking)
+            try:
+                self.raw_data_queue.put_nowait((timestamp, voltageRatio))
+            except queue.Full:
+                # If queue is full, we're getting data faster than we can process
+                # This is actually good - means we're not losing the high frequency data
+                pass
                 
         except Exception as e:
             # Minimal error handling to avoid slowing down the callback
             print(f"Error in voltage ratio callback: {e}")
-    
-    def _onVoltageRatioChange_multi(self, phidget, voltageRatio, channel_index):
-        """Ultra-fast callback for multi-channel (triple cell mode)."""
-        try:
-            timestamp = time.time()
-            
-            # Push to raw data queue with channel index
-            try:
-                self.raw_data_queue.put_nowait((timestamp, voltageRatio, channel_index))
-            except queue.Full:
-                pass
-                
-        except Exception as e:
-            print(f"Error in channel {channel_index} voltage ratio callback: {e}")
 
     def set_high_frequency_logging(self, enabled=True):
         """Enable/disable high-frequency logging to output queue."""
@@ -703,17 +487,11 @@ class ForceGaugeManager:
         # Stop processing threads
         self.stop_processing()
         
-        # Close Phidget connection(s)
+        # Close Phidget connection
         try:
-            if self.USE_TRIPLE_CELL:
-                for i in range(3):
-                    if self.voltage_ratio_inputs[i]:
-                        self.voltage_ratio_inputs[i].close()
-                        print(f"Channel {i} closed")
-            else:
-                if self.voltage_ratio_input:
-                    self.voltage_ratio_input.close()
-                    print("Phidget connection closed")
+            if self.voltage_ratio_input:
+                self.voltage_ratio_input.close()
+                print("Phidget connection closed")
         except Exception as e:
             print(f"Error closing Phidget: {e}")
 
@@ -784,150 +562,52 @@ class ForceGaugeManager:
         return self.calibrated_once
 
     def calibrate_force_gauge(self):
-        """Calibrate the force gauge (supports both single and triple cell modes)."""
         try:
-            if self.USE_TRIPLE_CELL:
-                # === TRIPLE CELL CALIBRATION ===
-                print("\n=== STARTING TRIPLE CELL CALIBRATION ===")
-                
-                # Check all channels are attached
-                for i in range(3):
-                    if not self.voltage_ratio_inputs[i] or not self.voltage_ratio_inputs[i].getAttached():
-                        messagebox.showerror("Calibration Error", f"Channel {i} not attached!", parent=self.parent_window)
-                        return
-                
-                # Step 1: Tare all three channels
-                messagebox.showinfo("Calibration Step 1", 
-                    "Please ensure ALL THREE load cells are at zero force, then click OK.", 
-                    parent=self.parent_window)
-                time.sleep(0.5)
-                
-                for i in range(3):
-                    self.OFFSETS[i] = self.voltage_ratio_inputs[i].getVoltageRatio()
-                    print(f"Channel {i} OFFSET (tare): {self.OFFSETS[i]:.8f}")
-                
-                # Step 2: Get known force
-                known_force_str = simpledialog.askstring("Calibration Step 2", 
-                    "Enter the TOTAL known force in Newtons (N):", 
-                    parent=self.parent_window)
-                if known_force_str is None:
-                    print("Calibration cancelled by user")
-                    return
-                
-                try:
-                    known_force = float(known_force_str)
-                except ValueError:
-                    messagebox.showerror("Calibration Error", "Invalid force value entered.", parent=self.parent_window)
-                    return
-                
-                # Step 3: Apply force and distribute
-                messagebox.showinfo("Calibration Step 3", 
-                    f"Please apply the known force of {known_force:.4f} N to ALL THREE load cells, then click OK.", 
-                    parent=self.parent_window)
-                time.sleep(0.5)
-                
-                # Read loaded voltages
-                loaded_voltages = []
-                voltage_changes = []
-                for i in range(3):
-                    loaded_voltage = self.voltage_ratio_inputs[i].getVoltageRatio()
-                    loaded_voltages.append(loaded_voltage)
-                    voltage_change = loaded_voltage - self.OFFSETS[i]
-                    voltage_changes.append(voltage_change)
-                    print(f"Channel {i} loaded voltage: {loaded_voltage:.8f}, change: {voltage_change:.8f}")
-                
-                # Check for significant changes
-                if all(abs(v) < 1e-9 for v in voltage_changes):
-                    messagebox.showerror("Calibration Error", 
-                        "No significant voltage changes detected. Check applied force or sensor connections.", 
-                        parent=self.parent_window)
-                    return
-                
-                # Distribute force proportionally based on voltage response
-                total_voltage_change = sum(abs(v) for v in voltage_changes)
-                
-                for i in range(3):
-                    # Calculate this cell's fraction of total force
-                    force_fraction = abs(voltage_changes[i]) / total_voltage_change
-                    cell_force = known_force * force_fraction
-                    
-                    # Calculate gain (handle compression: negative voltage change)
-                    self.GAINS[i] = cell_force / abs(voltage_changes[i])
-                    
-                    # If voltage decreased under load, it's compression - make gain negative
-                    if voltage_changes[i] < 0:
-                        self.GAINS[i] = -self.GAINS[i]
-                    
-                    print(f"Channel {i} calibration: Force={cell_force:.4f}N ({force_fraction*100:.1f}%), GAIN={self.GAINS[i]:.4f}")
-                
-                # Mark as calibrated
-                self.calibrated_once = True
-                self.use_force_based_trigger = True
-                self.last_displayed_force = None
-                
-                # Console output summary
-                print("\n=== CALIBRATION COMPLETE ===")
-                print("Individual Channel Gains:")
-                for i in range(3):
-                    print(f"  Channel {i}: GAIN = {self.GAINS[i]:.4f}, OFFSET = {self.OFFSETS[i]:.8f}")
-                print(f"\nTotal force readout enabled. Smart update trigger: {self.force_change_trigger_N} N")
-                
-                # Update sensor window status
-                if self.sensor_window_ref:
-                    self.sensor_window_ref.update_calibration_status_for_main_app(True)
-                
-                # Ask user if they want to save calibration
-                save_choice = messagebox.askyesno("Save Calibration", 
-                    "Calibration successful! Would you like to save these values to a file?", 
-                    parent=self.parent_window)
-                
-                if save_choice:
-                    self.save_calibration()
-                else:
-                    messagebox.showinfo("Calibration Complete", 
-                        "Calibration successful!\nValues printed to console.\n\n"
-                        f"Smart update mode enabled (trigger: {self.force_change_trigger_N} N)", 
-                        parent=self.parent_window)
+            print("Starting calibration (ForceGaugeManager)...")
+            if not self.voltage_ratio_input or not self.voltage_ratio_input.getAttached():
+                messagebox.showerror("Calibration Error", "Force sensor not attached.", parent=self.parent_window)
+                return
+
+            messagebox.showinfo("Calibration Step 1", "Please ensure the load cell is at zero force, then click OK.", parent=self.parent_window)
+            time.sleep(0.5) # Allow sensor to stabilize if needed, though getVoltageRatio should be current
+            zero_force_voltage_ratio = self.voltage_ratio_input.getVoltageRatio()
+            self.OFFSET = zero_force_voltage_ratio
+            print(f"Zero force voltage ratio (OFFSET): {self.OFFSET:.8f}")
+
+            known_force_str = simpledialog.askstring("Calibration Step 2", "Enter the known force in Newtons (N):", parent=self.parent_window)
+            if known_force_str is None: # User cancelled
+                print("Calibration cancelled by user at known force input.")
+                return 
             
-            else:
-                # === SINGLE CELL CALIBRATION ===
-                print("Starting calibration (ForceGaugeManager)...")
-                if not self.voltage_ratio_input or not self.voltage_ratio_input.getAttached():
-                    messagebox.showerror("Calibration Error", "Force sensor not attached.", parent=self.parent_window)
-                    return
+            try:
+                known_force = float(known_force_str)
+            except ValueError:
+                messagebox.showerror("Calibration Error", "Invalid force value entered. Please enter a number.", parent=self.parent_window)
+                return
 
-                messagebox.showinfo("Calibration Step 1", "Please ensure the load cell is at zero force, then click OK.", parent=self.parent_window)
-                time.sleep(0.5)
-                zero_force_voltage_ratio = self.voltage_ratio_input.getVoltageRatio()
-                self.OFFSET = zero_force_voltage_ratio
-                print(f"Zero force voltage ratio (OFFSET): {self.OFFSET:.8f}")
+            messagebox.showinfo("Calibration Step 2", f"Please apply the known force of {known_force:.4f} N to the load cell, then click OK.", parent=self.parent_window)
+            time.sleep(0.5) 
+            known_force_voltage_ratio = self.voltage_ratio_input.getVoltageRatio()
 
-                known_force_str = simpledialog.askstring("Calibration Step 2", "Enter the known force in Newtons (N):", parent=self.parent_window)
-                if known_force_str is None:
-                    print("Calibration cancelled by user at known force input.")
-                    return 
-                
-                try:
-                    known_force = float(known_force_str)
-                except ValueError:
-                    messagebox.showerror("Calibration Error", "Invalid force value entered. Please enter a number.", parent=self.parent_window)
-                    return
+            if abs(known_force_voltage_ratio - self.OFFSET) < 1e-9: # Check for significant change
+                messagebox.showerror("Calibration Error", "Voltage ratio did not change significantly. Check applied force or sensor connection.", parent=self.parent_window)
+                return
 
-                messagebox.showinfo("Calibration Step 2", f"Please apply the known force of {known_force:.4f} N to the load cell, then click OK.", parent=self.parent_window)
-                time.sleep(0.5) 
-                known_force_voltage_ratio = self.voltage_ratio_input.getVoltageRatio()
+            self.GAIN = known_force / (known_force_voltage_ratio - self.OFFSET)
+            print(f"Voltage ratio with known force: {known_force_voltage_ratio:.8f}")
+            print(f"Calibration complete. GAIN: {self.GAIN:.4f}, OFFSET: {self.OFFSET:.8f}")
 
-                if abs(known_force_voltage_ratio - self.OFFSET) < 1e-9:
-                    messagebox.showerror("Calibration Error", "Voltage ratio did not change significantly. Check applied force or sensor connection.", parent=self.parent_window)
-                    return
-
-                self.GAIN = known_force / (known_force_voltage_ratio - self.OFFSET)
-                print(f"Voltage ratio with known force: {known_force_voltage_ratio:.8f}")
-                print(f"Calibration complete. GAIN: {self.GAIN:.4f}, OFFSET: {self.OFFSET:.8f}")
-                
+            if self.gain_label:
+                self.gain_label.config(text=f"Gain: {self.GAIN:.4f}")
+            if self.offset_label:
+                self.offset_label.config(text=f"Offset: {self.OFFSET:.8f}")
+            
+            if self.GAIN is not None and self.OFFSET is not None:
                 self.calibrated_once = True
+                
+                # Enable force-based change detection after successful calibration
                 self.use_force_based_trigger = True
-                self.last_displayed_force = None
+                self.last_displayed_force = None  # Reset for first force reading
                 print(f"Force-based change detection enabled with trigger: {self.force_change_trigger_N} N")
                 
                 if self.sensor_window_ref:
@@ -937,6 +617,9 @@ class ForceGaugeManager:
                     f"Smart update mode enabled:\n"
                     f"GUI will update when force changes by ≥{self.force_change_trigger_N} N", 
                     parent=self.parent_window)
+            else:
+                if self.sensor_window_ref:
+                    self.sensor_window_ref.update_calibration_status_for_main_app(False)
 
         except PhidgetException as pe:
             print(f"Phidget error during calibration (ForceGaugeManager): {pe}")
@@ -946,171 +629,6 @@ class ForceGaugeManager:
             messagebox.showerror("Calibration Error", f"An error occurred during calibration: {e}", parent=self.parent_window)
             traceback.print_exc()
 
-    def save_calibration(self):
-        """Save current calibration values to a text file."""
-        import os
-        from datetime import datetime
-        from tkinter import filedialog
-        
-        try:
-            # Generate default filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            default_filename = f"force_gauge_calibration_{timestamp}.txt"
-            
-            # Ask user for save location
-            filepath = filedialog.asksaveasfilename(
-                parent=self.parent_window,
-                title="Save Calibration",
-                defaultextension=".txt",
-                initialfile=default_filename,
-                filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-            )
-            
-            if not filepath:  # User cancelled
-                return
-            
-            # Write calibration data
-            with open(filepath, 'w') as f:
-                f.write("# Force Gauge Calibration File\n")
-                f.write(f"# Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                
-                if self.USE_TRIPLE_CELL:
-                    f.write("# Mode: TRIPLE CELL\n")
-                    f.write(f"MODE=TRIPLE\n")
-                    for i in range(3):
-                        f.write(f"GAIN_{i}={self.GAINS[i]:.8f}\n")
-                        f.write(f"OFFSET_{i}={self.OFFSETS[i]:.10f}\n")
-                else:
-                    f.write("# Mode: SINGLE CELL\n")
-                    f.write(f"MODE=SINGLE\n")
-                    f.write(f"GAIN={self.GAIN:.8f}\n")
-                    f.write(f"OFFSET={self.OFFSET:.10f}\n")
-            
-            print(f"Calibration saved to: {filepath}")
-            
-            # Console output for reference
-            if self.USE_TRIPLE_CELL:
-                print("\n=== SAVED CALIBRATION VALUES ===")
-                for i in range(3):
-                    print(f"Channel {i}: GAIN={self.GAINS[i]:.8f}, OFFSET={self.OFFSETS[i]:.10f}")
-            else:
-                print(f"\n=== SAVED CALIBRATION VALUES ===")
-                print(f"GAIN={self.GAIN:.8f}, OFFSET={self.OFFSET:.10f}")
-            
-            messagebox.showinfo("Calibration Saved", 
-                f"Calibration saved to:\n{os.path.basename(filepath)}", 
-                parent=self.parent_window)
-            
-        except Exception as e:
-            print(f"Error saving calibration: {e}")
-            messagebox.showerror("Save Error", f"Failed to save calibration:\n{e}", parent=self.parent_window)
-    
-    def load_calibration(self):
-        """Load calibration values from a text file."""
-        import os
-        from tkinter import filedialog
-        
-        try:
-            # Ask user for file to load
-            filepath = filedialog.askopenfilename(
-                parent=self.parent_window,
-                title="Load Calibration",
-                defaultextension=".txt",
-                filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-            )
-            
-            if not filepath:  # User cancelled
-                return
-            
-            # Read calibration data
-            with open(filepath, 'r') as f:
-                lines = f.readlines()
-            
-            # Parse file
-            mode = None
-            gains = {}
-            offsets = {}
-            
-            for line in lines:
-                line = line.strip()
-                if line.startswith('#') or not line:
-                    continue
-                
-                if '=' in line:
-                    key, value = line.split('=', 1)
-                    key = key.strip()
-                    value = value.strip()
-                    
-                    if key == 'MODE':
-                        mode = value
-                    elif key.startswith('GAIN_'):
-                        channel = int(key.split('_')[1])
-                        gains[channel] = float(value)
-                    elif key.startswith('OFFSET_'):
-                        channel = int(key.split('_')[1])
-                        offsets[channel] = float(value)
-                    elif key == 'GAIN':
-                        gains['single'] = float(value)
-                    elif key == 'OFFSET':
-                        offsets['single'] = float(value)
-            
-            # Validate and apply
-            if mode == 'TRIPLE' and self.USE_TRIPLE_CELL:
-                # Load triple cell calibration
-                if all(i in gains and i in offsets for i in range(3)):
-                    for i in range(3):
-                        self.GAINS[i] = gains[i]
-                        self.OFFSETS[i] = offsets[i]
-                    
-                    self.calibrated_once = True
-                    self.use_force_based_trigger = True
-                    self.last_displayed_force = None
-                    
-                    print("\n=== LOADED CALIBRATION VALUES ===")
-                    for i in range(3):
-                        print(f"Channel {i}: GAIN={self.GAINS[i]:.8f}, OFFSET={self.OFFSETS[i]:.10f}")
-                    
-                    if self.sensor_window_ref:
-                        self.sensor_window_ref.update_calibration_status_for_main_app(True)
-                    
-                    messagebox.showinfo("Calibration Loaded", 
-                        f"Triple cell calibration loaded from:\n{os.path.basename(filepath)}\n\n"
-                        f"Values printed to console.", 
-                        parent=self.parent_window)
-                else:
-                    raise ValueError("Incomplete triple cell calibration data in file")
-            
-            elif mode == 'SINGLE' and not self.USE_TRIPLE_CELL:
-                # Load single cell calibration
-                if 'single' in gains and 'single' in offsets:
-                    self.GAIN = gains['single']
-                    self.OFFSET = offsets['single']
-                    
-                    self.calibrated_once = True
-                    self.use_force_based_trigger = True
-                    self.last_displayed_force = None
-                    
-                    print(f"\n=== LOADED CALIBRATION VALUES ===")
-                    print(f"GAIN={self.GAIN:.8f}, OFFSET={self.OFFSET:.10f}")
-                    
-                    if self.sensor_window_ref:
-                        self.sensor_window_ref.update_calibration_status_for_main_app(True)
-                    
-                    messagebox.showinfo("Calibration Loaded", 
-                        f"Single cell calibration loaded from:\n{os.path.basename(filepath)}", 
-                        parent=self.parent_window)
-                else:
-                    raise ValueError("Incomplete single cell calibration data in file")
-            
-            else:
-                # Mode mismatch
-                current_mode = "TRIPLE" if self.USE_TRIPLE_CELL else "SINGLE"
-                raise ValueError(f"Calibration file is for {mode} mode, but system is in {current_mode} mode")
-        
-        except Exception as e:
-            print(f"Error loading calibration: {e}")
-            messagebox.showerror("Load Error", f"Failed to load calibration:\n{e}", parent=self.parent_window)
-    
     def quick_calibrate_force_gauge(self):
         """Quick calibration using values from the most recent saved calibration file."""
         import os
@@ -1204,75 +722,6 @@ class ForceGaugeManager:
         # Reset last displayed force to ensure immediate update
         self.last_displayed_force = None
 
-    def set_decimation_factor(self, factor):
-        """
-        Set the decimation factor (number of samples to average).
-        
-        Args:
-            factor: Number of hardware samples to average into one output sample.
-                   Higher values = more noise reduction but lower output rate.
-                   
-                   Examples:
-                   - factor=1: No decimation (1200Hz output)
-                   - factor=6: Average 6 samples (~200Hz output, 2.45× noise reduction)
-                   - factor=12: Average 12 samples (~100Hz output, 3.46× noise reduction)
-                   - factor=24: Average 24 samples (~50Hz output, 4.90× noise reduction)
-                   
-        Returns:
-            True if successful, False if invalid factor
-        """
-        if factor < 1 or factor > 100:
-            print(f"Invalid decimation factor: {factor} (must be 1-100)")
-            return False
-        
-        old_factor = self.decimation_factor
-        self.decimation_factor = int(factor)
-        
-        # Update buffer size to match
-        self.decimation_buffer = deque(maxlen=max(50, self.decimation_factor * 2))
-        self.decimation_counter = 0
-        
-        # Calculate expected performance
-        expected_rate = 1200 / self.decimation_factor
-        noise_reduction = self.decimation_factor ** 0.5
-        
-        print(f"Decimation factor changed: {old_factor} → {self.decimation_factor}")
-        print(f"Expected output rate: ~{expected_rate:.0f} Hz ({1000/expected_rate:.1f}ms)")
-        print(f"Expected noise reduction: {noise_reduction:.2f}× (~{20*math.log10(noise_reduction):.1f} dB)")
-        
-        return True
-    
-    def get_decimation_info(self):
-        """
-        Get current decimation configuration and performance.
-        
-        Returns:
-            dict with decimation settings and expected performance
-        """
-        if not self.USE_DECIMATION:
-            return {
-                'enabled': False,
-                'mode': 'Standard (no decimation)'
-            }
-        
-        expected_input_rate = 1200  # Hz (maximum hardware rate)
-        expected_output_rate = expected_input_rate / self.decimation_factor
-        noise_reduction_factor = self.decimation_factor ** 0.5
-        noise_reduction_db = 20 * math.log10(noise_reduction_factor)
-        
-        return {
-            'enabled': True,
-            'mode': 'Decimation (oversampling)',
-            'decimation_factor': self.decimation_factor,
-            'expected_input_rate_hz': expected_input_rate,
-            'expected_output_rate_hz': expected_output_rate,
-            'expected_output_interval_ms': 1000 / expected_output_rate,
-            'noise_reduction_factor': noise_reduction_factor,
-            'noise_reduction_db': noise_reduction_db,
-            'buffer_samples': len(self.decimation_buffer),
-            'samples_until_output': self.decimation_factor - self.decimation_counter
-        }
-
     def get_force_change_trigger(self):
         """Get the current force change trigger threshold in Newtons."""
         return self.force_change_trigger_N
@@ -1288,22 +737,16 @@ class ForceGaugeManager:
 
     def close_phidget(self):
         print("Closing Phidget connection (ForceGaugeManager)...")
-        try:
-            if self.USE_TRIPLE_CELL:
-                for i in range(3):
-                    if self.voltage_ratio_inputs[i] and self.voltage_ratio_inputs[i].getAttached():
-                        self.voltage_ratio_inputs[i].close()
-                        print(f"Channel {i} closed successfully (ForceGaugeManager).")
-            else:
-                if self.voltage_ratio_input and self.voltage_ratio_input.getAttached():
-                    self.voltage_ratio_input.close()
-                    print("Phidget connection closed successfully (ForceGaugeManager).")
-                elif self.voltage_ratio_input:
-                    print("Phidget was initialized but not attached or already closed.")
-                else:
-                    print("No Phidget to close.")
-        except PhidgetException as ex:
-            print(f"PhidgetException during close: {ex.description}")
+        if self.voltage_ratio_input and self.voltage_ratio_input.getAttached():
+            try:
+                self.voltage_ratio_input.close()
+                print("Phidget connection closed successfully (ForceGaugeManager).")
+            except PhidgetException as ex:
+                print(f"PhidgetException during close: {ex.description}")
+        elif self.voltage_ratio_input:
+             print("Phidget was initialized but not attached or already closed.")
+        else:
+            print("No Phidget to close.")
 
     def update_position_cache(self, position):
         """Cache the latest position for high-frequency force logging."""
@@ -1318,73 +761,15 @@ class ForceGaugeManager:
     def set_data_interval(self, interval_ms):
         """Set the data interval for the force gauge sensor."""
         try:
-            if self.USE_TRIPLE_CELL:
-                for i in range(3):
-                    if self.voltage_ratio_inputs[i] and self.voltage_ratio_inputs[i].getAttached():
-                        self.voltage_ratio_inputs[i].setDataInterval(interval_ms)
-                print(f"ForceGaugeManager: Data interval set to {interval_ms}ms ({1000/interval_ms:.1f}Hz) for all channels")
+            if self.voltage_ratio_input and self.voltage_ratio_input.getAttached():
+                self.voltage_ratio_input.setDataInterval(interval_ms)
+                print(f"ForceGaugeManager: Data interval set to {interval_ms}ms ({1000/interval_ms:.1f}Hz)")
                 return True
             else:
-                if self.voltage_ratio_input and self.voltage_ratio_input.getAttached():
-                    self.voltage_ratio_input.setDataInterval(interval_ms)
-                    print(f"ForceGaugeManager: Data interval set to {interval_ms}ms ({1000/interval_ms:.1f}Hz)")
-                    return True
-                else:
-                    print("ForceGaugeManager: Cannot set data interval - device not attached")
-                    return False
+                print("ForceGaugeManager: Cannot set data interval - device not attached")
+                return False
         except PhidgetException as pe:
             print(f"ForceGaugeManager: Error setting data interval: {pe}")
-            return False
-    
-    def set_bridge_gain(self, gain_value):
-        """
-        Set the bridge gain for the force gauge sensor.
-        
-        Args:
-            gain_value: BridgeGain enum value or integer (1, 2, 4, 8, 16, 32, 64, 128)
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Convert integer to BridgeGain enum if needed
-            if isinstance(gain_value, int):
-                gain_map = {
-                    1: BridgeGain.BRIDGE_GAIN_1,
-                    2: BridgeGain.BRIDGE_GAIN_2,
-                    4: BridgeGain.BRIDGE_GAIN_4,
-                    8: BridgeGain.BRIDGE_GAIN_8,
-                    16: BridgeGain.BRIDGE_GAIN_16,
-                    32: BridgeGain.BRIDGE_GAIN_32,
-                    64: BridgeGain.BRIDGE_GAIN_64,
-                    128: BridgeGain.BRIDGE_GAIN_128
-                }
-                if gain_value not in gain_map:
-                    print(f"Invalid gain value: {gain_value}. Must be 1, 2, 4, 8, 16, 32, 64, or 128")
-                    return False
-                gain_enum = gain_map[gain_value]
-            else:
-                gain_enum = gain_value
-            
-            if self.USE_TRIPLE_CELL:
-                for i in range(3):
-                    if self.voltage_ratio_inputs[i] and self.voltage_ratio_inputs[i].getAttached():
-                        self.voltage_ratio_inputs[i].setBridgeGain(gain_enum)
-                print(f"ForceGaugeManager: Bridge gain set to {gain_value}× for all channels")
-                return True
-            else:
-                if self.voltage_ratio_input and self.voltage_ratio_input.getAttached():
-                    self.voltage_ratio_input.setBridgeGain(gain_enum)
-                    print(f"ForceGaugeManager: Bridge gain set to {gain_value}×")
-                    return True
-                else:
-                    print("ForceGaugeManager: Cannot set bridge gain - device not attached")
-                    return False
-        except PhidgetException as pe:
-            print(f"ForceGaugeManager: Error setting bridge gain: {pe}")
-            return False
-        except Exception as e:
-            print(f"ForceGaugeManager: Error setting bridge gain: {e}")
             return False
 
     def update_sampling_rate_from_gui(self):
