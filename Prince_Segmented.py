@@ -1064,6 +1064,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         # ========== ADAPTIVE DESCENT PHASE ==========
                                         speed_was_reduced = False
                                         final_tier3_speed = speed_tier3
+                                        adaptive_iteration_count = 0  # Track number of adaptations this layer
+                                        max_adaptive_iterations = 3  # Failsafe: assume at glass after 3 adaptations
+                                        min_speed_floor = 50.0  # Failsafe: don't go below 50 µm/s
                                         
                                         # Define descent segments
                                         descent_segments = [
@@ -1130,6 +1133,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                                 
                                                 # If adaptive stop was triggered
                                                 if adaptive_stop_triggered:
+                                                    # Record force at stop
+                                                    force_at_stop = current_force
+                                                    
                                                     # WAIT for force relaxation or 3 seconds
                                                     self.update_status_message(f"L{current_layer_num_for_display}: Waiting for force relaxation (target: ≥{relaxation_force_threshold:.3f}N or 3s)...")
                                                     wait_start = time.time()
@@ -1146,11 +1152,40 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                                     if final_force < relaxation_force_threshold:
                                                         self.update_status_message(f"L{current_layer_num_for_display}: 3s timeout reached, force={final_force:.4f}N")
                                                     
+                                                    # CHECK FORCE STABILITY: Did force relax by >20%?
+                                                    # Force is negative, so relaxation means less negative (closer to zero)
+                                                    force_change = final_force - force_at_stop  # Positive if relaxed
+                                                    force_change_percent = (force_change / abs(force_at_stop)) * 100.0 if force_at_stop != 0 else 0.0
+                                                    
+                                                    self.update_status_message(f"L{current_layer_num_for_display}: Force stability check: {force_at_stop:.4f}N → {final_force:.4f}N (change: {force_change_percent:.1f}%)")
+                                                    
+                                                    # If force changed by <20%, we're already at glass - don't adapt
+                                                    if abs(force_change_percent) < 20.0:
+                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** GLASS REACHED *** Force stable (<20% change), assuming contact established")
+                                                        reached_glass = True
+                                                        break  # Exit movement loop
+                                                    
+                                                    # Force relaxed significantly (>20%), safe to adapt and continue
+                                                    adaptive_iteration_count += 1
+                                                    
+                                                    # FAILSAFE: Check iteration count
+                                                    if adaptive_iteration_count >= max_adaptive_iterations:
+                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** FAILSAFE *** {max_adaptive_iterations} adaptations reached, assuming glass contact")
+                                                        reached_glass = True
+                                                        break  # Exit movement loop
+                                                    
+                                                    # Calculate new speed with floor
+                                                    new_speed = current_seg_speed * 0.5
+                                                    if new_speed < min_speed_floor:
+                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** FAILSAFE *** Speed floor reached ({min_speed_floor:.0f}µm/s), assuming glass contact")
+                                                        reached_glass = True
+                                                        break  # Exit movement loop
+                                                    
                                                     # REDUCE SPEED by 50%
-                                                    current_seg_speed = current_seg_speed * 0.5
+                                                    current_seg_speed = new_speed
                                                     final_tier3_speed = current_seg_speed  # Track final speed used
                                                     speed_was_reduced = True
-                                                    self.update_status_message(f"L{current_layer_num_for_display}: Speed reduced to {current_seg_speed:.0f}µm/s (50% reduction)")
+                                                    self.update_status_message(f"L{current_layer_num_for_display}: Speed reduced to {current_seg_speed:.0f}µm/s (50% reduction, iteration {adaptive_iteration_count}/{max_adaptive_iterations})")
                                                     
                                                     # Continue loop - will start new movement at reduced speed
                                                     continue
@@ -1219,11 +1254,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                             acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
                                         )
                                         
-                                        # PAUSE at 50% point
+                                        # PAUSE at 50% point (FIRST HALF of user-defined pause)
                                         if actual_pause > 0:
-                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE] Pausing {actual_pause}s at 50% point")
-                                            time.sleep(actual_pause)
-                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE DONE] Resuming")
+                                            pause_half = actual_pause / 2.0
+                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 1/2] Pausing {pause_half:.1f}s at 50% point")
+                                            time.sleep(pause_half)
+                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 1/2 DONE] Resuming")
                                         
                                         # Segment 3: 50→100% (to layer position) at tier1 (fastest)
                                         self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 3/3] {waypoint_50pct_up_um/1000.0:.4f}mm → {sandwich_target_position_um/1000.0:.4f}mm @ {ascent_tier1:.0f}µm/s")
@@ -1238,7 +1274,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         )
                                         
                                         final_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT COMPLETE] Sandwich complete at {final_pos/1000.0:.4f}mm")
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT COMPLETE] Reached layer height at {final_pos/1000.0:.4f}mm")
+                                        
+                                        # PAUSE at layer height (SECOND HALF of user-defined pause)
+                                        if actual_pause > 0:
+                                            pause_half = actual_pause / 2.0
+                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 2/2] Pausing {pause_half:.1f}s at layer height")
+                                            time.sleep(pause_half)
+                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 2/2 DONE]")
+                                        
                                         self.update_status_message(f"L{current_layer_num_for_display}: ========== SANDWICH ROUTINE COMPLETE ==========")
                                     
                                     else:
