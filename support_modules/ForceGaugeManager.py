@@ -36,6 +36,27 @@ class ForceGaugeManager:
         self.latest_calibrated_force = 0.0 # Initialize to a default float value
         self.calibrated_once = False
         
+        # === DYNAMIC DECIMATION SYSTEM ===
+        self.USE_DECIMATION = True
+        self.user_sampling_interval_ms = 25  # Default 25ms (40Hz)
+        self.hardware_interval_ms = 1  # Hardware samples at ~1ms (1200Hz)
+        self.decimation_factor = 25  # Will be calculated dynamically
+        self.decimation_buffer = deque(maxlen=100)  # Buffer for averaging
+        self.decimation_counter = 0
+        self.latest_averaged_voltage = None
+        self.output_count = 0  # Track number of averaged samples output
+        
+        # Print decimation status at startup
+        print("=" * 70)
+        print("DECIMATION STATUS")
+        print("=" * 70)
+        print(f"USE_DECIMATION: {self.USE_DECIMATION}")
+        print(f"Hardware interval: {self.hardware_interval_ms}ms (~{1000/self.hardware_interval_ms:.0f}Hz)")
+        print(f"User interval: {self.user_sampling_interval_ms}ms ({1000/self.user_sampling_interval_ms:.1f}Hz)")
+        print(f"Decimation factor: {self.decimation_factor}×")
+        print(f"Expected noise reduction: {self.decimation_factor**0.5:.2f}×")
+        print("=" * 70)
+        
         # === HIGH-PERFORMANCE MULTI-THREADING ARCHITECTURE ===
         
         # Raw data queue for ultra-fast data capture
@@ -326,7 +347,7 @@ class ForceGaugeManager:
             # Set device parameters
             print("Setting device parameters...")
             self.voltage_ratio_input.setHubPort(-1)  # Direct USB connection
-            self.voltage_ratio_input.setChannel(2)   # Channel 2 for force sensor
+            self.voltage_ratio_input.setChannel(0)   # Channel 0 for force sensor
             
             # Set event handlers
             self.voltage_ratio_input.setOnVoltageRatioChangeHandler(self._onVoltageRatioChange)
@@ -397,18 +418,30 @@ class ForceGaugeManager:
             # Set bridge gain
             phidget.setBridgeGain(BridgeGain.BRIDGE_GAIN_1)
             
-            # Set a reasonable default data interval (will be updated later)
-            phidget.setDataInterval(25)  # 40Hz default
-            
             # Enable bridge if available
             if hasattr(phidget, 'setBridgeEnabled'):
                 phidget.setBridgeEnabled(True)
                 print("Bridge mode enabled")
             
-            # Start with continuous updates
-            if hasattr(phidget, 'setVoltageRatioChangeTrigger'):
-                phidget.setVoltageRatioChangeTrigger(0.0)
-                print("Change trigger set to 0 for continuous updates")
+            if self.USE_DECIMATION:
+                # Set hardware to maximum speed (~1ms = 1200Hz)
+                phidget.setDataInterval(self.hardware_interval_ms)
+                
+                # Set trigger to 0 for continuous updates at max speed
+                if hasattr(phidget, 'setVoltageRatioChangeTrigger'):
+                    phidget.setVoltageRatioChangeTrigger(0.0)
+                
+                print(f"Dynamic decimation mode: Hardware at {self.hardware_interval_ms}ms (~1200Hz), decimating to match user rate")
+                print(f"Current decimation factor: {self.decimation_factor}× (output: {self.user_sampling_interval_ms}ms)")
+            else:
+                # No decimation - use user-configured rate directly
+                phidget.setDataInterval(25)  # 40Hz default
+                
+                if hasattr(phidget, 'setVoltageRatioChangeTrigger'):
+                    phidget.setVoltageRatioChangeTrigger(0.0)
+                    print("Change trigger set to 0 for continuous updates")
+                
+                print("Standard sampling mode (no decimation)")
                 
             print("Basic Phidget configuration complete")
             
@@ -420,7 +453,7 @@ class ForceGaugeManager:
             print(f"Warning: Could not configure Phidget settings: {e}")
 
     def _update_sampling_rate_from_gui_safe(self):
-        """Thread-safe method to update sampling rate from GUI."""
+        """Thread-safe method to update sampling rate from GUI and recalculate decimation."""
         try:
             if (self.voltage_ratio_input and 
                 self.sensor_window_ref and 
@@ -429,9 +462,33 @@ class ForceGaugeManager:
                 gui_sampling_rate_str = self.sensor_window_ref.sampling_rate_entry.get()
                 if gui_sampling_rate_str and gui_sampling_rate_str.isdigit():
                     sampling_interval_ms = int(gui_sampling_rate_str)
-                    print(f"Updating sampling rate from GUI: {sampling_interval_ms}ms")
-                    self.voltage_ratio_input.setDataInterval(sampling_interval_ms)
-                    print(f"Hardware sampling rate updated to {1000/sampling_interval_ms:.1f}Hz")
+                    
+                    # Enforce minimum 8ms
+                    if sampling_interval_ms < 8:
+                        print(f"Warning: Sampling rate {sampling_interval_ms}ms too fast, clamping to 8ms minimum")
+                        sampling_interval_ms = 8
+                        self.sensor_window_ref.sampling_rate_entry.delete(0, 'end')
+                        self.sensor_window_ref.sampling_rate_entry.insert(0, '8')
+                    
+                    self.user_sampling_interval_ms = sampling_interval_ms
+                    
+                    if self.USE_DECIMATION:
+                        # Calculate new decimation factor dynamically
+                        self.decimation_factor = max(1, int(sampling_interval_ms / self.hardware_interval_ms))
+                        
+                        # Update buffer size to accommodate new factor
+                        self.decimation_buffer = deque(maxlen=max(50, self.decimation_factor * 2))
+                        self.decimation_counter = 0
+                        
+                        print(f"Dynamic decimation updated:")
+                        print(f"  User rate: {sampling_interval_ms}ms ({1000/sampling_interval_ms:.1f}Hz)")
+                        print(f"  Hardware rate: {self.hardware_interval_ms}ms (~1200Hz)")
+                        print(f"  Decimation factor: {self.decimation_factor}×")
+                        print(f"  Noise reduction: {self.decimation_factor**0.5:.2f}×")
+                    else:
+                        # No decimation - set hardware directly
+                        self.voltage_ratio_input.setDataInterval(sampling_interval_ms)
+                        print(f"Hardware sampling rate updated to {1000/sampling_interval_ms:.1f}Hz")
         except Exception as e:
             print(f"Could not update sampling rate from GUI: {e}")
 
@@ -444,18 +501,46 @@ class ForceGaugeManager:
         # Potentially show a messagebox or update a status label
 
     def _onVoltageRatioChange(self, phidget, voltageRatio):
-        """Ultra-fast callback - just capture data and queue it."""
+        """Ultra-fast callback - implements dynamic decimation tied to user sampling rate."""
         try:
-            # Just capture timestamp and voltage ratio - minimize processing in callback
             timestamp = time.time()
             
-            # Push to raw data queue (non-blocking)
-            try:
-                self.raw_data_queue.put_nowait((timestamp, voltageRatio))
-            except queue.Full:
-                # If queue is full, we're getting data faster than we can process
-                # This is actually good - means we're not losing the high frequency data
-                pass
+            if self.USE_DECIMATION:
+                # Add to decimation buffer for averaging
+                self.decimation_buffer.append(voltageRatio)
+                self.decimation_counter += 1
+                
+                # When we have enough samples, calculate and push the averaged value
+                if self.decimation_counter >= self.decimation_factor:
+                    if len(self.decimation_buffer) > 0:
+                        averaged_voltage = sum(self.decimation_buffer) / len(self.decimation_buffer)
+                        
+                        # DEBUG: Very occasional output sample logging (every 5000 samples = ~60 seconds at 12ms rate)
+                        if self.output_count % 5000 == 0 and self.output_count > 0:
+                            print(f"[DECIMATION] Output sample #{self.output_count}: averaging {self.decimation_factor} samples at {self.user_sampling_interval_ms}ms intervals")
+                        
+                        # Push averaged sample to queue (this matches user's sampling rate)
+                        try:
+                            self.raw_data_queue.put_nowait((timestamp, averaged_voltage))
+                        except queue.Full:
+                            pass
+                        
+                        # Store for GUI display
+                        self.latest_averaged_voltage = averaged_voltage
+                        
+                        # Track output count
+                        if not hasattr(self, 'output_count'):
+                            self.output_count = 0
+                        self.output_count += 1
+                    
+                    # Reset counter (buffer keeps recent history via maxlen)
+                    self.decimation_counter = 0
+            else:
+                # No decimation - push every sample
+                try:
+                    self.raw_data_queue.put_nowait((timestamp, voltageRatio))
+                except queue.Full:
+                    pass
                 
         except Exception as e:
             # Minimal error handling to avoid slowing down the callback
@@ -729,6 +814,30 @@ class ForceGaugeManager:
     def is_using_force_trigger(self):
         """Check if force-based triggering is currently active."""
         return self.use_force_based_trigger and self.calibrated_once
+    
+    def get_decimation_info(self):
+        """Get current decimation configuration and performance."""
+        if not self.USE_DECIMATION:
+            return {
+                'enabled': False,
+                'mode': 'Standard (no decimation)'
+            }
+        
+        expected_output_rate_hz = 1000 / self.user_sampling_interval_ms
+        noise_reduction_factor = self.decimation_factor ** 0.5
+        
+        return {
+            'enabled': True,
+            'mode': 'Dynamic Decimation (adaptive)',
+            'hardware_interval_ms': self.hardware_interval_ms,
+            'hardware_rate_hz': 1000 / self.hardware_interval_ms,
+            'user_interval_ms': self.user_sampling_interval_ms,
+            'user_rate_hz': expected_output_rate_hz,
+            'decimation_factor': self.decimation_factor,
+            'noise_reduction_factor': noise_reduction_factor,
+            'buffer_samples': len(self.decimation_buffer),
+            'samples_until_output': self.decimation_factor - self.decimation_counter
+        }
 
     def stop_force_reading_thread(self):
         """Stops the force reading by closing the Phidget device."""
@@ -759,15 +868,37 @@ class ForceGaugeManager:
         pass
 
     def set_data_interval(self, interval_ms):
-        """Set the data interval for the force gauge sensor."""
+        """Set the data interval - updates decimation factor dynamically."""
         try:
-            if self.voltage_ratio_input and self.voltage_ratio_input.getAttached():
-                self.voltage_ratio_input.setDataInterval(interval_ms)
-                print(f"ForceGaugeManager: Data interval set to {interval_ms}ms ({1000/interval_ms:.1f}Hz)")
+            # Enforce minimum 8ms
+            if interval_ms < 8:
+                print(f"Warning: Sampling rate {interval_ms}ms too fast, clamping to 8ms minimum")
+                interval_ms = 8
+            
+            self.user_sampling_interval_ms = interval_ms
+            
+            if self.USE_DECIMATION:
+                # Recalculate decimation factor to match user rate
+                self.decimation_factor = max(1, int(interval_ms / self.hardware_interval_ms))
+                
+                # Update buffer
+                self.decimation_buffer = deque(maxlen=max(50, self.decimation_factor * 2))
+                self.decimation_counter = 0
+                
+                print(f"ForceGaugeManager: Dynamic decimation updated")
+                print(f"  User interval: {interval_ms}ms ({1000/interval_ms:.1f}Hz)")
+                print(f"  Decimation factor: {self.decimation_factor}×")
+                print(f"  Noise reduction: {self.decimation_factor**0.5:.2f}×")
                 return True
             else:
-                print("ForceGaugeManager: Cannot set data interval - device not attached")
-                return False
+                # No decimation - set hardware directly
+                if self.voltage_ratio_input and self.voltage_ratio_input.getAttached():
+                    self.voltage_ratio_input.setDataInterval(interval_ms)
+                    print(f"ForceGaugeManager: Data interval set to {interval_ms}ms ({1000/interval_ms:.1f}Hz)")
+                    return True
+                else:
+                    print("ForceGaugeManager: Cannot set data interval - device not attached")
+                    return False
         except PhidgetException as pe:
             print(f"ForceGaugeManager: Error setting data interval: {pe}")
             return False
@@ -781,8 +912,6 @@ class ForceGaugeManager:
                 if gui_sampling_rate_str and gui_sampling_rate_str.isdigit():
                     sampling_interval_ms = int(gui_sampling_rate_str)
                     success = self.set_data_interval(sampling_interval_ms)
-                    if success:
-                        print(f"Hardware sampling rate updated from GUI: {sampling_interval_ms}ms ({1000/sampling_interval_ms:.1f}Hz)")
                     return success
                 else:
                     print(f"Invalid GUI sampling rate value: '{gui_sampling_rate_str}'")

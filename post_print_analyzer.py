@@ -43,9 +43,11 @@ class PostPrintAnalyzer:
     """
     
     def __init__(self):
-        # Use corrected light smoothing settings
+        # Use corrected two-step filtering settings (matches current AdhesionMetricsCalculator)
         self.calculator = AdhesionMetricsCalculator(
-            smoothing_sigma=0.5,
+            median_kernel=5,
+            savgol_window=9,
+            savgol_order=2,
             baseline_threshold_factor=0.002,
             min_peak_height=0.01,
             min_peak_distance=50
