@@ -212,7 +212,16 @@ Evan Jones, evanjones2026@u.northwestern.edu
             text='Enable Sandwich Routine',
             variable=self.enable_sandwich_precalib
         )
-        self.chk_sandwich_precalib.grid(row=1, column=0, columnspan=6, padx=2, pady=5, sticky=W)
+        self.chk_sandwich_precalib.grid(row=1, column=0, columnspan=3, padx=2, pady=5, sticky=W)
+        
+        # Adaptive sandwich checkbox (next to enable checkbox)
+        self.enable_adaptive_sandwich = BooleanVar(value=False)  # Default disabled (use classic)
+        self.chk_adaptive_sandwich = Checkbutton(
+            self.frame_sandwich,
+            text='Use Adaptive Sandwich (Force-Responsive)',
+            variable=self.enable_adaptive_sandwich
+        )
+        self.chk_adaptive_sandwich.grid(row=1, column=3, columnspan=3, padx=2, pady=5, sticky=W)
 
         self.sandwich_thread = None  # Track sandwich routine thread
         
@@ -1022,241 +1031,455 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                     # Get pause time from this layer
                                     actual_pause = self.pause_list[i] if i < len(self.pause_list) else 0.0
                                     
-                                    # Calculate speed tiers (used for BOTH descent and ascent)
-                                    # Slower near window, faster away from window
-                                    speed_tier1 = actual_sandwich_speed_um_s  # 0-50% of gap (far from window)
-                                    speed_tier2 = actual_sandwich_speed_um_s / 2.0  # 50-75% of gap
-                                    speed_tier3 = actual_sandwich_speed_um_s / 4.0  # 75-100% of gap (near window)
-                                    speed_tier4 = min(50.0, actual_sandwich_speed_um_s / 8.0)  # First/last 100µm
+                                    # ========== CHOOSE SANDWICH ROUTINE TYPE ==========
+                                    if self.enable_adaptive_sandwich.get():
+                                        # === ADAPTIVE SANDWICH ROUTINE (FORCE-RESPONSIVE) ===
+                                        self.update_status_message(f"L{current_layer_num_for_display}: Using ADAPTIVE sandwich routine")
+                                        
+                                        # ========== ADAPTIVE SANDWICH PARAMETERS ==========
+                                        # Check if we have adaptive speed override from previous layer
+                                        if hasattr(self, 'adaptive_sandwich_speed_um_s') and self.adaptive_sandwich_speed_um_s is not None:
+                                            base_sandwich_speed = self.adaptive_sandwich_speed_um_s
+                                            self.update_status_message(f"L{current_layer_num_for_display}: Using ADAPTIVE speed: {base_sandwich_speed:.0f}µm/s (adjusted from previous layer)")
+                                        else:
+                                            base_sandwich_speed = actual_sandwich_speed_um_s
+                                        
+                                        # Calculate 3-tier speeds (divide by 3 and 9, not 2 and 4)
+                                        speed_tier1 = base_sandwich_speed        # 0-33% of gap
+                                        speed_tier2 = base_sandwich_speed / 3.0  # 33-67% of gap  
+                                        speed_tier3 = base_sandwich_speed / 9.0  # 67-100% of gap (slowest)
+                                        
+                                        # 75% force threshold for adaptive behavior
+                                        adaptive_force_threshold = contact_force_threshold * 0.75  # More negative = closer to limit
+                                        relaxation_force_threshold = contact_force_threshold * 0.5  # Less negative = more relaxed
+                                        
+                                        # Calculate waypoint positions for 3-TIER DESCENT
+                                        waypoint_33pct_um = current_pos_um + (gap_um * 0.33)
+                                        waypoint_67pct_um = current_pos_um + (gap_um * 0.67)
+                                        
+                                        self.update_status_message(f"L{current_layer_num_for_display}: ADAPTIVE SANDWICH - 3-Tier Ramping")
+                                        self.update_status_message(f"L{current_layer_num_for_display}: Speeds: {speed_tier1:.0f}/{speed_tier2:.0f}/{speed_tier3:.0f}µm/s, Gap:{measured_gap:.3f}mm")
+                                        self.update_status_message(f"L{current_layer_num_for_display}: Force thresholds: Adaptive=75% ({abs(adaptive_force_threshold):.3f}N), Relax=50% ({abs(relaxation_force_threshold):.3f}N)")
+                                        
+                                        # ========== ADAPTIVE DESCENT PHASE ==========
+                                        speed_was_reduced = False
+                                        final_tier3_speed = speed_tier3
+                                        
+                                        # Define descent segments
+                                        descent_segments = [
+                                            (waypoint_33pct_um, speed_tier1, "1/3", "0-33%"),
+                                            (waypoint_67pct_um, speed_tier2, "2/3", "33-67%"),
+                                            (target_glass_um, speed_tier3, "3/3", "67-100%")
+                                        ]
+                                        
+                                        reached_glass = False
+                                        
+                                        for seg_idx, (segment_target_um, initial_seg_speed, seg_label, seg_range) in enumerate(descent_segments):
+                                            if reached_glass:
+                                                break
+                                            
+                                            current_seg_speed = initial_seg_speed
+                                            segment_start_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                            
+                                            self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG {seg_label}] {segment_start_pos/1000.0:.4f}mm → {segment_target_um/1000.0:.4f}mm @ {current_seg_speed:.0f}µm/s ({seg_range})")
+                                            
+                                            # Move toward segment target with adaptive behavior
+                                            while not reached_glass:
+                                                current_position = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                                
+                                                # Check if we've reached segment target
+                                                if abs(current_position - segment_target_um) < 5.0:  # Within 5µm
+                                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG {seg_label} DONE] Reached: {current_position/1000.0:.4f}mm")
+                                                    break
+                                                
+                                                # Start movement to segment target
+                                                self.axis.move_absolute(
+                                                    position=segment_target_um,
+                                                    unit=Units.LENGTH_MICROMETRES,
+                                                    wait_until_idle=False,
+                                                    velocity=current_seg_speed / 1000.0,
+                                                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                                    acceleration=1000.0,
+                                                    acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                                )
+                                                
+                                                # Monitor force during movement
+                                                adaptive_stop_triggered = False
+                                                while self.axis.is_busy():
+                                                    if self.flag:
+                                                        self.axis.stop()
+                                                        raise Exception("User stopped print during sandwich descent")
+                                                    
+                                                    current_force = force_gauge.get_latest_calibrated_force()
+                                                    
+                                                    # Check for 75% threshold (ADAPTIVE STOP)
+                                                    if current_force <= adaptive_force_threshold:
+                                                        self.axis.stop()
+                                                        while self.axis.is_busy():
+                                                            time.sleep(0.01)
+                                                        
+                                                        adaptive_stop_triggered = True
+                                                        stopped_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** ADAPTIVE STOP *** Force={current_force:.4f}N at {stopped_pos/1000.0:.4f}mm", error=False)
+                                                        break
+                                                    
+                                                    time.sleep(0.02)
+                                                
+                                                if self.flag:
+                                                    raise Exception("User stopped print")
+                                                
+                                                # If adaptive stop was triggered
+                                                if adaptive_stop_triggered:
+                                                    # WAIT for force relaxation or 3 seconds
+                                                    self.update_status_message(f"L{current_layer_num_for_display}: Waiting for force relaxation (target: ≥{relaxation_force_threshold:.3f}N or 3s)...")
+                                                    wait_start = time.time()
+                                                    final_force = current_force
+                                                    
+                                                    while time.time() - wait_start < 3.0:
+                                                        final_force = force_gauge.get_latest_calibrated_force()
+                                                        # Force is negative, so >= means less compression (more relaxed)
+                                                        if final_force >= relaxation_force_threshold:
+                                                            self.update_status_message(f"L{current_layer_num_for_display}: Force relaxed to {final_force:.4f}N after {time.time()-wait_start:.2f}s")
+                                                            break
+                                                        time.sleep(0.1)
+                                                    
+                                                    if final_force < relaxation_force_threshold:
+                                                        self.update_status_message(f"L{current_layer_num_for_display}: 3s timeout reached, force={final_force:.4f}N")
+                                                    
+                                                    # REDUCE SPEED by 50%
+                                                    current_seg_speed = current_seg_speed * 0.5
+                                                    final_tier3_speed = current_seg_speed  # Track final speed used
+                                                    speed_was_reduced = True
+                                                    self.update_status_message(f"L{current_layer_num_for_display}: Speed reduced to {current_seg_speed:.0f}µm/s (50% reduction)")
+                                                    
+                                                    # Continue loop - will start new movement at reduced speed
+                                                    continue
+                                                
+                                                # If no adaptive stop, movement completed normally
+                                                # Check if we reached target glass position
+                                                final_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                                if abs(final_pos - target_glass_um) < 5.0:  # Within 5µm of glass
+                                                    reached_glass = True
+                                                    self.update_status_message(f"L{current_layer_num_for_display}: Reached glass position at {final_pos/1000.0:.4f}mm")
+                                                    break
+                                                
+                                                # Otherwise continue to next iteration (shouldn't normally reach here)
+                                                break
+                                        
+                                        final_descent_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT COMPLETE] Final position: {final_descent_pos_um/1000.0:.4f}mm")
+                                        
+                                        # ========== SPEED ADAPTATION FOR FUTURE LAYERS ==========
+                                        if speed_was_reduced:
+                                            # Calculate new base speed so final tier3 equals our final speed
+                                            # new_base / 9 = final_tier3_speed  =>  new_base = final_tier3_speed * 9
+                                            new_base_speed = final_tier3_speed * 9.0
+                                            self.adaptive_sandwich_speed_um_s = new_base_speed
+                                            self.update_status_message(f"L{current_layer_num_for_display}: *** SPEED ADAPTED *** New base speed for future layers: {new_base_speed:.0f}µm/s (Tier3={final_tier3_speed:.0f}µm/s)")
+                                        
+                                        # ========== SIMPLIFIED ASCENT PHASE ==========
+                                        # Use final speeds from descent (respecting any adaptive changes)
+                                        if speed_was_reduced:
+                                            ascent_tier1 = final_tier3_speed * 9.0
+                                            ascent_tier2 = final_tier3_speed * 3.0
+                                            ascent_tier3 = final_tier3_speed
+                                        else:
+                                            ascent_tier1 = speed_tier1
+                                            ascent_tier2 = speed_tier2
+                                            ascent_tier3 = speed_tier3
+                                        
+                                        # Calculate ascent waypoints: 0→33% at tier3, 33→50% at tier2, PAUSE, 50→100% at tier1
+                                        waypoint_33pct_up_um = final_descent_pos_um - (gap_um * 0.33)  # 33% up from glass
+                                        waypoint_50pct_up_um = final_descent_pos_um - (gap_um * 0.5)   # 50% up from glass (PAUSE HERE)
+                                        
+                                        self.update_status_message(f"L{current_layer_num_for_display}: ========== STARTING ASCENT ==========")
+                                        self.update_status_message(f"L{current_layer_num_for_display}: Ascent speeds: {ascent_tier3:.0f}→{ascent_tier2:.0f}µm/s, PAUSE, then {ascent_tier1:.0f}µm/s")
+                                        
+                                        # Segment 1: 0→33% at tier3 (slowest, leaving glass)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 1/3] {final_descent_pos_um/1000.0:.4f}mm → {waypoint_33pct_up_um/1000.0:.4f}mm @ {ascent_tier3:.0f}µm/s")
+                                        self.axis.move_absolute(
+                                            position=waypoint_33pct_up_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=True,
+                                            velocity=ascent_tier3 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        # Segment 2: 33→50% at tier2
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 2/3] {waypoint_33pct_up_um/1000.0:.4f}mm → {waypoint_50pct_up_um/1000.0:.4f}mm @ {ascent_tier2:.0f}µm/s")
+                                        self.axis.move_absolute(
+                                            position=waypoint_50pct_up_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=True,
+                                            velocity=ascent_tier2 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        # PAUSE at 50% point
+                                        if actual_pause > 0:
+                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE] Pausing {actual_pause}s at 50% point")
+                                            time.sleep(actual_pause)
+                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE DONE] Resuming")
+                                        
+                                        # Segment 3: 50→100% (to layer position) at tier1 (fastest)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 3/3] {waypoint_50pct_up_um/1000.0:.4f}mm → {sandwich_target_position_um/1000.0:.4f}mm @ {ascent_tier1:.0f}µm/s")
+                                        self.axis.move_absolute(
+                                            position=sandwich_target_position_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=True,
+                                            velocity=ascent_tier1 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        final_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT COMPLETE] Sandwich complete at {final_pos/1000.0:.4f}mm")
+                                        self.update_status_message(f"L{current_layer_num_for_display}: ========== SANDWICH ROUTINE COMPLETE ==========")
                                     
-                                    # Calculate waypoint positions for DESCENT (moving DOWN toward glass)
-                                    waypoint_50pct_um = current_pos_um + (gap_um * 0.5)
-                                    waypoint_75pct_um = current_pos_um + (gap_um * 0.75)
-                                    waypoint_100um_before_glass_um = target_glass_um - 100.0
-                                    
-                                    self.update_status_message(f"L{current_layer_num_for_display}: DESCENT with ramping (Gap:{measured_gap:.3f}mm, Speeds:{speed_tier1:.0f}/{speed_tier2:.0f}/{speed_tier3:.0f}/{speed_tier4:.0f}µm/s)")
-                                    
-                                    # ========== DESCENT PHASE (RAMPED, 4 TIERS) ==========
-                                    # Segment 1: 0% to 50% at V_s
-                                    current_pos_before = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 1/4] Current pos: {current_pos_before/1000.0:.4f}mm → Target: {waypoint_50pct_um/1000.0:.4f}mm @ {speed_tier1:.0f}µm/s")
-                                    
-                                    self.axis.move_absolute(
-                                        position=waypoint_50pct_um,
-                                        unit=Units.LENGTH_MICROMETRES,
-                                        wait_until_idle=False,
-                                        velocity=speed_tier1 / 1000.0,
-                                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                        acceleration=1000.0,
-                                        acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                    )
-                                    
-                                    failsafe_triggered = False
-                                    while self.axis.is_busy():
+                                    else:
+                                        # === CLASSIC SANDWICH ROUTINE (4-TIER RAMPING) ===
+                                        self.update_status_message(f"L{current_layer_num_for_display}: Using CLASSIC sandwich routine")
+                                        
+                                        # Calculate speed tiers (used for BOTH descent and ascent)
+                                        # Slower near window, faster away from window
+                                        speed_tier1 = actual_sandwich_speed_um_s  # 0-50% of gap (far from window)
+                                        speed_tier2 = actual_sandwich_speed_um_s / 2.0  # 50-75% of gap
+                                        speed_tier3 = actual_sandwich_speed_um_s / 4.0  # 75-100% of gap (near window)
+                                        speed_tier4 = min(50.0, actual_sandwich_speed_um_s / 8.0)  # First/last 100µm
+                                        
+                                        # Calculate waypoint positions for DESCENT (moving DOWN toward glass)
+                                        waypoint_50pct_um = current_pos_um + (gap_um * 0.5)
+                                        waypoint_75pct_um = current_pos_um + (gap_um * 0.75)
+                                        waypoint_100um_before_glass_um = target_glass_um - 100.0
+                                        
+                                        self.update_status_message(f"L{current_layer_num_for_display}: DESCENT with ramping (Gap:{measured_gap:.3f}mm, Speeds:{speed_tier1:.0f}/{speed_tier2:.0f}/{speed_tier3:.0f}/{speed_tier4:.0f}µm/s)")
+                                        
+                                        # ========== DESCENT PHASE (RAMPED, 4 TIERS) ==========
+                                        # Segment 1: 0% to 50% at V_s
+                                        current_pos_before = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 1/4] Current pos: {current_pos_before/1000.0:.4f}mm → Target: {waypoint_50pct_um/1000.0:.4f}mm @ {speed_tier1:.0f}µm/s")
+                                        
+                                        self.axis.move_absolute(
+                                            position=waypoint_50pct_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=False,
+                                            velocity=speed_tier1 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        failsafe_triggered = False
+                                        while self.axis.is_busy():
+                                            if self.flag:
+                                                self.axis.stop()
+                                                break
+                                            if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
+                                                self.axis.stop()
+                                                failsafe_triggered = True
+                                                self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 1", error=True)
+                                                break
+                                            time.sleep(0.02)
+                                        
+                                        if failsafe_triggered:
+                                            self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
+                                            raise Exception("Force failsafe triggered during descent segment 1")
+                                        
                                         if self.flag:
-                                            self.axis.stop()
-                                            break
-                                        if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
-                                            self.axis.stop()
-                                            failsafe_triggered = True
-                                            self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 1", error=True)
-                                            break
-                                        time.sleep(0.02)
-                                    
-                                    if failsafe_triggered:
-                                        self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
-                                        raise Exception("Force failsafe triggered during descent segment 1")
-                                    
-                                    if self.flag:
-                                        break  # User stopped print
-                                    
-                                    pos_after_seg1 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 1 DONE] Reached: {pos_after_seg1/1000.0:.4f}mm")
-                                    
-                                    # Segment 2: 50% to 75% at V_s/2
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 2/4] Current pos: {pos_after_seg1/1000.0:.4f}mm → Target: {waypoint_75pct_um/1000.0:.4f}mm @ {speed_tier2:.0f}µm/s")
-                                    
-                                    self.axis.move_absolute(
-                                        position=waypoint_75pct_um,
-                                        unit=Units.LENGTH_MICROMETRES,
-                                        wait_until_idle=False,
-                                        velocity=speed_tier2 / 1000.0,
-                                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                        acceleration=1000.0,
-                                        acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                    )
-                                    
-                                    while self.axis.is_busy():
+                                            break  # User stopped print
+                                        
+                                        pos_after_seg1 = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 1 DONE] Reached: {pos_after_seg1/1000.0:.4f}mm")
+                                        
+                                        # Segment 2: 50% to 75% at V_s/2
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 2/4] Current pos: {pos_after_seg1/1000.0:.4f}mm → Target: {waypoint_75pct_um/1000.0:.4f}mm @ {speed_tier2:.0f}µm/s")
+                                        
+                                        self.axis.move_absolute(
+                                            position=waypoint_75pct_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=False,
+                                            velocity=speed_tier2 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        while self.axis.is_busy():
+                                            if self.flag:
+                                                self.axis.stop()
+                                                break
+                                            if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
+                                                self.axis.stop()
+                                                failsafe_triggered = True
+                                                self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 2", error=True)
+                                                break
+                                            time.sleep(0.02)
+                                        
+                                        if failsafe_triggered:
+                                            self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
+                                            raise Exception("Force failsafe triggered during descent segment 2")
+                                        
                                         if self.flag:
-                                            self.axis.stop()
-                                            break
-                                        if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
-                                            self.axis.stop()
-                                            failsafe_triggered = True
-                                            self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 2", error=True)
-                                            break
-                                        time.sleep(0.02)
-                                    
-                                    if failsafe_triggered:
-                                        self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
-                                        raise Exception("Force failsafe triggered during descent segment 2")
-                                    
-                                    if self.flag:
-                                        break  # User stopped print
-                                    
-                                    pos_after_seg2 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 2 DONE] Reached: {pos_after_seg2/1000.0:.4f}mm")
-                                    
-                                    # Segment 3: 75% to (100%-100µm) at V_s/4
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 3/4] Current pos: {pos_after_seg2/1000.0:.4f}mm → Target: {waypoint_100um_before_glass_um/1000.0:.4f}mm @ {speed_tier3:.0f}µm/s")
-                                    
-                                    self.axis.move_absolute(
-                                        position=waypoint_100um_before_glass_um,
-                                        unit=Units.LENGTH_MICROMETRES,
-                                        wait_until_idle=False,
-                                        velocity=speed_tier3 / 1000.0,
-                                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                        acceleration=1000.0,
-                                        acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                    )
-                                    
-                                    while self.axis.is_busy():
+                                            break  # User stopped print
+                                        
+                                        pos_after_seg2 = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 2 DONE] Reached: {pos_after_seg2/1000.0:.4f}mm")
+                                        
+                                        # Segment 3: 75% to (100%-100µm) at V_s/4
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 3/4] Current pos: {pos_after_seg2/1000.0:.4f}mm → Target: {waypoint_100um_before_glass_um/1000.0:.4f}mm @ {speed_tier3:.0f}µm/s")
+                                        
+                                        self.axis.move_absolute(
+                                            position=waypoint_100um_before_glass_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=False,
+                                            velocity=speed_tier3 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        while self.axis.is_busy():
+                                            if self.flag:
+                                                self.axis.stop()
+                                                break
+                                            if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
+                                                self.axis.stop()
+                                                failsafe_triggered = True
+                                                self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 3", error=True)
+                                                break
+                                            time.sleep(0.02)
+                                        
+                                        if failsafe_triggered:
+                                            self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
+                                            raise Exception("Force failsafe triggered during descent segment 3")
+                                        
                                         if self.flag:
-                                            self.axis.stop()
-                                            break
-                                        if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
-                                            self.axis.stop()
-                                            failsafe_triggered = True
-                                            self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 3", error=True)
-                                            break
-                                        time.sleep(0.02)
-                                    
-                                    if failsafe_triggered:
-                                        self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
-                                        raise Exception("Force failsafe triggered during descent segment 3")
-                                    
-                                    if self.flag:
-                                        break  # User stopped print
-                                    
-                                    pos_after_seg3 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 3 DONE] Reached: {pos_after_seg3/1000.0:.4f}mm")
-                                    
-                                    # Segment 4: Last 100µm at min(50µm/s, V_s/8)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 4/4] Current pos: {pos_after_seg3/1000.0:.4f}mm → Target: {target_glass_um/1000.0:.4f}mm @ {speed_tier4:.0f}µm/s (SLOWEST - near glass)")
-                                    
-                                    self.axis.move_absolute(
-                                        position=target_glass_um,
-                                        unit=Units.LENGTH_MICROMETRES,
-                                        wait_until_idle=False,
-                                        velocity=speed_tier4 / 1000.0,
-                                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                        acceleration=1000.0,
-                                        acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                    )
-                                    
-                                    while self.axis.is_busy():
+                                            break  # User stopped print
+                                        
+                                        pos_after_seg3 = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 3 DONE] Reached: {pos_after_seg3/1000.0:.4f}mm")
+                                        
+                                        # Segment 4: Last 100µm at min(50µm/s, V_s/8)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 4/4] Current pos: {pos_after_seg3/1000.0:.4f}mm → Target: {target_glass_um/1000.0:.4f}mm @ {speed_tier4:.0f}µm/s (SLOWEST - near glass)")
+                                        
+                                        self.axis.move_absolute(
+                                            position=target_glass_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=False,
+                                            velocity=speed_tier4 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        while self.axis.is_busy():
+                                            if self.flag:
+                                                self.axis.stop()
+                                                break
+                                            if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
+                                                self.axis.stop()
+                                                failsafe_triggered = True
+                                                self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 4 (last 100µm)", error=True)
+                                                break
+                                            time.sleep(0.02)
+                                        
+                                        if failsafe_triggered:
+                                            self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
+                                            raise Exception("Force failsafe triggered during descent segment 4 (last 100µm)")
+                                        
                                         if self.flag:
-                                            self.axis.stop()
-                                            break
-                                        if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
-                                            self.axis.stop()
-                                            failsafe_triggered = True
-                                            self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 4 (last 100µm)", error=True)
-                                            break
-                                        time.sleep(0.02)
-                                    
-                                    if failsafe_triggered:
-                                        self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
-                                        raise Exception("Force failsafe triggered during descent segment 4 (last 100µm)")
-                                    
-                                    if self.flag:
-                                        break  # User stopped print
-                                    
-                                    final_descent_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT COMPLETE] Reached glass at {final_descent_pos_um/1000.0:.4f}mm")
-                                    
-                                    # ========== ASCENT PHASE (RAMPED, SYMMETRICAL) ==========
-                                    # Calculate waypoints for ASCENT (moving UP/decreasing position away from glass)
-                                    waypoint_100um_after_glass_um = final_descent_pos_um - 100.0
-                                    waypoint_75pct_up_um = sandwich_target_position_um + (gap_um * 0.25)  # 75% complete
-                                    waypoint_50pct_up_um = sandwich_target_position_um + (gap_um * 0.5)   # 50% complete (PAUSE HERE)
-                                    
-                                    self.update_status_message(f"L{current_layer_num_for_display}: ========== STARTING ASCENT (RAMPED) - Target: {sandwich_target_position_um/1000.0:.4f}mm ==========")
-                                    self.update_status_message(f"L{current_layer_num_for_display}: ASCENT will use speeds: {speed_tier4:.0f}→{speed_tier3:.0f}→{speed_tier2:.0f}→{speed_tier1:.0f}µm/s, Pause:{actual_pause}s at 50%")
-                                    
-                                    # Segment 1: First 100µm away from glass at slowest speed (tier 4)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 1/4] Current pos: {final_descent_pos_um/1000.0:.4f}mm → Target: {waypoint_100um_after_glass_um/1000.0:.4f}mm @ {speed_tier4:.0f}µm/s (SLOWEST - leaving glass)")
-                                    
-                                    self.axis.move_absolute(
-                                        position=waypoint_100um_after_glass_um,
-                                        unit=Units.LENGTH_MICROMETRES,
-                                        wait_until_idle=True,
-                                        velocity=speed_tier4 / 1000.0,
-                                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                        acceleration=1000.0,
-                                        acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                    )
-                                    
-                                    pos_after_ascent_seg1 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 1 DONE] Reached: {pos_after_ascent_seg1/1000.0:.4f}mm")
-                                    
-                                    # Segment 2: 100µm to 25% complete (which is 75% from glass) at tier 3
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 2/4] Current pos: {pos_after_ascent_seg1/1000.0:.4f}mm → Target: {waypoint_75pct_up_um/1000.0:.4f}mm @ {speed_tier3:.0f}µm/s")
-                                    
-                                    self.axis.move_absolute(
-                                        position=waypoint_75pct_up_um,
-                                        unit=Units.LENGTH_MICROMETRES,
-                                        wait_until_idle=True,
-                                        velocity=speed_tier3 / 1000.0,
-                                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                        acceleration=1000.0,
-                                        acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                    )
-                                    
-                                    pos_after_ascent_seg2 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 2 DONE] Reached: {pos_after_ascent_seg2/1000.0:.4f}mm")
-                                    
-                                    # Segment 3: 25% to 50% at tier 2
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 3/4] Current pos: {pos_after_ascent_seg2/1000.0:.4f}mm → Target: {waypoint_50pct_up_um/1000.0:.4f}mm @ {speed_tier2:.0f}µm/s")
-                                    
-                                    self.axis.move_absolute(
-                                        position=waypoint_50pct_up_um,
-                                        unit=Units.LENGTH_MICROMETRES,
-                                        wait_until_idle=True,
-                                        velocity=speed_tier2 / 1000.0,
-                                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                        acceleration=1000.0,
-                                        acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                    )
-                                    
-                                    pos_after_ascent_seg3 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 3 DONE] Reached 50% point at: {pos_after_ascent_seg3/1000.0:.4f}mm")
-                                    
-                                    # PAUSE AT 50% POINT if specified
-                                    if actual_pause > 0:
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE] Pausing {actual_pause}s at 50% ascent point")
-                                        time.sleep(actual_pause)
-                                        pos_after_pause = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE DONE] Resuming from: {pos_after_pause/1000.0:.4f}mm")
-                                    
-                                    # Segment 4: 50% to 0% (layer position) at fastest speed (tier 1)
-                                    current_pos_seg4 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 4/4] Current pos: {current_pos_seg4/1000.0:.4f}mm → Target: {sandwich_target_position_um/1000.0:.4f}mm @ {speed_tier1:.0f}µm/s (FASTEST)")
-                                    
-                                    self.axis.move_absolute(
-                                        position=sandwich_target_position_um,
-                                        unit=Units.LENGTH_MICROMETRES,
-                                        wait_until_idle=True,
-                                        velocity=speed_tier1 / 1000.0,
-                                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                        acceleration=1000.0,
-                                        acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                    )
-                                    
-                                    final_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT COMPLETE] Sandwich complete at {final_pos/1000.0:.4f}mm")
-                                    self.update_status_message(f"L{current_layer_num_for_display}: ========== SANDWICH ROUTINE COMPLETE ==========")
-                                    
+                                            break  # User stopped print
+                                        
+                                        final_descent_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT COMPLETE] Reached glass at {final_descent_pos_um/1000.0:.4f}mm")
+                                        
+                                        # ========== ASCENT PHASE (RAMPED, SYMMETRICAL) ==========
+                                        # Calculate waypoints for ASCENT (moving UP/decreasing position away from glass)
+                                        waypoint_100um_after_glass_um = final_descent_pos_um - 100.0
+                                        waypoint_75pct_up_um = sandwich_target_position_um + (gap_um * 0.25)  # 75% complete
+                                        waypoint_50pct_up_um = sandwich_target_position_um + (gap_um * 0.5)   # 50% complete (PAUSE HERE)
+                                        
+                                        self.update_status_message(f"L{current_layer_num_for_display}: ========== STARTING ASCENT (RAMPED) - Target: {sandwich_target_position_um/1000.0:.4f}mm ==========")
+                                        self.update_status_message(f"L{current_layer_num_for_display}: ASCENT will use speeds: {speed_tier4:.0f}→{speed_tier3:.0f}→{speed_tier2:.0f}→{speed_tier1:.0f}µm/s, Pause:{actual_pause}s at 50%")
+                                        
+                                        # Segment 1: First 100µm away from glass at slowest speed (tier 4)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 1/4] Current pos: {final_descent_pos_um/1000.0:.4f}mm → Target: {waypoint_100um_after_glass_um/1000.0:.4f}mm @ {speed_tier4:.0f}µm/s (SLOWEST - leaving glass)")
+                                        
+                                        self.axis.move_absolute(
+                                            position=waypoint_100um_after_glass_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=True,
+                                            velocity=speed_tier4 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        pos_after_ascent_seg1 = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 1 DONE] Reached: {pos_after_ascent_seg1/1000.0:.4f}mm")
+                                        
+                                        # Segment 2: 100µm to 25% complete (which is 75% from glass) at tier 3
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 2/4] Current pos: {pos_after_ascent_seg1/1000.0:.4f}mm → Target: {waypoint_75pct_up_um/1000.0:.4f}mm @ {speed_tier3:.0f}µm/s")
+                                        
+                                        self.axis.move_absolute(
+                                            position=waypoint_75pct_up_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=True,
+                                            velocity=speed_tier3 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        pos_after_ascent_seg2 = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 2 DONE] Reached: {pos_after_ascent_seg2/1000.0:.4f}mm")
+                                        
+                                        # Segment 3: 25% to 50% at tier 2
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 3/4] Current pos: {pos_after_ascent_seg2/1000.0:.4f}mm → Target: {waypoint_50pct_up_um/1000.0:.4f}mm @ {speed_tier2:.0f}µm/s")
+                                        
+                                        self.axis.move_absolute(
+                                            position=waypoint_50pct_up_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=True,
+                                            velocity=speed_tier2 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        pos_after_ascent_seg3 = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 3 DONE] Reached 50% point at: {pos_after_ascent_seg3/1000.0:.4f}mm")
+                                        
+                                        # PAUSE AT 50% POINT if specified
+                                        if actual_pause > 0:
+                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE] Pausing {actual_pause}s at 50% ascent point")
+                                            time.sleep(actual_pause)
+                                            pos_after_pause = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE DONE] Resuming from: {pos_after_pause/1000.0:.4f}mm")
+                                        
+                                        # Segment 4: 50% to 0% (layer position) at fastest speed (tier 1)
+                                        current_pos_seg4 = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 4/4] Current pos: {current_pos_seg4/1000.0:.4f}mm → Target: {sandwich_target_position_um/1000.0:.4f}mm @ {speed_tier1:.0f}µm/s (FASTEST)")
+                                        
+                                        self.axis.move_absolute(
+                                            position=sandwich_target_position_um,
+                                            unit=Units.LENGTH_MICROMETRES,
+                                            wait_until_idle=True,
+                                            velocity=speed_tier1 / 1000.0,
+                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+                                            acceleration=1000.0,
+                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        )
+                                        
+                                        final_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT COMPLETE] Sandwich complete at {final_pos/1000.0:.4f}mm")
+                                        self.update_status_message(f"L{current_layer_num_for_display}: ========== SANDWICH ROUTINE COMPLETE ==========")
+                                        
                             except Exception as sandwich_error:
                                 self.update_status_message(f"L{current_layer_num_for_display}: Sandwich routine error: {sandwich_error}", error=True)
                                 # Don't abort print on sandwich failure, just log it
