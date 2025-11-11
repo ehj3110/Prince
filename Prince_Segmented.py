@@ -1049,9 +1049,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         speed_tier2 = base_sandwich_speed / 3.0  # 33-67% of gap  
                                         speed_tier3 = base_sandwich_speed / 9.0  # 67-100% of gap (slowest)
                                         
-                                        # 75% force threshold for adaptive behavior
-                                        adaptive_force_threshold = contact_force_threshold * 0.75  # More negative = closer to limit
-                                        relaxation_force_threshold = contact_force_threshold * 0.5  # Less negative = more relaxed
+                                        # Force thresholds for adaptive behavior and hard failsafe
+                                        adaptive_force_threshold = contact_force_threshold * 0.75  # 75% - triggers adaptive stop
+                                        relaxation_force_threshold = contact_force_threshold * 0.5  # 50% - relaxation target
+                                        hard_failsafe_threshold = contact_force_threshold * 2.0    # 200% - hard abort
                                         
                                         # Calculate waypoint positions for 3-TIER DESCENT
                                         waypoint_33pct_um = current_pos_um + (gap_um * 0.33)
@@ -1059,7 +1060,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         
                                         self.update_status_message(f"L{current_layer_num_for_display}: ADAPTIVE SANDWICH - 3-Tier Ramping")
                                         self.update_status_message(f"L{current_layer_num_for_display}: Speeds: {speed_tier1:.0f}/{speed_tier2:.0f}/{speed_tier3:.0f}µm/s, Gap:{measured_gap:.3f}mm")
-                                        self.update_status_message(f"L{current_layer_num_for_display}: Force thresholds: Adaptive=75% ({abs(adaptive_force_threshold):.3f}N), Relax=50% ({abs(relaxation_force_threshold):.3f}N)")
+                                        self.update_status_message(f"L{current_layer_num_for_display}: Force thresholds: Adaptive=75% ({abs(adaptive_force_threshold):.3f}N), Relax=50% ({abs(relaxation_force_threshold):.3f}N), HARD FAILSAFE=200% ({abs(hard_failsafe_threshold):.3f}N)")
                                         
                                         # ========== ADAPTIVE DESCENT PHASE ==========
                                         speed_was_reduced = False
@@ -1114,6 +1115,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                                         raise Exception("User stopped print during sandwich descent")
                                                     
                                                     current_force = force_gauge.get_latest_calibrated_force()
+                                                    
+                                                    # Check for 200% threshold (HARD FAILSAFE - ABORT)
+                                                    hard_failsafe_threshold = contact_force_threshold * 2.0  # 200% of max force
+                                                    if current_force <= hard_failsafe_threshold:
+                                                        self.axis.stop()
+                                                        while self.axis.is_busy():
+                                                            time.sleep(0.01)
+                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** HARD FORCE FAILSAFE *** Force={current_force:.4f}N exceeded 200% limit ({abs(hard_failsafe_threshold):.4f}N)", error=True)
+                                                        raise Exception(f"HARD FORCE FAILSAFE: Force {current_force:.4f}N exceeded 200% of limit ({abs(hard_failsafe_threshold):.4f}N)")
                                                     
                                                     # Check for 75% threshold (ADAPTIVE STOP)
                                                     if current_force <= adaptive_force_threshold:
