@@ -282,9 +282,28 @@ class RawDataProcessor:
             if phase_data[i] == 'Lift':
                 lift_start = i
                 
+                # Search backwards to find the ACTUAL start of lifting (before mislabeled Sandwich)
+                # Stop when we hit a Pause phase or reach the beginning
+                actual_lift_start = lift_start
+                search_idx = lift_start - 1
+                while search_idx >= 0 and phase_data[search_idx] != 'Pause':
+                    # Check if this earlier phase should be part of lifting
+                    # (Sandwich and Exposure phases before Lift are often mislabeled)
+                    if phase_data[search_idx] in ['Sandwich', 'Exposure']:
+                        actual_lift_start = search_idx
+                        search_idx -= 1
+                    else:
+                        break
+                
+                # If we found earlier phases, report the correction
+                if actual_lift_start < lift_start:
+                    corrected_count = lift_start - actual_lift_start
+                    print(f"  Corrected lift start: moved back {corrected_count} samples from {lift_start} to {actual_lift_start}")
+                    lift_start = actual_lift_start
+                
                 # Find end of Lift phase
                 lift_end = lift_start
-                while lift_end < len(phase_data) and phase_data[lift_end] == 'Lift':
+                while lift_end < len(phase_data) and phase_data[lift_end] in ['Lift', 'Sandwich', 'Exposure']:
                     lift_end += 1
                 lift_end -= 1  # Back to last Lift index
                 
@@ -345,7 +364,13 @@ class RawDataProcessor:
         print("\n=== Adaptive Boundary Detection ===")
         
         # Calculate all position changes
-        motion_threshold = 0.01  # mm/sample (consider motion if change > this)
+        pos_changes = np.abs(np.diff(position_data))
+        max_pos_change = np.max(pos_changes)
+        
+        # Adaptive motion threshold: use 10% of maximum motion per sample
+        # This handles both fast (1000 um/s) and slow (200 um/s) tests
+        motion_threshold = max(0.001, max_pos_change * 0.1)  # At least 0.001mm
+        print(f"Adaptive motion threshold: {motion_threshold:.4f} mm/sample (based on max change: {max_pos_change:.4f} mm)")
         
         # Find motion segments (continuous motion periods)
         motion_starts = []
