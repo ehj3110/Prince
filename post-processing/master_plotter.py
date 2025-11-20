@@ -217,15 +217,99 @@ class MasterPlotter:
             figsize=(10, 8)
         )
     
+    def generate_area_ratio_analysis_plot(self,
+                                          df: pd.DataFrame,
+                                          plot_name: str = 'MASTER_area_ratio_analysis.png'):
+        """
+        Generate area ratio-based metrics plot.
+        X-axis shows layer_area / membrane_area ratio.
+        
+        Args:
+            df: DataFrame with batch processing results
+            plot_name: Filename for saved plot
+        
+        Returns:
+            Path to saved plot file
+        """
+        print(f"  Creating {plot_name}...")
+        
+        # Create figure with 2x2 subplots
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig.suptitle('Master Area Ratio Analysis', fontsize=16, fontweight='bold')
+        axes = axes.flatten()
+        
+        # Define color map for conditions
+        conditions = sorted(df['condition_label'].unique())
+        colors = plt.cm.tab10(np.linspace(0, 1, len(conditions)))
+        color_map = dict(zip(conditions, colors))
+        
+        # Metrics to plot
+        metrics = [
+            ('peak_force_N', 'Peak Force (N)'),
+            ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)'),
+            ('peel_distance_mm', 'Peel Distance (mm)'),
+            ('total_peel_time_s', 'Total Peel Time (s)')
+        ]
+        
+        # Plot each metric
+        for idx, (metric_col, ylabel) in enumerate(metrics):
+            ax = axes[idx]
+            
+            for condition in conditions:
+                condition_data = df[df['condition_label'] == condition].copy()
+                color = color_map[condition]
+                
+                # Apply absolute value for distance metric
+                if metric_col == 'peel_distance_mm':
+                    condition_data[metric_col] = condition_data[metric_col].abs()
+                
+                # Group by area_ratio and calculate mean + SEM
+                grouped = condition_data.groupby('area_ratio')[metric_col].agg(['mean', 'sem'])
+                ratios = grouped.index.values
+                means = grouped['mean'].values
+                sems = grouped['sem'].values
+                
+                # Plot mean with markers
+                ax.plot(ratios, means, 'o', color=color, markersize=3, alpha=0.7, label=condition)
+                
+                # Add shaded SEM region
+                ax.fill_between(ratios, means - sems, means + sems, color=color, alpha=0.2)
+                
+                # Add polynomial trendline
+                if len(ratios) > 2:
+                    try:
+                        z = np.polyfit(ratios, means, 2)
+                        p = np.poly1d(z)
+                        ratio_smooth = np.linspace(ratios.min(), ratios.max(), 100)
+                        ax.plot(ratio_smooth, p(ratio_smooth), '-', color=color, linewidth=1.5, alpha=0.8)
+                    except:
+                        pass  # Skip trendline if fitting fails
+            
+            # Format subplot
+            ax.set_xlabel('Area Ratio (Layer / Membrane)', fontsize=11)
+            ax.set_ylabel(ylabel, fontsize=11)
+            ax.legend(fontsize=8, loc='best')
+            ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save figure
+        output_file = self.output_directory / plot_name
+        plt.savefig(output_file, dpi=self.dpi, bbox_inches='tight')
+        print(f"    Saved: {output_file}")
+        
+        plt.close()
+        
+        return output_file
+    
     def generate_standard_plots(self, df: pd.DataFrame):
         """
         Generate the standard set of master plots.
         
         Creates:
-        1. Area analysis (Force, Work, Distance, Retraction Force)
-        2. Distance analysis (Pre-init distance, Propagation distance)
-        3. Stiffness analysis
-        4. Modified area analysis (Force, Work, Distance, Peel Time)
+        1. Modified area analysis (Force, Work, Distance, Peel Time) - by absolute area
+        2. Area ratio analysis (Force, Work, Distance, Peel Time) - by area ratio
+        3. Distance analysis (Pre-init distance, Propagation distance) - by absolute area
         
         Args:
             df: DataFrame with batch processing results
@@ -239,31 +323,7 @@ class MasterPlotter:
         
         output_files = []
         
-        # 1. Standard area analysis plot
-        metrics_standard = [
-            ('peak_force_N', 'Peak Force (N)'),
-            ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)'),
-            ('peel_distance_mm', 'Peel Distance (mm)'),
-            ('peak_retraction_force_N', 'Peak Retraction Force (N)')
-        ]
-        
-        output_files.append(
-            self.generate_area_analysis_plot(
-                df=df,
-                metrics=metrics_standard,
-                plot_name='MASTER_area_analysis.png',
-                title='Master Area Analysis',
-                apply_abs=['peel_distance_mm']
-            )
-        )
-        
-        # 2. Distance analysis plot
-        output_files.append(self.generate_distance_analysis_plot(df))
-        
-        # 3. Stiffness analysis plot
-        output_files.append(self.generate_stiffness_analysis_plot(df))
-        
-        # 4. Modified area analysis plot (with peel time instead of retraction force)
+        # 1. Modified area analysis plot (with peel time)
         metrics_modified = [
             ('peak_force_N', 'Peak Force (N)'),
             ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)'),
@@ -275,11 +335,17 @@ class MasterPlotter:
             self.generate_area_analysis_plot(
                 df=df,
                 metrics=metrics_modified,
-                plot_name='MASTER_Modified_area_analysis.png',
-                title='Master Area Analysis - Modified',
+                plot_name='MASTER_area_analysis.png',
+                title='Master Area Analysis',
                 apply_abs=['peel_distance_mm']
             )
         )
+        
+        # 2. Area ratio analysis plot
+        output_files.append(self.generate_area_ratio_analysis_plot(df))
+        
+        # 3. Distance analysis plot
+        output_files.append(self.generate_distance_analysis_plot(df))
         
         print("\nAll plots generated successfully!")
         

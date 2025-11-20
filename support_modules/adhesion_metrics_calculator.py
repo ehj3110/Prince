@@ -220,16 +220,29 @@ class AdhesionMetricsCalculator:
         results['peak_force_position'] = positions[peak_idx]
         results['peak_force_time'] = times[peak_idx] - times[0]  # Relative time
         
-        # Step 2: Find propagation end using the new reverse search method
-        prop_end_idx = self._find_propagation_end_reverse_search(
-            smoothed_force, peak_idx, positions, motion_end_idx)
+        # Step 2: NEW METHOD - Find 80% lift point and use it for baseline
+        # Calculate 80% of lifting distance for baseline determination
+        lifting_80pct_idx = self._find_80_percent_lift_point(peak_idx, positions, motion_end_idx)
+        baseline = self._calculate_baseline(smoothed_force, lifting_80pct_idx)
+        results['baseline_force'] = baseline
+        results['peak_force_corrected'] = peak_force - baseline
+        
+        # Step 3: Find propagation end using 5% force threshold method
+        # Propagation ends when force drops to baseline + 5% of (peak - baseline)
+        prop_end_idx = self._find_propagation_end_force_threshold(
+            smoothed_force, peak_idx, peak_force, baseline, motion_end_idx)
         results['propagation_end_position'] = positions[prop_end_idx]
         results['propagation_end_time'] = times[prop_end_idx] - times[0]
         
-        # Step 3: Calculate baseline using force at propagation end
-        baseline = self._calculate_baseline(smoothed_force, prop_end_idx)
-        results['baseline_force'] = baseline
-        results['peak_force_corrected'] = peak_force - baseline
+        # COMMENTED OUT: Old derivative-based propagation end detection
+        # This method searched for where the first derivative rises above 10% of its
+        # most prominent negative peak. However, for very slow force relaxation,
+        # this method was cutting off propagation too early (~40% of lift instead of expected 80%).
+        # The force decay rate remained too slow for too long, never crossing the threshold.
+        #
+        # prop_end_idx = self._find_propagation_end_reverse_search(
+        #     smoothed_force, peak_idx, positions, motion_end_idx)
+        # baseline = self._calculate_baseline(smoothed_force, prop_end_idx)
         
         # Step 4: Find pre-initiation start (with phase awareness)
         pre_init_idx = self._find_pre_initiation(smoothed_force, peak_idx, baseline, lifting_start_idx)
@@ -333,6 +346,90 @@ class AdhesionMetricsCalculator:
         # If no crossing found, return search start
         return search_start
 
+    def _find_80_percent_lift_point(self, 
+                                     peak_idx: int,
+                                     positions: np.ndarray,
+                                     motion_end_idx: Optional[int]) -> int:
+        """
+        Find the index corresponding to 80% of the lifting distance.
+        Used for baseline calculation in the new force threshold method.
+        
+        Args:
+            peak_idx: Index of peak force
+            positions: Position array
+            motion_end_idx: End of motion segment
+            
+        Returns:
+            Index at 80% lift point
+        """
+        search_end_abs = motion_end_idx if motion_end_idx is not None else len(positions) - 1
+        
+        try:
+            # Find the minimum position (maximum travel point)
+            travel_positions = positions[peak_idx:search_end_abs]
+            if len(travel_positions) == 0:
+                return search_end_abs
+            
+            min_pos = np.min(travel_positions)
+            max_pos = positions[peak_idx]
+            
+            # 80% of the lifting distance
+            target_position = max_pos - 0.8 * (max_pos - min_pos)
+            
+            # Find index where position first reaches or passes the 80% point
+            for i in range(peak_idx, search_end_abs):
+                if positions[i] <= target_position:
+                    return i
+            
+            # If never reached 80%, use the minimum position index
+            min_pos_relative_idx = np.argmin(travel_positions)
+            return peak_idx + min_pos_relative_idx
+            
+        except Exception:
+            return search_end_abs
+
+    def _find_propagation_end_force_threshold(self,
+                                              smoothed_force: np.ndarray,
+                                              peak_idx: int,
+                                              peak_force: float,
+                                              baseline: float,
+                                              motion_end_idx: Optional[int]) -> int:
+        """
+        Find propagation end using force threshold method.
+        
+        Propagation ends when force drops to baseline + 5% of (peak - baseline).
+        This is more reliable than derivative methods when force relaxation is very slow.
+        
+        Args:
+            smoothed_force: Smoothed force array
+            peak_idx: Index of peak force
+            peak_force: Peak force value
+            baseline: Baseline force (calculated at 80% lift point)
+            motion_end_idx: End of motion segment
+            
+        Returns:
+            Index where propagation ends
+            
+        Example:
+            If baseline = 0.05 N and peak = 1.0 N:
+            - Corrected peak = 1.0 - 0.05 = 0.95 N
+            - 5% threshold = 0.95 * 0.05 = 0.0475 N
+            - Propagation ends when force drops to 0.05 + 0.0475 = 0.0975 N
+        """
+        search_end_abs = motion_end_idx if motion_end_idx is not None else len(smoothed_force) - 1
+        
+        # Calculate the threshold: baseline + 5% of corrected peak
+        corrected_peak = peak_force - baseline
+        threshold_force = baseline + (corrected_peak * 0.05)
+        
+        # Search forward from peak to find where force drops below threshold
+        for i in range(peak_idx + 1, search_end_abs + 1):
+            if smoothed_force[i] <= threshold_force:
+                return i
+        
+        # If never drops below threshold, use end of motion
+        return search_end_abs
+
     def _find_propagation_end_reverse_search(self, 
                                            smoothed_force: np.ndarray, 
                                            peak_idx: int,
@@ -385,22 +482,26 @@ class AdhesionMetricsCalculator:
         except Exception:
             lifting_80pct_idx = search_end_abs
 
-        # 3. Calculate first derivative for the region of interest
+        # 3. Calculate first derivative for the FULL region from peak to end of motion
         try:
-            # Region is from peak to 80% lifting point
-            region_of_interest = smoothed_force[peak_idx:lifting_80pct_idx+1]
-            if len(region_of_interest) < 5:
-                return lifting_80pct_idx
+            # Use full region from peak to end of motion (not just 80%)
+            full_region = smoothed_force[peak_idx:search_end_abs+1]
+            if len(full_region) < 5:
+                return search_end_abs
 
             # Calculate first derivative using np.gradient
-            first_derivative = np.gradient(region_of_interest)
+            first_derivative = np.gradient(full_region)
             
             # 4. Find the MOST PROMINENT NEGATIVE PEAK in the first derivative
-            # Use scipy's find_peaks on the inverted signal to find negative peaks
+            # Search only up to 80% lifting point for the peak itself
+            # (physical reasoning: steepest propagation should happen in first 80%)
+            search_80pct_relative = lifting_80pct_idx - peak_idx
+            deriv_search_region = first_derivative[:search_80pct_relative+1] if search_80pct_relative < len(first_derivative) else first_derivative
+            
             from scipy.signal import find_peaks
             
             # Invert to find negative peaks
-            inverted_deriv = -first_derivative
+            inverted_deriv = -deriv_search_region
             
             # Find peaks with prominence to get the most significant one
             peaks, properties = find_peaks(inverted_deriv, prominence=0.001)
@@ -408,17 +509,18 @@ class AdhesionMetricsCalculator:
             if len(peaks) > 0:
                 # Get the most prominent peak (highest prominence)
                 most_prominent_idx = peaks[np.argmax(properties['prominences'])]
-                most_prominent_value = first_derivative[most_prominent_idx]  # This will be negative
+                most_prominent_value = deriv_search_region[most_prominent_idx]  # This will be negative
             else:
                 # No prominent peaks found, use the minimum (most negative) value
-                most_prominent_idx = np.argmin(first_derivative)
-                most_prominent_value = first_derivative[most_prominent_idx]
+                most_prominent_idx = np.argmin(deriv_search_region)
+                most_prominent_value = deriv_search_region[most_prominent_idx]
             
             # 5. Calculate 10% threshold (10% of the magnitude)
             # Since the value is negative, threshold is closer to zero
             threshold = most_prominent_value * 0.10  # e.g., if peak is -0.5, threshold is -0.05
             
-            # 6. Search forward from the prominent peak to find where derivative rises above threshold
+            # 6. Search forward from the prominent peak through the FULL derivative array
+            # This allows finding threshold crossing beyond 80% if needed
             threshold_idx = None
             for i in range(most_prominent_idx + 1, len(first_derivative)):
                 if first_derivative[i] > threshold:
@@ -434,8 +536,8 @@ class AdhesionMetricsCalculator:
             # Convert back to absolute index in the original array
             propagation_end_idx = peak_idx + threshold_idx
             
-            # Ensure we don't exceed the 80% lifting point
-            propagation_end_idx = min(propagation_end_idx, lifting_80pct_idx)
+            # Cap at end of motion, but NOT at 80% lifting point
+            propagation_end_idx = min(propagation_end_idx, search_end_abs)
             
             return propagation_end_idx
 
