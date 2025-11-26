@@ -1,5 +1,6 @@
 from tkinter import *
 from tkinter.ttk import *
+import tkinter as tk
 import cv2
 import numpy as np
 import time
@@ -30,21 +31,15 @@ from tkinter import messagebox
 from SensorDataWindow import SensorDataWindow
 from AutoHomeRoutine import AutoHomer
 from SandwichRoutine import SandwichRoutine, perform_sandwich_step_blocking
+from support_modules.ExperimentalConditionsWindow import ExperimentalConditionsWindow
 
 
 class MyWindow:
     def __init__(self, win):
-        instruction = '''
-Check List:\n
-1. Ensure DLP is in pattern on the fly. \n
-2. Check that DLP is not on standby and is plugged in. \n
-1. Close DLP Lightcrafter GUI.\n
-2. Make sure the Zaber GUI is closed.\n
-3. Do not open any window on the second screen!!!!!\n
-6. Delete any file in your sliced file that is not the slices\n 
-or the .txt file! Chitubox makes extra files.\n
-
-'''
+        instruction = '''Check list:
+1) Ensure DLP is on, not on standby, and on "pattern on the fly". Close the Lightcrafter GUI.
+2) Close the Zaber GUI
+3) Do not open any windows on the second screen.'''
         credit = '''
 Professor Cheng Sun
 Boyuan Sun, boyuansun2026@u.northwestern.edu
@@ -63,17 +58,31 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.intensity_list = []
         self.active_instruction_file_path = None  # Track instruction file for copying
 
-        # Ensure self.p1 (ttk.Progressbar) is initialized - THIS WILL BE OUR MAIN PROGRESS BAR
-        self.p1 = Progressbar(win, orient=HORIZONTAL, length=400, mode='determinate') # Increased length a bit
-        # Move p1 to the old progress bar's position
-        self.p1.place(x=50, y=430) # Old y was 430
+        # Progress section header
+        self.lbl_progress_header = Label(win, text='Progress', font='Helvetica 12 bold')
+        self.lbl_progress_header.place(x=50, y=285)
+        
+        # Progress bar - 20% taller (height ~24px instead of default ~20px)
+        self.p1 = Progressbar(win, orient=HORIZONTAL, length=550, mode='determinate')
+        # Create style for taller progress bar
+        style = Style()
+        style.configure('Tall.Horizontal.TProgressbar', thickness=24)
+        self.p1.configure(style='Tall.Horizontal.TProgressbar')
+        self.p1.place(x=50, y=310) # Below "Progress" header
 
-        # Ensure self.current_layer_num_var (StringVar for layer display) is initialized
+        # Labels at top right of progress bar
         self.current_layer_num_var = StringVar()
         self.current_layer_num_var.set("Layer: 0/0")
-        self.lbl_current_layer = Label(win, textvariable=self.current_layer_num_var, font='Helvetica 10') # Added font
-        # Move lbl_current_layer to where the old "Printing Progress" label was, or similarly above p1
-        self.lbl_current_layer.place(x=50, y=400) # Old lbl7 y was 400
+        self.lbl_current_layer = Label(win, textvariable=self.current_layer_num_var, 
+                                         font='Helvetica 9') 
+        self.lbl_current_layer.place(x=400, y=287) # Top right of progress bar
+        
+        # Estimate time label at top right of progress bar
+        self.lbl15_var = StringVar()
+        self.lbl15_var.set("Est: ∞ min")
+        self.lbl15_inside = Label(win, textvariable=self.lbl15_var, 
+                                     font='Helvetica 9')
+        self.lbl15_inside.place(x=500, y=287) # Top right of progress bar, next to layer count
 
         self.win = win
         self.flag = False
@@ -86,8 +95,22 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.status_message_var.set("System Initializing...") 
 
         self.b_open_sensor_window = Button(win, text="Open Sensor Panel", command=self.open_sensor_panel)
-        self.b_open_sensor_window.place(x=750, y=200) 
+        self.b_open_sensor_window.place(x=800, y=60) # Above Directory of Images (y=150)
+        
+        self.b_exp_conditions = Button(win, text="Exp. Conditions", command=self.open_exp_conditions_window)
+        self.b_exp_conditions.place(x=935, y=60) # Next to sensor panel button
+        
+        self.b_reload_script = Button(win, text="Reload Script", command=self.reload_script_modules)
+        self.b_reload_script.place(x=800, y=95) # Below sensor panel button
+        
+        self.b_disconnect_dlp = Button(win, text="Disconnect DLP", command=self.disconnect_dlp)
+        self.b_disconnect_dlp.place(x=925, y=95) # Side by side with reload, 125px gap (button width + spacing)
+        
+        self.b_reconnect_dlp = Button(win, text="Reconnect DLP", command=self.reconnect_dlp, state=DISABLED)
+        self.b_reconnect_dlp.place(x=1050, y=95) # Side by side with disconnect, 125px gap
+        
         self.sensor_data_window_instance = None
+        self.exp_conditions_window = None
         self.auto_home_thread = None
 
         self.cache_clear_layer = 100000
@@ -95,12 +118,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         # --- Existing Canvases and Labels (adjust placement if they conflict with new frames) ---
         self.canvas1 = Canvas(win, height=200, width=270, bg="#FFEFD5")
-        self.canvas1.place(x=70, y=520) # Original: x=70, y=520
+        self.canvas1.place(x=70, y=390)
         
         self.canvas2 = Canvas(win, height=200, width=500, bg="#FFEFD5")
-        self.canvas2.place(x=370, y=520) # Original: x=370, y=520
+        self.canvas2.place(x=370, y=390)
 
-        self.lbl0 = Label(win, text='Prince', font='Helvetica 50 bold')
+        # Prince header with purple background box
+        self.header_frame = tk.Frame(win, bg='#834bd0', relief='solid', borderwidth=3, highlightbackground='#834bd0', highlightthickness=0)
+        self.header_frame.place(x=450, y=35, width=300, height=95)
+        self.lbl0 = tk.Label(self.header_frame, text='Prince', font='Helvetica 50 bold', bg='#834bd0', fg='white')
         self.lbl1 = Label(win, text='Directory of Images')
         self.lbl4 = Label(win, text='Z Axis Position')
         self.lbl5 = Label(win, text=instruction, font='Helvetica 8', foreground='purple', justify=LEFT)
@@ -108,15 +134,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.lbl7 = Label(win, text='Printing Progress')
         self.lbl8 = Label(win, text='System Message:') # Label for the status message
         # Define self.t8 (the status display Label) here, tied to status_message_var
-        self.t8 = Label(win, textvariable=self.status_message_var, width=70, relief="sunken", anchor="w", justify=LEFT)
+        self.t8 = Label(win, textvariable=self.status_message_var, width=50, relief="sunken", anchor="w", justify=LEFT)
         self.lbl9 = Label(win, text='Move distance(mm)')
-        self.lbl10 = Label(win, text='Layer thickness(um)')
-        self.lbl11 = Label(win, text='Exposure time(s)')
-        self.lbl11_2 = Label(win, text='Base curing time(s)')
+        self.lbl10 = Label(win, text='Layer thickness(um)', background="#FFEFD5")
+        self.lbl11 = Label(win, text='Exposure time(s)', background="#FFEFD5")
+        self.lbl11_2 = Label(win, text='Base curing time(s)', background="#FFEFD5")
         self.lbl12 = Label(win, text='Stage Control', font='Helvetica 12 bold')
         self.lbl13 = Label(win, text='Print Parameters', font='Helvetica 12 bold')
         self.lbl14 = Label(win, text='LED Current(0-255)')
-        self.lbl15 = Label(win, text='Estimate Time: ∞ min') # This label might be updated by old logic, review if needed
+        self.lbl15 = Label(win, text='Estimate Time: ∞ min') # Old label, now replaced by lbl15_inside
         
         # REMOVE Redundant progress bar and its label from old file
         # self.progress = Progressbar(win, orient=HORIZONTAL, length=500, mode='determinate')
@@ -132,30 +158,30 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         # COLUMN 2: Step Speed, Overstep, Pause
         column2_x = 550
-        self.lbl16.place(x=column2_x, y=550)
+        self.lbl16.place(x=column2_x, y=420)
         self.t16 = Entry(win)
-        self.t16.place(x=column2_x, y=570)
+        self.t16.place(x=column2_x, y=440)
         self.t16.insert(END, "1000.0") # Default Step Speed
         
-        self.lbl19.place(x=column2_x, y=590)
+        self.lbl19.place(x=column2_x, y=460)
         self.t19 = Entry(win)
-        self.t19.place(x=column2_x, y=610)
+        self.t19.place(x=column2_x, y=480)
         self.t19.insert(END, "500") # Default Overstep in µm
         
-        self.lbl17.place(x=column2_x, y=630)
+        self.lbl17.place(x=column2_x, y=500)
         self.t17 = Entry(win)
-        self.t17.place(x=column2_x, y=650)
+        self.t17.place(x=column2_x, y=520)
         self.t17.insert(END, "0.0") # Default Pause
         
         # COLUMN 3: Acceleration only
         column3_x = 700
-        self.lbl21.place(x=column3_x, y=550)
+        self.lbl21.place(x=column3_x, y=420)
         self.t21 = Entry(win)
-        self.t21.place(x=column3_x, y=570)
+        self.t21.place(x=column3_x, y=440)
         self.t21.insert(END, "5.0") # Default Acceleration in mm/s²
 
         # --- Auto-Home Control Box ---
-        frame_auto_home_y_start = 720 # Positioned above sandwich controls
+        frame_auto_home_y_start = 590 # Positioned above sandwich controls
         frame_auto_home_width = 750 # Define width for re-use
         self.frame_auto_home = LabelFrame(win, text="Auto-Home Control", padding=(10, 10))
         self.frame_auto_home.place(x=50, y=frame_auto_home_y_start, width=frame_auto_home_width) # Adjust width as needed
@@ -182,7 +208,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.b_auto_home.grid(row=0, column=6, padx=10, pady=2)
 
         # --- Sandwich Control Box ---
-        frame_sandwich_y_start = 790  # Below the Auto-Home frame (70px gap for auto-home height)
+        frame_sandwich_y_start = 660  # Below the Auto-Home frame (70px gap for auto-home height)
         self.frame_sandwich = LabelFrame(win, text="Sandwich Routine (Glass Contact)", padding=(10, 10))
         self.frame_sandwich.place(x=50, y=frame_sandwich_y_start, width=frame_auto_home_width)
 
@@ -193,11 +219,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.t_sandwich_gap.grid(row=0, column=1, padx=2, pady=2)
         self.t_sandwich_gap.insert(END, "0.5")  # Default gap estimate for pre-calibration
         
-        self.lbl_sandwich_force = Label(self.frame_sandwich, text='Max Force (N):')
+        self.lbl_sandwich_force = Label(self.frame_sandwich, text='Target Pressure (Pa):')
         self.lbl_sandwich_force.grid(row=0, column=2, padx=2, pady=2, sticky=W)
         self.t_sandwich_force = Entry(self.frame_sandwich, width=8)
         self.t_sandwich_force.grid(row=0, column=3, padx=2, pady=2)
-        self.t_sandwich_force.insert(END, "0.2")  # Default max force for pre-calibration
+        self.t_sandwich_force.insert(END, "15790")  # Default: 0.5N / 31.67mm² = 15790 Pa for Ø6.35mm platform
         
         self.lbl_sandwich_speed = Label(self.frame_sandwich, text='Print Speed (µm/s):')
         self.lbl_sandwich_speed.grid(row=0, column=4, padx=2, pady=2, sticky=W)
@@ -243,31 +269,31 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.t14 = Entry()
 
         # --- Place Entry Widgets and Labels ---
-        self.lbl0.place(x=550, y=50)
+        self.lbl0.pack(expand=True, fill='both', padx=5, pady=5)  # Pack with padding to show full border
         self.lbl1.place(x=50, y=150)
         self.t1.place(x=180, y=150) # t1 is now defined before _check_default_logging_windows_file
 
-        self.lbl4.place(x=50, y=260)
-        self.t4.place(x=50, y=280)
-        self.lbl5.place(x=710, y=270)
+        self.lbl4.place(x=50, y=230) # Moved up from 260
+        self.t4.place(x=50, y=250) # Moved up from 280
+        self.lbl5.place(x=710, y=180)
         self.lbl6.place(x=950, y=0)
         # self.t8.place(x=500, y=280) # This line will now work as self.t8 is defined
-        self.lbl8.place(x=500, y=260) # "System Message:"
-        # Ensure self.t8 is placed AFTER self.lbl8 if that's the visual intention
-        self.t8.place(x=500, y=280) # Place the actual status message display
-        self.t9.place(x=140, y=580)
-        self.lbl9.place(x=140, y=560)
-        self.t10.place(x=400, y=570)
-        self.lbl10.place(x=400, y=550)
-        self.t11.place(x=400, y=610)
-        self.lbl11.place(x=400, y=590)
-        self.t11_2.place(x=400, y=650)
-        self.lbl11_2.place(x=400, y=630)
-        self.lbl12.place(x=150, y=500)
-        self.lbl13.place(x=410, y=500)
-        self.t14.place(x=240, y=280)
-        self.lbl14.place(x=240, y=260)
-        self.lbl15.place(x=250, y=460) # This label should not overlap now
+        self.lbl8.place(x=50, y=40) # "System Message:" - aligned slightly above system box
+        # System message display box at top, shortened to avoid header overlap
+        self.t8.place(x=50, y=60) # Place the actual status message display, aligned with Open Sensor Panel
+        self.t9.place(x=140, y=450)
+        self.lbl9.place(x=140, y=430)
+        self.t10.place(x=400, y=440)
+        self.lbl10.place(x=400, y=420)
+        self.t11.place(x=400, y=480)
+        self.lbl11.place(x=400, y=460)
+        self.t11_2.place(x=400, y=520)
+        self.lbl11_2.place(x=400, y=500)
+        self.lbl12.place(x=150, y=370)
+        self.lbl13.place(x=410, y=370)
+        self.t14.place(x=250, y=250) # Closer to Z-axis position
+        self.lbl14.place(x=250, y=230) # Closer to Z-axis position
+        # self.lbl15.place(x=250, y=460) # Removed - now inside progress bar as lbl15_inside
 
         # self.lbl_current_layer_display = Label(win, textvariable=self.current_layer_num_var, font='Helvetica 10')
         # self.lbl_current_layer_display.place(x=400, y=400) # This was a duplicate, ensure it's removed or commented
@@ -277,21 +303,28 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         self.b1 = Button(win, text='Run-Cont.', command=self.run_Continuous)
         self.b10 = Button(win, text='Run-Step', command=self.run_Stepped)
+        self.b_set_dir = Button(win, text='Set Direct.', command=self.input_directory)
+        self.b4 = Button(win, text='Stop', command=self.stop)
         self.b2 = Button(win, text='Set Home', command=self.set_home)
         self.b3 = Button(win, text='Get Position', command=self.get_position)
-        self.b4 = Button(win, text='Stop', command=self.stop)
         self.b5 = Button(win, text='Move Down', command=self.movedown)
         self.b6 = Button(win, text='Move Up', command=self.moveup)
         self.b7 = Button(win, text='Simple input txt generator', command=self.simple_txt)
 
-        self.b1.place(x=70, y=200)
-        self.b10.place(x=170, y=200)
-        self.b2.place(x=50, y=310)
-        self.b3.place(x=130, y=310)
-        self.b4.place(x=270, y=200)
-        self.b5.place(x=100, y=630)
-        self.b6.place(x=200, y=630)
-        self.b7.place(x=400, y=680)
+        # Run buttons and Stop button aligned with right side buttons at y=95
+        self.b1.place(x=50, y=95)
+        self.b10.place(x=140, y=95)
+        self.b_set_dir.place(x=230, y=95)
+        self.b4.place(x=330, y=95)
+        
+        # Z-Axis controls back at original position
+        self.b2.place(x=50, y=200)
+        self.b3.place(x=140, y=200)
+        
+        # Move Up/Down buttons stay in stage control area
+        self.b5.place(x=100, y=500)
+        self.b6.place(x=200, y=500)
+        self.b7.place(x=400, y=550)
 
         # --- Initialize active_logging_windows_filepath AFTER t1 and status_message_var are created ---
         # self.active_logging_windows_filepath = None
@@ -301,8 +334,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.controller = pycrafter9000.dmd()
         self.application = libs.Application()
         self.controller.stopsequence()
+        self.controller.power(current=0)  # Set power to 0 BEFORE video mode to prevent flash
+        time.sleep(0.1)  # Small delay to ensure power is off
         self.controller.changemode(3)
         self.controller.hdmi()
+        self.update_status_message("DLP initialized: Power=0, Video Mode, HDMI input")
 
         Library.enable_device_db_store()
         connection = Connection.open_serial_port("COM3")
@@ -374,16 +410,24 @@ Evan Jones, evanjones2026@u.northwestern.edu
         if hasattr(self, 'current_layer_num_var'):
             self.current_layer_num_var.set(f"Layer: {current_layer_index + 1}/{total_layers}")
         
-        # Optional: Update estimated time if you have logic for it
-        # if hasattr(self, 'exposure_time') and self.exposure_time and current_layer_index < len(self.exposure_time):
-        #     remaining_layers = total_layers - (current_layer_index + 1)
-        #     if remaining_layers > 0 and len(self.exposure_time) > 0:
-        #         # Simplistic estimate: avg exp time of remaining or last known exp time
-        #         avg_remaining_exp = sum(self.exposure_time[current_layer_index:]) / len(self.exposure_time[current_layer_index:]) if len(self.exposure_time[current_layer_index:]) > 0 else self.exposure_time[-1]
-        #         estimated_time_remaining_seconds = remaining_layers * avg_remaining_exp # Add pause times too if significant
-        #         self.lbl15.config(text=f'Estimate Time: {estimated_time_remaining_seconds / 60:.1f} min')
-        #     else:
-        #         self.lbl15.config(text='Estimate Time: Done')
+        # Update estimated time remaining for stepped printing
+        if hasattr(self, 'exposure_time') and self.exposure_time and current_layer_index < len(self.exposure_time):
+            remaining_layers = total_layers - (current_layer_index + 1)
+            if remaining_layers > 0 and len(self.exposure_time) > 0:
+                # Calculate remaining exposure time
+                remaining_exposure = sum(self.exposure_time[current_layer_index:]) if current_layer_index < len(self.exposure_time) else 0
+                
+                # Calculate remaining pause time
+                remaining_pauses = sum(self.pause_list[current_layer_index:]) if hasattr(self, 'pause_list') and current_layer_index < len(self.pause_list) else 0
+                
+                # Estimate movement time: ~3 seconds per layer for peel and return movements
+                estimated_movement = remaining_layers * 3.0
+                
+                # Total estimate
+                total_estimated_seconds = remaining_exposure + remaining_pauses + estimated_movement
+                self.lbl15_var.set(f'Est: {total_estimated_seconds / 60:.1f} min')
+            else:
+                self.lbl15_var.set('Est: Done')
 
 
         self.win.update_idletasks() # Process pending GUI updates
@@ -400,27 +444,20 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 messagebox.showerror("Print Error", "Image directory not set or no images found.")
                 return
 
-            # --- Start Debug Prints ---
             val_t14 = self.t14.get()
-            print(f"DEBUG: Raw value from t14 (DLP Power): '{val_t14}'")
             dlp_power = int(val_t14)
 
             val_t16 = self.t16.get()
-            print(f"DEBUG: Raw value from t16 (Step Speed): '{val_t16}'")
             step_speed_um_s = float(val_t16) if val_t16 else 1000.0
 
             val_t17 = self.t17.get()
-            print(f"DEBUG: Raw value from t17 (Pause): '{val_t17}'")
             layer_pause_s = float(val_t17) if val_t17 else 0.0
 
             val_t19 = self.t19.get()
-            print(f"DEBUG: Raw value from t19 (Overstep µm): '{val_t19}'")
             overstep_um_gui = float(val_t19) if val_t19 else 0.0
 
             val_t21 = self.t21.get()
-            print(f"DEBUG: Raw value from t21 (Acceleration mm/s²): '{val_t21}'") # UNIT CHANGED in debug
-            step_type_val_mms2 = float(val_t21) if val_t21 else 0.0 # Now in mm/s², allow float
-            # --- End Debug Prints ---
+            step_type_val_mms2 = float(val_t21) if val_t21 else 0.0
             
             self.b1.config(state=DISABLED)
             self.b10.config(state=DISABLED)
@@ -457,27 +494,20 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 messagebox.showerror("Print Error", "Image directory not set or no images found.")
                 return
 
-            # --- Start Debug Prints ---
             val_t14 = self.t14.get()
-            print(f"DEBUG: Raw value from t14 (DLP Power): '{val_t14}'")
             dlp_power = int(val_t14)
 
             val_t16 = self.t16.get()
-            print(f"DEBUG: Raw value from t16 (Step Speed): '{val_t16}'")
             step_speed_um_s = float(val_t16) if val_t16 else 1000.0
 
             val_t17 = self.t17.get()
-            print(f"DEBUG: Raw value from t17 (Pause): '{val_t17}'")
             layer_pause_s = float(val_t17) if val_t17 else 0.0
 
             val_t19 = self.t19.get()
-            print(f"DEBUG: Raw value from t19 (Overstep µm): '{val_t19}'") # DEBUG LABEL CHANGED
-            overstep_um_gui = float(val_t19) if val_t19 else 0.0 # RENAMED and now in µm
+            overstep_um_gui = float(val_t19) if val_t19 else 0.0
 
             val_t21 = self.t21.get()
-            print(f"DEBUG: Raw value from t21 (Acceleration mm/s²): '{val_t21}'") # DEBUG LABEL CHANGED
-            step_type_val_mms2 = float(val_t21) if val_t21 else 0.0 # Now in mm/s², allow float
-            # --- End Debug Prints ---
+            step_type_val_mms2 = float(val_t21) if val_t21 else 0.0
 
             self.b1.config(state=DISABLED)
             self.b10.config(state=DISABLED)
@@ -558,6 +588,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         log_directory=self.current_print_session_log_dir
                     )
                     self.update_status_message(f"AutomatedLayerLogger configured for print {self.current_print_number}.")
+                    
+                    # Initialize experimental conditions logging if enabled
+                    if self.exp_conditions_window and self.exp_conditions_window.is_logging_enabled():
+                        self.exp_conditions_window.start_new_print(self.current_print_session_log_dir)
                 else:
                     self.update_status_message("Sensor Panel auto-log is disabled. Proceeding without automated logging.")
             else:
@@ -578,6 +612,73 @@ Evan Jones, evanjones2026@u.northwestern.edu
             if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
             if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
 
+    def reload_script_modules(self):
+        """Hot reload script modules without losing calibration."""
+        try:
+            import importlib
+            import sys
+            
+            self.update_status_message("Reloading script modules...")
+            
+            # List of modules to reload (add more as needed)
+            modules_to_reload = [
+                'support_modules.SensorDataWindow',
+                'support_modules.PeakForceLogger',
+                'support_modules.adhesion_metrics_calculator',
+                'support_modules.enhanced_adhesion_metrics',
+                'support_modules.AutomatedLayerLogger',
+                'support_modules.PositionLogger',
+                'support_modules.ForceGaugeManager',
+                'support_modules.AutoHomeRoutine',
+                'support_modules.two_step_baseline_analyzer',
+                'support_modules.SandwichRoutine',
+                'post_print_analyzer',
+                'support_modules.ExperimentalConditionsWindow'
+            ]
+            
+            reloaded_count = 0
+            for module_name in modules_to_reload:
+                if module_name in sys.modules:
+                    importlib.reload(sys.modules[module_name])
+                    reloaded_count += 1
+            
+            self.update_status_message(f"Script reload complete: {reloaded_count} modules reloaded")
+            self.update_status_message("Note: Changes will take effect for new operations. Hardware connections preserved.")
+            
+        except Exception as e:
+            self.update_status_message(f"Error reloading modules: {e}", error=True)
+    
+    def disconnect_dlp(self):
+        """Disconnect DLP for power cycling."""
+        try:
+            if hasattr(self, 'controller'):
+                self.controller.stopsequence()
+                self.controller.power(current=0)
+                self.controller.changemode(3)
+                del self.controller
+                self.update_status_message("DLP disconnected. You can now power cycle the light engine.")
+                self.b_disconnect_dlp.config(state=DISABLED)
+                self.b_reconnect_dlp.config(state=NORMAL)
+            else:
+                self.update_status_message("DLP not connected", error=True)
+        except Exception as e:
+            self.update_status_message(f"Error disconnecting DLP: {e}", error=True)
+    
+    def reconnect_dlp(self):
+        """Reconnect to DLP after power cycling."""
+        try:
+            self.controller = pycrafter9000.dmd()
+            self.controller.stopsequence()
+            self.controller.power(current=0)  # Set power to 0 BEFORE video mode
+            time.sleep(0.1)
+            self.controller.changemode(3)
+            self.controller.hdmi()
+            self.update_status_message("DLP reconnected: Power=0, Video Mode, HDMI input")
+            self.b_disconnect_dlp.config(state=NORMAL)
+            self.b_reconnect_dlp.config(state=DISABLED)
+        except Exception as e:
+            self.update_status_message(f"Error reconnecting DLP: {e}", error=True)
+    
     def cleanup_dlp_safe_state(self):
         """Reset DLP to safe idle state: stop sequence, power off, video mode."""
         try:
@@ -590,6 +691,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.update_status_message(f"Error resetting DLP: {e}", error=True)
 
 
+    def _set_phase_robust(self, phase_name):
+        """Robust helper to set phase in position logger."""
+        try:
+            if (hasattr(self, 'sensor_data_window_instance') and 
+                self.sensor_data_window_instance and
+                hasattr(self.sensor_data_window_instance, 'position_logger_thread') and
+                self.sensor_data_window_instance.position_logger_thread):
+                self.sensor_data_window_instance.position_logger_thread.set_phase(phase_name)
+        except Exception as e:
+            print(f"Warning: Could not set phase to {phase_name}: {e}")
+    
     def _cleanup_print_resources(self):
         """Clean up background threads and queues after print completion."""
         try:
@@ -635,7 +747,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.print_thread = None
                 return
 
-            print(f"DEBUG: print_t STARTING. MyWindow.image_list length: {len(self.image_list)}") 
             self.b1.config(state=DISABLED)
             self.b10.config(state=DISABLED)
             self.b4.config(state=NORMAL)
@@ -652,6 +763,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
             # DLP setup for pattern projection
             if hasattr(self, 'controller'):
+                self.controller.power(current=0)  # Set power to 0 BEFORE mode change to prevent flash
+                time.sleep(0.1)
                 self.controller.changemode(0) # Switch to pattern sequence mode
                 time.sleep(2.0) # Crucial delay for mode change to take effect
                 self.controller.power(current=dlp_power) 
@@ -670,19 +783,28 @@ Evan Jones, evanjones2026@u.northwestern.edu
             if self.enable_sandwich_precalib.get():
                 self.update_status_message("Pre-calibration enabled: Starting gap measurement routine...")
                 
-                # Get gap estimate and max force from Sandwich Routine GUI boxes
+                # Get gap estimate and target pressure from Sandwich Routine GUI boxes
+                # Build platform specs for pressure-to-force conversion
+                BUILD_PLATFORM_DIAMETER_MM = 6.35
+                BUILD_PLATFORM_AREA_MM2 = 3.14159 * (BUILD_PLATFORM_DIAMETER_MM / 2.0) ** 2  # 31.67mm²
+                
                 try:
                     gap_estimate_for_precal = float(self.t_sandwich_gap.get()) if hasattr(self, 't_sandwich_gap') else 0.5
-                    max_force_for_precal = float(self.t_sandwich_force.get()) if hasattr(self, 't_sandwich_force') else 0.2
+                    target_pressure_pa = float(self.t_sandwich_force.get()) if hasattr(self, 't_sandwich_force') else 15790
                 except ValueError:
                     gap_estimate_for_precal = 0.5
-                    max_force_for_precal = 0.2
-                    self.update_status_message("Invalid pre-cal parameters, using defaults: Gap=0.5mm, MaxForce=0.2N", error=True)
+                    target_pressure_pa = 15790  # Default: 0.5N / 31.67mm²
+                    self.update_status_message("Invalid pre-cal parameters, using defaults: Gap=0.5mm, Pressure=15790Pa", error=True)
                 
-                self.update_status_message(f"Pre-cal settings: Gap estimate={gap_estimate_for_precal:.3f}mm, Max force={max_force_for_precal:.3f}N")
+                # Convert pressure (Pa) to force (N) for build platform: Pa = N/mm², so Force = Pressure × Area
+                max_force_for_precal = (target_pressure_pa / 1000000.0) * BUILD_PLATFORM_AREA_MM2  # Convert Pa to N/mm² then multiply
                 
-                # Store max force for use during printing
-                self.precal_max_force = max_force_for_precal
+                self.update_status_message(f"Pre-cal settings: Gap={gap_estimate_for_precal:.3f}mm, Pressure={target_pressure_pa:.0f}Pa (Ø6.35mm)")
+                self.update_status_message(f"Pre-cal: Platform force={max_force_for_precal:.3f}N ({target_pressure_pa:.0f}Pa × 31.67mm²)")
+                
+                # Store pressure for use during printing (will be scaled by layer area)
+                self.precal_target_pressure_pa = target_pressure_pa
+                self.precal_max_force = max_force_for_precal  # Keep for compatibility
                 
                 # Get sandwich speed for first layer to use during pre-calibration
                 first_layer_sandwich_speed = self.sandwich_speed_list[0] if len(self.sandwich_speed_list) > 0 else 500
@@ -801,17 +923,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     cv2.waitKey(1) # Essential for OpenCV to process imshow
                     
                     # Set phase to Exposure (continuous mode combines exposure + lift)
-                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                            self.sensor_data_window_instance.position_logger_thread.set_phase("Exposure")
+                    self._set_phase_robust("Exposure")
 
                     # 3. Start Z-axis movement (non-blocking)
                     self.update_status_message(f"L{current_layer_num_for_display} (Cont.): Moving to {current_target_z_microns / 1000.0:.4f} mm at {calculated_continuous_velocity_um_s:.2f} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²")
                     
                     # Set phase to Lift (movement starts)
-                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                            self.sensor_data_window_instance.position_logger_thread.set_phase("Lift")
+                    self._set_phase_robust("Lift")
                     
                     self.axis.move_absolute(
                         position=current_target_z_microns,
@@ -863,9 +981,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     cv2.waitKey(1)
                     
                     # Set phase to Exposure
-                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                            self.sensor_data_window_instance.position_logger_thread.set_phase("Exposure")
+                    self._set_phase_robust("Exposure")
 
                     # 2. Exposure
                     if current_exposure_s > 0:
@@ -878,9 +994,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     cv2.waitKey(1)
                     
                     # Set phase to Pause (blackout period)
-                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                            self.sensor_data_window_instance.position_logger_thread.set_phase("Pause")
+                    self._set_phase_robust("Pause")
                     
                     # 3b. Turn off DLP power to eliminate background light during movement
                     if hasattr(self, 'controller'):
@@ -915,9 +1029,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     self.update_status_message(f"Stepped L{current_layer_num_for_display}: Peeling up to {z_peel_peak / 1000.0:.4f} mm (Speed: {actual_step_speed_um_s} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
                     
                     # Set phase to Lift (peel movement starts)
-                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                            self.sensor_data_window_instance.position_logger_thread.set_phase("Lift")
+                    self._set_phase_robust("Lift")
                     
                     try:
                         self.axis.move_absolute(
@@ -959,14 +1071,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     self.update_status_message(f"Stepped L{current_layer_num_for_display}: Returning to {z_return_pos / 1000.0:.4f} mm (Target for next layer, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
                     
                     # Set phase to Pause (brief pause at peak before retract)
-                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                            self.sensor_data_window_instance.position_logger_thread.set_phase("Pause")
+                    self._set_phase_robust("Pause")
                     
                     # Set phase to Retract (return movement starts)
-                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                            self.sensor_data_window_instance.position_logger_thread.set_phase("Retract")
+                    self._set_phase_robust("Retract")
                     
                     try:
                         self.axis.move_absolute(
@@ -986,10 +1094,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             # IMPORTANT: Wait 1 second after retraction to let forces settle
                             self.update_status_message(f"L{current_layer_num_for_display}: Waiting 1s for forces to settle before sandwich...")
                             
-                            # Set phase to Pause (settling time)
-                            if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                                if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                                    self.sensor_data_window_instance.position_logger_thread.set_phase("Pause")
+                            # Set phase to Sandwich (entire sandwich routine starts here, including settling)
+                            self._set_phase_robust("Sandwich")
                             
                             time.sleep(1.0)
                             
@@ -997,16 +1103,35 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             actual_sandwich_speed_um_s = self.sandwich_speed_list[i] if i < len(self.sandwich_speed_list) else 500
                             actual_sandwich_touches = 1  # Always 1 touch per layer during printing
                             
-                            # Use max force and measured gap from pre-calibration
-                            contact_force_threshold = -(self.precal_max_force if hasattr(self, 'precal_max_force') else 0.2)  # Negative for compression
+                            # ========== PRESSURE-BASED SANDWICH THRESHOLDS ==========
+                            # Build platform area (circle with 6.35mm diameter)
+                            BUILD_PLATFORM_DIAMETER_MM = 6.35
+                            BUILD_PLATFORM_AREA_MM2 = 3.14159 * (BUILD_PLATFORM_DIAMETER_MM / 2.0) ** 2  # π*r² = 31.67mm²
+                            
+                            # Get current layer's cross-sectional area from PeakForceLogger
+                            layer_area_mm2 = BUILD_PLATFORM_AREA_MM2  # Default to build platform area
+                            if (hasattr(self, 'sensor_data_window_instance') and 
+                                self.sensor_data_window_instance and
+                                hasattr(self.sensor_data_window_instance, 'peak_force_logger') and
+                                self.sensor_data_window_instance.peak_force_logger and
+                                hasattr(self.sensor_data_window_instance.peak_force_logger, 'current_cross_sectional_area_mm2') and
+                                self.sensor_data_window_instance.peak_force_logger.current_cross_sectional_area_mm2 is not None):
+                                layer_area_mm2 = self.sensor_data_window_instance.peak_force_logger.current_cross_sectional_area_mm2
+                            
+                            # Get target pressure from precalibration (stored in Pa)
+                            target_pressure_pa = self.precal_target_pressure_pa if hasattr(self, 'precal_target_pressure_pa') else 15790
+                            target_pressure_mpa = target_pressure_pa / 1000000.0  # Convert Pa to MPa (N/mm²)
+                            
+                            # Calculate force threshold based on current layer area and target pressure
+                            contact_force_threshold = -(target_pressure_mpa * layer_area_mm2)  # Negative for compression
+                            
                             measured_gap = self.measured_gap_mm
                             
-                            self.update_status_message(f"L{current_layer_num_for_display}: Starting sandwich (Gap:{measured_gap:.3f}mm, ContactForce:{abs(contact_force_threshold):.3f}N, Speed:{actual_sandwich_speed_um_s}µm/s)")
+                            self.update_status_message(f"L{current_layer_num_for_display}: Starting sandwich (Gap:{measured_gap:.3f}mm)")
+                            self.update_status_message(f"L{current_layer_num_for_display}: Pressure mode: {target_pressure_mpa:.6f}MPa × {layer_area_mm2:.2f}mm² = {abs(contact_force_threshold):.3f}N")
+                            self.update_status_message(f"L{current_layer_num_for_display}: Speed: {actual_sandwich_speed_um_s}µm/s")
                             
-                            # Set phase to Sandwich (sandwich routine starts)
-                            if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                                if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                                    self.sensor_data_window_instance.position_logger_thread.set_phase("Sandwich")
+                            # Phase already set to Sandwich during settling period above
                             
                             # Calculate sandwich target position (where we want to end up after sandwich)
                             sandwich_target_position_um = z_return_pos
@@ -1025,7 +1150,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                     
                                     # Get current position and calculate waypoints
                                     current_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                    target_glass_um = current_pos_um + (measured_gap * 1000.0)
+                                    # Target is the layer position itself - never go past it
+                                    target_glass_um = sandwich_target_position_um
                                     gap_um = measured_gap * 1000.0
                                     
                                     # Get pause time from this layer
@@ -1038,11 +1164,21 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         
                                         # ========== ADAPTIVE SANDWICH PARAMETERS ==========
                                         # Check if we have adaptive speed override from previous layer
-                                        if hasattr(self, 'adaptive_sandwich_speed_um_s') and self.adaptive_sandwich_speed_um_s is not None:
-                                            base_sandwich_speed = self.adaptive_sandwich_speed_um_s
-                                            self.update_status_message(f"L{current_layer_num_for_display}: Using ADAPTIVE speed: {base_sandwich_speed:.0f}µm/s (adjusted from previous layer)")
+                                        # ONLY use adaptive speed if this is NOT the first sandwich layer
+                                        # SAFETY: Clamp adaptive speed to reasonable range (50-2000 µm/s)
+                                        if (hasattr(self, 'adaptive_sandwich_speed_um_s') and 
+                                            self.adaptive_sandwich_speed_um_s is not None and
+                                            hasattr(self, 'sandwich_layer_count') and self.sandwich_layer_count > 0):
+                                            base_sandwich_speed = max(50.0, min(2000.0, self.adaptive_sandwich_speed_um_s))
+                                            if base_sandwich_speed != self.adaptive_sandwich_speed_um_s:
+                                                self.update_status_message(f"L{current_layer_num_for_display}: CLAMPED adaptive speed: {self.adaptive_sandwich_speed_um_s:.0f}µm/s → {base_sandwich_speed:.0f}µm/s")
+                                            else:
+                                                self.update_status_message(f"L{current_layer_num_for_display}: Using ADAPTIVE speed: {base_sandwich_speed:.0f}µm/s (adjusted from previous layer)")
                                         else:
                                             base_sandwich_speed = actual_sandwich_speed_um_s
+                                            if not hasattr(self, 'sandwich_layer_count'):
+                                                self.sandwich_layer_count = 0
+                                            self.update_status_message(f"L{current_layer_num_for_display}: Using USER speed: {base_sandwich_speed:.0f}µm/s")
                                         
                                         # Calculate 3-tier speeds (divide by 3 and 9, not 2 and 4)
                                         speed_tier1 = base_sandwich_speed        # 0-33% of gap
@@ -1052,7 +1188,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         # Force thresholds for adaptive behavior and hard failsafe
                                         adaptive_force_threshold = contact_force_threshold * 0.75  # 75% - triggers adaptive stop
                                         relaxation_force_threshold = contact_force_threshold * 0.5  # 50% - relaxation target
-                                        hard_failsafe_threshold = contact_force_threshold * 2.0    # 200% - hard abort
+                                        hard_failsafe_threshold = -5.0  # Absolute 5N limit (negative = compression)
                                         
                                         # Calculate waypoint positions for 3-TIER DESCENT
                                         waypoint_33pct_um = current_pos_um + (gap_um * 0.33)
@@ -1060,7 +1196,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         
                                         self.update_status_message(f"L{current_layer_num_for_display}: ADAPTIVE SANDWICH - 3-Tier Ramping")
                                         self.update_status_message(f"L{current_layer_num_for_display}: Speeds: {speed_tier1:.0f}/{speed_tier2:.0f}/{speed_tier3:.0f}µm/s, Gap:{measured_gap:.3f}mm")
-                                        self.update_status_message(f"L{current_layer_num_for_display}: Force thresholds: Adaptive=75% ({abs(adaptive_force_threshold):.3f}N), Relax=50% ({abs(relaxation_force_threshold):.3f}N), HARD FAILSAFE=200% ({abs(hard_failsafe_threshold):.3f}N)")
+                                        self.update_status_message(f"L{current_layer_num_for_display}: Pressure thresholds: Adaptive=75% ({abs(adaptive_force_threshold):.3f}N), Relax=50% ({abs(relaxation_force_threshold):.3f}N), HARD FAILSAFE=200% ({abs(hard_failsafe_threshold):.3f}N)")
                                         
                                         # ========== ADAPTIVE DESCENT PHASE ==========
                                         speed_was_reduced = False
@@ -1094,7 +1230,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                                 # Check if we've reached segment target
                                                 if abs(current_position - segment_target_um) < 5.0:  # Within 5µm
                                                     self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG {seg_label} DONE] Reached: {current_position/1000.0:.4f}mm")
-                                                    break
+                                                    break  # Exit the while loop for this segment
                                                 
                                                 # Start movement to segment target
                                                 self.axis.move_absolute(
@@ -1116,8 +1252,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                                     
                                                     current_force = force_gauge.get_latest_calibrated_force()
                                                     
-                                                    # Check for 200% threshold (HARD FAILSAFE - ABORT)
-                                                    hard_failsafe_threshold = contact_force_threshold * 2.0  # 200% of max force
+                                                    # Check for 5N absolute threshold (HARD FAILSAFE)
+                                                    hard_failsafe_threshold = -5.0  # Absolute 5N limit
                                                     if current_force <= hard_failsafe_threshold:
                                                         self.axis.stop()
                                                         while self.axis.is_busy():
@@ -1143,8 +1279,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                                 
                                                 # If adaptive stop was triggered
                                                 if adaptive_stop_triggered:
+                                                    # CRITICAL: Ensure axis is fully stopped before proceeding
+                                                    while self.axis.is_busy():
+                                                        time.sleep(0.01)
+                                                    
                                                     # Record force at stop
                                                     force_at_stop = current_force
+                                                    stopped_position = self.axis.get_position(Units.LENGTH_MICROMETRES)
                                                     
                                                     # WAIT for force relaxation or 3 seconds
                                                     self.update_status_message(f"L{current_layer_num_for_display}: Waiting for force relaxation (target: ≥{relaxation_force_threshold:.3f}N or 3s)...")
@@ -1200,15 +1341,16 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                                     # Continue loop - will start new movement at reduced speed
                                                     continue
                                                 
-                                                # If no adaptive stop, movement completed normally
-                                                # Check if we reached target glass position
+                                                # If no adaptive stop, movement completed normally to segment target
+                                                # Exit the inner while loop to proceed to next segment
                                                 final_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
+                                                
+                                                # Check if we reached final glass position (last segment)
                                                 if abs(final_pos - target_glass_um) < 5.0:  # Within 5µm of glass
                                                     reached_glass = True
                                                     self.update_status_message(f"L{current_layer_num_for_display}: Reached glass position at {final_pos/1000.0:.4f}mm")
-                                                    break
                                                 
-                                                # Otherwise continue to next iteration (shouldn't normally reach here)
+                                                # Exit inner while loop for this segment
                                                 break
                                         
                                         final_descent_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
@@ -1233,9 +1375,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                             ascent_tier2 = speed_tier2
                                             ascent_tier3 = speed_tier3
                                         
-                                        # Calculate ascent waypoints: 0→33% at tier3, 33→50% at tier2, PAUSE, 50→100% at tier1
-                                        waypoint_33pct_up_um = final_descent_pos_um - (gap_um * 0.33)  # 33% up from glass
-                                        waypoint_50pct_up_um = final_descent_pos_um - (gap_um * 0.5)   # 50% up from glass (PAUSE HERE)
+                                        # Calculate ascent waypoints based on ACTUAL distance to travel
+                                        # (not the full gap, since we may have stopped early)
+                                        actual_travel_distance_um = sandwich_target_position_um - final_descent_pos_um
+                                        waypoint_33pct_up_um = final_descent_pos_um + (actual_travel_distance_um * 0.33)  # 33% of way back
+                                        waypoint_50pct_up_um = final_descent_pos_um + (actual_travel_distance_um * 0.5)   # 50% of way back (PAUSE HERE)
                                         
                                         self.update_status_message(f"L{current_layer_num_for_display}: ========== STARTING ASCENT ==========")
                                         self.update_status_message(f"L{current_layer_num_for_display}: Ascent speeds: {ascent_tier3:.0f}→{ascent_tier2:.0f}µm/s, PAUSE, then {ascent_tier1:.0f}µm/s")
@@ -1268,6 +1412,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         if actual_pause > 0:
                                             pause_half = actual_pause / 2.0
                                             self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 1/2] Pausing {pause_half:.1f}s at 50% point")
+                                            # Keep phase as Sandwich during pause (part of sandwich routine)
                                             time.sleep(pause_half)
                                             self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 1/2 DONE] Resuming")
                                         
@@ -1290,8 +1435,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         if actual_pause > 0:
                                             pause_half = actual_pause / 2.0
                                             self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 2/2] Pausing {pause_half:.1f}s at layer height")
+                                            # Keep phase as Sandwich during pause (part of sandwich routine)
                                             time.sleep(pause_half)
                                             self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 2/2 DONE]")
+                                        
+                                        # Increment sandwich layer counter for adaptive speed tracking
+                                        self.sandwich_layer_count += 1
                                         
                                         self.update_status_message(f"L{current_layer_num_for_display}: ========== SANDWICH ROUTINE COMPLETE ==========")
                                     
@@ -1512,6 +1661,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         # PAUSE AT 50% POINT if specified
                                         if actual_pause > 0:
                                             self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE] Pausing {actual_pause}s at 50% ascent point")
+                                            # Keep phase as Sandwich during pause (part of sandwich routine)
                                             time.sleep(actual_pause)
                                             pos_after_pause = self.axis.get_position(Units.LENGTH_MICROMETRES)
                                             self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE DONE] Resuming from: {pos_after_pause/1000.0:.4f}mm")
@@ -1536,7 +1686,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                         
                             except Exception as sandwich_error:
                                 self.update_status_message(f"L{current_layer_num_for_display}: Sandwich routine error: {sandwich_error}", error=True)
-                                # Don't abort print on sandwich failure, just log it
+                                # Don't abort print on sandwich failure (including hard failsafe), just log it and continue
                         else:
                             # Pre-calibration was not run or failed, skip sandwich
                             if i == 0:  # Only log once on first layer
@@ -1599,22 +1749,29 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     z_at_previous_exposure_microns = z_return_pos
                 
                 # --- COMMON POST-LAYER OPERATIONS ---
+                # Call update_auto_logger if EITHER layer logger OR peak force logger is active
                 if self.sensor_data_window_instance and \
-                   self.sensor_data_window_instance.sensor_window.winfo_exists() and \
-                   hasattr(self.sensor_data_window_instance, 'automated_layer_logger') and \
-                   self.sensor_data_window_instance.automated_layer_logger and \
-                   self.sensor_data_window_instance.automated_layer_logger.is_configured_for_run:
-                    # Corrected method name below
-                    self.sensor_data_window_instance.update_auto_logger_current_layer(
-                        current_layer_num_for_display,
-                        z_at_previous_exposure_microns / 1000.0 
-                    )
+                   self.sensor_data_window_instance.sensor_window.winfo_exists():
+                    # Check if either logger is active
+                    layer_logger_active = (hasattr(self.sensor_data_window_instance, 'automated_layer_logger') and 
+                                          self.sensor_data_window_instance.automated_layer_logger and 
+                                          self.sensor_data_window_instance.automated_layer_logger.is_configured_for_run)
+                    peak_logger_active = (hasattr(self.sensor_data_window_instance, 'automated_peak_force_logger') and 
+                                         self.sensor_data_window_instance.automated_peak_force_logger)
+                    
+                    if layer_logger_active or peak_logger_active:
+                        # Get image path for cross-sectional area calculation
+                        current_image_path = self.image_list[i] if i < len(self.image_list) else None
+                        # Corrected method name below
+                        self.sensor_data_window_instance.update_auto_logger_current_layer(
+                            current_layer_num_for_display,
+                            z_at_previous_exposure_microns / 1000.0,
+                            image_path=current_image_path
+                        )
 
                 if actual_layer_pause_s > 0:
                     # Set phase to Pause (layer pause period before next exposure)
-                    if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                        if hasattr(self.sensor_data_window_instance, 'position_logger_thread'):
-                            self.sensor_data_window_instance.position_logger_thread.set_phase("Pause")
+                    self._set_phase_robust("Pause")
                     
                     time.sleep(actual_layer_pause_s)
                                 
@@ -1684,6 +1841,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     status_to_write = "stopped"
                 elif not self.flag:  # If flag is still false, it means it completed normally
                     status_to_write = "completed"
+                
+                # Finalize experimental conditions tracking
+                if self.exp_conditions_window:
+                    try:
+                        success = (status_to_write == "completed")
+                        self.exp_conditions_window.end_print(success=success)
+                        self.update_status_message(f"Experimental conditions finalized: {status_to_write}")
+                    except Exception as exp_err:
+                        self.update_status_message(f"Error finalizing experimental conditions: {exp_err}", error=True)
 
                 # Save print status file
                 status_file_path = os.path.join(self.current_print_session_log_dir, "print_status.txt")
@@ -1736,17 +1902,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
     def set_home(self):
         self.reference = float(self.t4.get())
-        # self.axis.move_relative(position=self.offset, unit=Units.LENGTH_MILLIMETRES, # Assuming self.offset is a relative move
-        #                         wait_until_idle=False) # Consider if you want to wait or not
-        # It's usually safer to move to an absolute position after setting a reference if that's the intent.
-        # If self.reference is the new "zero", you might not need to move by self.offset here,
-        # or if you do, ensure it's to the correct absolute target.
-        # For now, just updating the status message:
+        # Update the Z-axis position display to show home position (0.0)
+        self.t4.delete(0, 'end')
+        self.t4.insert(END, "0.0")
         self.update_status_message("Home Set") # Use update_status_message instead of direct t8 manipulation
 
     def get_position(self):
         self.t4.delete(0, 'end')
-        self.t4.insert(END, str(self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)))
+        # Get absolute position and subtract reference to show position relative to home
+        absolute_position = self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)
+        relative_position = absolute_position - self.reference
+        self.t4.insert(END, str(relative_position))
 
     def goto_position(self):
         self.axis.move_absolute(position=float(self.t4.get()), unit=Units.LENGTH_MILLIMETRES,
@@ -1769,7 +1935,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
         if hasattr(self, 'controller'):
             try:
                 self.controller.stopsequence()  # Stop any previous sequence
-                self.controller.power(current=0)    # Ensure LED is off
+                self.controller.power(current=0)    # Ensure LED is off BEFORE mode change
+                time.sleep(0.1)  # Wait for power to be off before changing mode
                 self.controller.changemode(3)   # Set to HDMI/video input mode
                 self.controller.hdmi()          # Activate HDMI input
                 time.sleep(0.5) # Short pause for mode change to settle
@@ -1804,8 +1971,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.intensity_list,
                 self.sandwich_speed_list  # Only sandwich parameter from instruction file
             ) = self.application.set_image_directory(path)
-            
-            print(f"DEBUG: MyWindow.input_directory AFTER set_image_directory. MyWindow.image_list length: {len(self.image_list)}, Application.image_list length: {len(self.application.image_list)}") # Add this
 
             # If set_image_directory was successful and found the file, update active_instruction_file_path
             if os.path.exists(potential_instruction_file_path):
@@ -1878,6 +2043,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
             pause=pause,
             sandwich_speed=sandwich_speed
         )
+        
+        # Automatically load the generated instruction file
+        self.input_directory()
     
     def update_status_message(self, message, error=False):
         """Updates the status message label and logs to console."""
@@ -1925,6 +2093,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
         else:
             self.sensor_data_window_instance.sensor_window.lift()
             self.update_auto_home_button_state()
+    
+    def open_exp_conditions_window(self):
+        """Open or show the experimental conditions window."""
+        if self.exp_conditions_window is None:
+            self.exp_conditions_window = ExperimentalConditionsWindow(self.win, self.update_status_message)
+            self.update_status_message("Experimental conditions window opened")
+        else:
+            self.exp_conditions_window.show_window()
 
     def start_auto_home_sequence(self):
         if self.auto_home_thread and self.auto_home_thread.is_alive():
@@ -2739,16 +2915,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
             daily_log_dir = os.path.dirname(self.current_print_session_log_dir)
             
             # Find only the current session (most recent) instead of all sessions
-            print(f"DEBUG: Looking for current session in daily dir: {daily_log_dir}")
-            
             # Use the PostPrintAnalyzer method to find current session in daily directory
             current_session = analyzer.find_current_session_in_daily_dir(daily_log_dir)
             
             if not current_session:
                 self.update_status_message("Post-print analysis: No current session found.")
                 return
-            
-            print(f"DEBUG: Current session found: {current_session['date']}/{current_session['print_number']}")
             
             # Analyze the current session and track results
             total_plots = 0
@@ -2780,7 +2952,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 
         except Exception as e:
             self.update_status_message(f"Error in post-print analysis: {e}")
-            print(f"DEBUG: Post-print analysis error: {e}")
             import traceback
             traceback.print_exc()
 

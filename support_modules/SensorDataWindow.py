@@ -131,7 +131,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         buttons_and_sampling_frame.pack(side=TOP, fill=X, pady=(2, 5), padx=5)
         Label(buttons_and_sampling_frame, text="Sampling (ms):", font=control_box_font).pack(side=LEFT, padx=(0, 5))
         self.sampling_rate_entry = Entry(buttons_and_sampling_frame, width=6, font=control_box_font)
-        self.sampling_rate_entry.insert(0, "25")
+        self.sampling_rate_entry.insert(0, "10")  # Changed default from 25ms to 10ms
         self.sampling_rate_entry.pack(side=LEFT, padx=(0, 10))
 
         self.b_clear_plot = Button(buttons_and_sampling_frame, text="Clear Plot", command=self.clear_plot_data, font=control_box_font)
@@ -337,7 +337,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.automated_peak_force_logger = PeakForceLogger(
                     output_csv_filepath=automated_csv_path,
                     is_manual_log=False,  # This is automated logging
-                    use_corrected_calculator=True  # Use the unified corrected calculator
+                    use_corrected_calculator=True,  # Use the unified corrected calculator
+                    main_window_ref=self.prince_main_app_ref  # Pass main window reference
                 )
                 
                 self.update_main_status(f"Automated work of adhesion logging configured. Output: {automated_csv_path}")
@@ -478,7 +479,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self._setup_default_logging_paths()
 
     def _setup_default_logging_paths(self):
-        print("DEBUG: SensorDataWindow._setup_default_logging_paths called.")
         # Ensure necessary imports are at the top of the file:
         # import os
         # import datetime
@@ -496,7 +496,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
             return False
 
         main_app_image_dir_val = self.prince_main_app_ref.t1.get()
-        print(f"DEBUG: _setup_default_logging_paths: main_app_image_dir_val = '{main_app_image_dir_val}'")
 
         if not main_app_image_dir_val or not os.path.isdir(main_app_image_dir_val):
             self.update_main_status(
@@ -514,17 +513,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # Create [main_image_dir]/Printing_Logs/
             printing_logs_base_dir = os.path.join(main_app_image_dir_val, "Printing_Logs")
             os.makedirs(printing_logs_base_dir, exist_ok=True)
-            print(f"DEBUG: Ensured base directory exists: {printing_logs_base_dir}")
 
             # Create [main_image_dir]/Printing_Logs/[YYYY-MM-DD]/
             date_str = datetime.datetime.now().strftime('%Y-%m-%d')
             self.date_specific_log_dir_for_windows_file = os.path.join(printing_logs_base_dir, date_str)
             os.makedirs(self.date_specific_log_dir_for_windows_file, exist_ok=True)
-            print(f"DEBUG: Ensured date-specific directory exists: {self.date_specific_log_dir_for_windows_file}")
 
             # Path for logging_windows.csv
             logging_windows_csv_path = os.path.join(self.date_specific_log_dir_for_windows_file, "logging_windows.csv")
-            print(f"DEBUG: Target logging_windows.csv path: {logging_windows_csv_path}")
 
             # Create logging_windows.csv with header if it doesn't exist
             if not os.path.exists(logging_windows_csv_path):
@@ -923,9 +919,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
             current_queue_positions = []
             current_queue_forces = []
 
-            while not self.position_plot_queue.empty():
+            # Limit queue processing to prevent GUI blocking
+            MAX_QUEUE_ITEMS_PER_CYCLE = 100
+            items_processed = 0
+
+            while not self.position_plot_queue.empty() and items_processed < MAX_QUEUE_ITEMS_PER_CYCLE:
                 time_stamp, position, force = self.position_plot_queue.get_nowait()
                 new_data_processed = True
+                items_processed += 1
 
                 # Always call pfl_add_data_point. It will internally check which loggers are active.
                 self.pfl_add_data_point(time_stamp, position, force)
@@ -957,16 +958,20 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.line_force.set_data(current_plot_x, current_plot_y_force)
 
                 self.ax.relim()
-                self.ax.autoscale_view(True, True, False) 
-                self.ax2.relim() # Relim for the force axis as well
+                self.ax2.relim()
 
+                # Full autoscale every 100ms (10 times per second)
                 current_time_for_rescale = time.time()
-                if current_time_for_rescale - self.last_y_rescale_time >= 1.0: 
-                    self.ax.autoscale_view(scalex=False, scaley=True) 
-                    self.ax2.autoscale_view(scalex=False, scaley=True) # Autoscale Y for force axis too
+                if current_time_for_rescale - self.last_y_rescale_time >= 0.1: 
+                    self.ax.autoscale_view(True, True, True) # Full rescale X and Y
+                    self.ax2.autoscale_view(True, True, True) # Full rescale for force axis too
                     self.last_y_rescale_time = current_time_for_rescale # Reset timer
+                else:
+                    # Fast path: only adjust X axis dynamically between full rescales
+                    self.ax.autoscale_view(True, False, False) 
+                    self.ax2.autoscale_view(True, False, False)
                 
-                # Remove previous shading
+                # Remove previous shading (though nothing is ever added to it)
                 for coll in self._shading:
                     coll.remove() # Correctly remove the collection
                 self._shading.clear()
@@ -1010,7 +1015,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 # Instantiate PeakForceLogger for manual logging
                 self.peak_force_logger = PeakForceLogger(
                     output_csv_filepath=output_csv_filepath,
-                    is_manual_log=True # Explicitly set for manual logging
+                    is_manual_log=True,  # Explicitly set for manual logging
+                    main_window_ref=self.prince_main_app_ref  # Pass main window reference
                 )
                 # For manual logging, we now explicitly start monitoring.
                 # This call is CRUCIAL to reset the data buffers and prevent memory leaks.
@@ -1036,7 +1042,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     # The method no longer requires current_layer parameter
                     self.peak_force_logger.stop_monitoring_and_log_peak()
                     self.update_main_status(f"Manual Work of Adhesion data saved to: {self.peak_force_logger.output_csv_filepath}")
-                    print(f"DEBUG: Manual PeakForceLogger stopped and logged. File: {self.peak_force_logger.output_csv_filepath}")
                 except Exception as e:
                     self.update_main_status(f"Error saving manual Work of Adhesion data: {e}", error=True)
                     traceback.print_exc()
@@ -1044,7 +1049,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     self.peak_force_logger = None # Clear the instance
             else:
                 self.update_main_status("Manual Work of Adhesion logging disabled.")
-                print("DEBUG: Record Work checkbox unchecked, no PFL instance to stop.")
 
     def pfl_add_data_point(self, timestamp, position, force):
         """Adds a single data point to the PeakForceLogger(s) if they're active."""
@@ -1091,8 +1095,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # they would need to toggle it again to re-create the manual PFL.
             # This behavior is acceptable for now.
 
-    def update_auto_logger_current_layer(self, layer_number, z_position_mm):
-        """Called by Prince_Segmented to update the AutomatedLayerLogger with the current layer and Z pos."""
+    def update_auto_logger_current_layer(self, layer_number, z_position_mm, image_path=None):
+        """
+        Called by Prince_Segmented to update the AutomatedLayerLogger with the current layer and Z pos.
+        
+        Args:
+            layer_number: Current layer number
+            z_position_mm: Current Z position in mm
+            image_path: Optional path to the PNG image for this layer (for cross-sectional area calculation)
+        """
         if self.automated_layer_logger and self.auto_log_enabled_var.get():
             try:
                 # Corrected method call to match AutomatedLayerLogger.py
@@ -1121,7 +1132,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.automated_peak_force_logger.start_monitoring_for_layer(
                     layer_number, 
                     z_peel_peak=peel_start_z, 
-                    z_return_pos=peel_end_z
+                    z_return_pos=peel_end_z,
+                    image_path=image_path  # Pass image path for cross-sectional area calculation
                 )
                 
                 self.update_main_status(f"AutoPFL: Started monitoring for layer {layer_number}")

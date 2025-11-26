@@ -56,8 +56,8 @@ class PostPrintAnalyzer:
         # Use AnalysisPlotter (same as batch processing)
         self.plotter = AnalysisPlotter()
         
-        # Initialize RawDataProcessor (handles all analysis and plotting)
-        self.processor = RawDataProcessor(self.calculator, self.plotter)
+        # Initialize RawDataProcessor (handles data processing only, not plotting)
+        self.processor = RawDataProcessor(self.calculator)
         
     def find_current_session_in_daily_dir(self, daily_dir):
         """
@@ -272,15 +272,44 @@ class PostPrintAnalyzer:
                 save_path=str(plot_path)
             )
             
-            if layers and plot_path.exists():
-                print(f"    📊 Plot saved: {plot_path.name}")
+            # RawDataProcessor now returns only layers (no plotting)
+            if layers and len(layers) > 0:
                 print(f"    ✅ Analysis complete - {len(layers)} layers processed")
+                
+                # Generate plot using the plotter
+                try:
+                    # Load the CSV data for plotting
+                    import pandas as pd
+                    df = pd.read_csv(csv_file)
+                    time_data = df['Elapsed Time (s)'].to_numpy()
+                    force_data = df['Force (N)'].to_numpy()
+                    
+                    # Apply smoothing for plotting (consistent with processor)
+                    from adhesion_metrics_calculator import AdhesionMetricsCalculator
+                    calculator = AdhesionMetricsCalculator()
+                    smoothed_force = calculator._apply_smoothing(force_data)
+                    
+                    # Use create_plot method with proper arguments
+                    self.plotter.create_plot(
+                        time_data=time_data,
+                        force_data=force_data,
+                        smoothed_force=smoothed_force,
+                        layers=layers,
+                        title=plot_title,
+                        save_path=str(plot_path)
+                    )
+                    if plot_path.exists():
+                        print(f"    📊 Plot saved: {plot_path.name}")
+                except Exception as e:
+                    print(f"    ⚠️  Plot generation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
                 return {
                     'csv_file': csv_file,
-                    'plot_path': plot_path,
+                    'plot_path': plot_path if plot_path.exists() else None,
                     'layers': layers,
-                    'data_points': len(layers),  # Number of layers
+                    'data_points': len(layers),
                     'time_range': f"Processed {len(layers)} layers"
                 }
             else:
@@ -352,18 +381,32 @@ class PostPrintAnalyzer:
                 print("    ⚠️  Work of adhesion file is empty")
                 return
             
-            # Required columns
-            required_cols = ['Layer', 'Peak_Force_N', 'Work_of_Adhesion_mJ']
-            if not all(col in df.columns for col in required_cols):
+            # Check for required columns (try both naming conventions)
+            if 'layer_number' in df.columns:
+                layer_col = 'layer_number'
+                force_col = 'peak_force_N'
+                woa_col = 'work_of_adhesion_mJ'
+            elif 'Layer' in df.columns:
+                layer_col = 'Layer'
+                force_col = 'Peak_Force_N'
+                woa_col = 'Work_of_Adhesion_mJ'
+            else:
                 print(f"    ⚠️  Missing required columns in work of adhesion file")
+                print(f"    Available columns: {list(df.columns)}")
+                return
+            
+            # Verify all required columns exist
+            if not all(col in df.columns for col in [layer_col, force_col, woa_col]):
+                print(f"    ⚠️  Missing required columns in work of adhesion file")
+                print(f"    Available columns: {list(df.columns)}")
                 return
             
             # Create figure with 3 subplots (Peak Force, Work of Adhesion, Duration)
             fig, axes = plt.subplots(3, 1, figsize=(12, 14))
             
-            layers = df['Layer'].values
-            peak_force = df['Peak_Force_N'].values
-            work_of_adhesion = df['Work_of_Adhesion_mJ'].values
+            layers = df[layer_col].values
+            peak_force = df[force_col].values
+            work_of_adhesion = df[woa_col].values
             
             # Plot 1: Peak Force vs Layer
             axes[0].plot(layers, peak_force, 'o-', color='#2E86AB', linewidth=2, markersize=8,
