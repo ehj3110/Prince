@@ -1,0 +1,15 @@
+# Allied Vision Camera & ChArUco Calibration Requirements
+# Install with: pip install -r camera_requirements.txt
+
+# Allied Vision Vimba SDK Python bindings
+# Note: Requires Vimba SDK to be installed from Allied Vision website
+# https://www.alliedvision.com/en/products/vimba-sdk/
+vimba>=2.0.0
+
+# Image processing and ChArUco detection
+# IMPORTANT: Use opencv-contrib-python (includes ArUco modules)
+opencv-contrib-python>=4.5.0
+Pillow>=9.0.0
+
+# Already included in main project, but listed for reference
+numpy>=1.19.0
