@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 import queue
 import warnings
+import cv2
 
 # Import the adhesion_metrics_calculator from the support_modules directory
 from support_modules.adhesion_metrics_calculator import AdhesionMetricsCalculator
@@ -18,7 +19,12 @@ class PeakForceLogger:
     for consistent analysis across all system components.
     """
     DATA_CHUNK_SIZE = 5000  # Number of data points to hold in memory before flushing
-    def __init__(self, output_csv_filepath, is_manual_log=False, use_corrected_calculator=True, phase_event_queue_ref=None):
+    
+    # Hardware-specific pixel size for cross-sectional area calculation
+    PIXEL_SIZE_MM = 0.007607  # Each pixel is 0.007607mm x 0.007607mm (square)
+    PIXEL_AREA_MM2 = PIXEL_SIZE_MM ** 2  # Area of one pixel in mm²
+    
+    def __init__(self, output_csv_filepath, is_manual_log=False, use_corrected_calculator=True, phase_event_queue_ref=None, main_window_ref=None):
         self.output_csv_filepath = output_csv_filepath
         self.is_manual_log = is_manual_log
         self.use_corrected_calculator = use_corrected_calculator
@@ -27,6 +33,9 @@ class PeakForceLogger:
         self._lock = threading.Lock()
         self._data_buffer = []  # Stores (timestamp, position, force) tuples for the current layer
         self.log_file_exists = os.path.exists(self.output_csv_filepath)
+        
+        # Reference to main window for experimental conditions tracking
+        self.main_window_ref = main_window_ref
         
         # Phase event tracking
         self.phase_event_queue_ref = phase_event_queue_ref
@@ -56,7 +65,10 @@ class PeakForceLogger:
         self.plot_force_data = []      # Stores corresponding forces for shading
         
         self.z_peel_peak_mm = None 
-        self.z_return_pos_mm = None 
+        self.z_return_pos_mm = None
+        
+        # Cross-sectional area tracking (set per layer)
+        self.current_cross_sectional_area_mm2 = None
 
         # Only create header for automated logging, not manual logging
         if not self.is_manual_log:
@@ -68,11 +80,17 @@ class PeakForceLogger:
             with open(self.output_csv_filepath, 'w', newline='') as f:
                 writer = csv.writer(f)
                 header = [
-                    'Layer_Number', 'Peak_Force_N', 'Work_of_Adhesion_mJ',
-                    'Initiation_Time_s', 'Propagation_End_Time_s', 'Total_Duration_s',
-                    'Distance_to_Peak_mm', 'Distance_to_Propagate_mm',
-                    'Total_Peel_Distance_mm', 'Peak_Retraction_Force_N',
-                    'Peak_Position_mm', 'Propagation_Start_Time_s', 'Propagation_Duration_s'
+                    'Layer_Number', 
+                    'Peak_Force_N', 
+                    'Work_of_Adhesion_mJ',
+                    'Initiation_Time_s', 
+                    'Propagation_Duration_s', 
+                    'Total_Duration_s',
+                    'Distance_to_Peak_mm', 
+                    'Distance_to_Propagate_mm',
+                    'Total_Peel_Distance_mm', 
+                    'Peak_Retraction_Force_N',
+                    'Cross_Sectional_Area_mm2'
                 ]
                 writer.writerow(header)
 
@@ -92,8 +110,16 @@ class PeakForceLogger:
             logger.add_data_point(time.time(), 10.5, 0.2)
             logger.stop_monitoring_and_log_peak()
 
-    def start_monitoring_for_layer(self, layer_number, z_peel_peak=None, z_return_pos=None):
-        """Start monitoring for a new layer."""
+    def start_monitoring_for_layer(self, layer_number, z_peel_peak=None, z_return_pos=None, image_path=None):
+        """
+        Start monitoring for a new layer.
+        
+        Args:
+            layer_number: Current layer number
+            z_peel_peak: Peak z position (mm)
+            z_return_pos: Return z position (mm)
+            image_path: Path to the PNG image for this layer (optional, for area calculation)
+        """
         with self._lock:
             self.current_layer_number = layer_number
             self.z_peel_peak_mm = z_peel_peak
@@ -105,7 +131,60 @@ class PeakForceLogger:
             # Reset phase tracking for new layer
             self._current_lifting_start_idx = None
             self._current_lifting_start_time = None
-        print(f"PFL: Started monitoring layer {layer_number} (peel: {z_peel_peak}mm, return: {z_return_pos}mm)")
+            
+            # Calculate cross-sectional area from image if provided
+            if image_path is not None:
+                self.current_cross_sectional_area_mm2 = self._calculate_cross_sectional_area(image_path)
+            else:
+                self.current_cross_sectional_area_mm2 = None
+        
+        # Format area message (conditional must be outside format specifier)
+        area_msg = f"{self.current_cross_sectional_area_mm2:.4f}mm²" if self.current_cross_sectional_area_mm2 is not None else "N/A"
+        print(f"PFL: Started monitoring layer {layer_number} (peel: {z_peel_peak}mm, return: {z_return_pos}mm, area: {area_msg})")
+    
+    def _calculate_cross_sectional_area(self, image_path):
+        """
+        Calculate cross-sectional area from PNG image by counting white pixels.
+        
+        Args:
+            image_path: Path to the PNG image file (can be string or Path object)
+            
+        Returns:
+            Cross-sectional area in mm² or None if calculation fails
+        """
+        try:
+            from pathlib import Path
+            
+            # Convert to Path object (handles both string and Path inputs)
+            img_path = Path(image_path)
+            
+            if not img_path.exists():
+                print(f"PFL: ERROR - Image does not exist: {img_path}")
+                return None
+            
+            # Read image as grayscale
+            img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+            
+            if img is None:
+                print(f"PFL: ERROR - Failed to read image: {img_path}")
+                return None
+            
+            # Count white pixels (≥250 threshold for robustness)
+            white_pixel_count = np.sum(img >= 250)
+            
+            if white_pixel_count == 0:
+                print(f"PFL: ERROR - No white pixels in image (min={np.min(img)}, max={np.max(img)})")
+                return None
+            
+            # Calculate area
+            area_mm2 = white_pixel_count * self.PIXEL_AREA_MM2
+            
+            print(f"PFL: Area calculated: {area_mm2:.4f}mm² ({white_pixel_count} white pixels)")
+            return area_mm2
+            
+        except Exception as e:
+            print(f"PFL: ERROR calculating area: {e}")
+            return None
     
     def _update_phase_info(self):
         """Check for phase events and update lifting start marker."""
@@ -229,7 +308,8 @@ class PeakForceLogger:
                     "data_buffer": list(self._data_buffer),
                     "is_manual": self.is_manual_log,
                     "output_csv": self.output_csv_filepath,
-                    "lifting_start_idx": lifting_start_idx  # NEW: Pass phase info
+                    "lifting_start_idx": lifting_start_idx,  # Pass phase info
+                    "cross_sectional_area_mm2": self.current_cross_sectional_area_mm2  # Pass area
                 }
                 self._analysis_queue.put(data_to_process)
                 self._data_buffer.clear()
@@ -252,6 +332,7 @@ class PeakForceLogger:
                 layer_num = job["layer_number"]
                 data_buffer = job["data_buffer"]
                 lifting_start_idx = job.get("lifting_start_idx")  # Get phase info
+                cross_sectional_area_mm2 = job.get("cross_sectional_area_mm2")  # Get area
                 
                 # Extract data arrays
                 timestamps = np.array([dp[0] for dp in data_buffer])
@@ -266,17 +347,17 @@ class PeakForceLogger:
                 if self.use_corrected_calculator and self.calculator:
                     success = self._analyze_with_corrected_calculator(
                         timestamps, positions, forces, layer_num, 
-                        job["output_csv"], job["is_manual"], lifting_start_idx
+                        job["output_csv"], job["is_manual"], lifting_start_idx, cross_sectional_area_mm2
                     )
                 else:
-                    success = self._analyze_with_original_method(timestamps, positions, forces, layer_num, job["output_csv"], job["is_manual"])
+                    success = self._analyze_with_original_method(timestamps, positions, forces, layer_num, job["output_csv"], job["is_manual"], cross_sectional_area_mm2)
                 
                 print(f"PFL Worker: {'Successfully' if success else 'Failed to'} analyze and log layer {layer_num}")
 
             except Exception as e:
                 print(f"PFL Worker: Error during analysis: {e}")
 
-    def _analyze_with_corrected_calculator(self, timestamps, positions, forces, layer_number, output_csv, is_manual, lifting_start_idx=None):
+    def _analyze_with_corrected_calculator(self, timestamps, positions, forces, layer_number, output_csv, is_manual, lifting_start_idx=None, cross_sectional_area_mm2=None):
         """Analyze data using the corrected AdhesionMetricsCalculator."""
         try:
             # Use the corrected calculator with phase awareness
@@ -289,6 +370,15 @@ class PeakForceLogger:
             peak_force = results.get('peak_force', 0.0)
             work_of_adhesion = results.get('work_of_adhesion_mJ', 0.0)
             pre_initiation_time = results.get('pre_initiation_time', np.nan)
+            
+            # Update experimental conditions failure detector if main window exists
+            if (self.main_window_ref and 
+                hasattr(self.main_window_ref, 'exp_conditions_window') and 
+                self.main_window_ref.exp_conditions_window):
+                try:
+                    self.main_window_ref.exp_conditions_window.update_layer_force(layer_number, peak_force)
+                except Exception as e:
+                    print(f"PFL: Error updating experimental conditions: {e}")
             propagation_end_time = results.get('propagation_end_time', np.nan)
             peak_force_time = results.get('peak_force_time', np.nan)
             
@@ -328,14 +418,15 @@ class PeakForceLogger:
                 'peak_retraction_force': peak_retraction_force,  # Keep sign (expected negative)
                 'peak_position_mm': peak_position,
                 'propagation_start_time_s': peak_force_time if not np.isnan(peak_force_time) else np.nan,
-                'propagation_duration_s': propagation_duration
+                'propagation_duration_s': propagation_duration,
+                'cross_sectional_area_mm2': cross_sectional_area_mm2  # Add cross-sectional area
             }, layer_number, output_csv, is_manual)
             
         except Exception as e:
             print(f"PFL: Error in corrected calculator analysis for layer {layer_number}: {e}")
             return False
 
-    def _analyze_with_original_method(self, timestamps, positions, forces, layer_number, output_csv, is_manual):
+    def _analyze_with_original_method(self, timestamps, positions, forces, layer_number, output_csv, is_manual, cross_sectional_area_mm2=None):
         """Fallback analysis using original simple method."""
         try:
             # Original simple calculations
@@ -362,21 +453,14 @@ class PeakForceLogger:
                 time_to_peak = np.nan
                 total_time = np.nan
             
-            # Debug logs for positions and forces
-            print(f"DEBUG: Positions: {positions}")
-            print(f"DEBUG: Forces: {forces}")
-
             # Simple distance
             if len(positions) >= 2:
                 distance_to_peak = abs(positions[np.argmax(forces)] - positions[0])
-                print(f"DEBUG: Calculated distance_to_peak: {distance_to_peak}")
             else:
                 distance_to_peak = np.nan
-                print("DEBUG: Insufficient data for distance_to_peak calculation.")
 
             # Ensure layer 0 is not processed
             if layer_number == 0:
-                print("DEBUG: Skipping processing for layer 0.")
                 return False
             
             return self._write_original_csv_entry({
@@ -386,7 +470,8 @@ class PeakForceLogger:
                 'peel_time_s': np.nan,  # Not calculated in simple method
                 'total_time_s': total_time,
                 'distance_to_peak_mm': distance_to_peak,
-                'peak_retraction_force': peak_retraction_force
+                'peak_retraction_force': peak_retraction_force,
+                'cross_sectional_area_mm2': cross_sectional_area_mm2  # Add cross-sectional area
             }, layer_number, output_csv, is_manual)
             
         except Exception as e:
@@ -409,15 +494,13 @@ class PeakForceLogger:
                     f"{results['peak_force']:.4f}",
                     f"{results['work_of_adhesion_mJ']:.4f}",
                     f"{results['initiation_time_s']:.4f}" if not np.isnan(results['initiation_time_s']) else "NaN",
-                    f"{results['propagation_end_time_s']:.4f}" if not np.isnan(results['propagation_end_time_s']) else "NaN",
+                    f"{results['propagation_duration_s']:.4f}" if not np.isnan(results['propagation_duration_s']) else "NaN",
                     f"{results['total_duration_s']:.4f}" if not np.isnan(results['total_duration_s']) else "NaN",
                     f"{results['distance_to_peak_mm']:.4f}" if not np.isnan(results['distance_to_peak_mm']) else "NaN",
                     f"{results['distance_to_propagate_mm']:.4f}" if not np.isnan(results['distance_to_propagate_mm']) else "NaN",
                     f"{results['total_peel_distance_mm']:.4f}" if not np.isnan(results['total_peel_distance_mm']) else "NaN",
                     f"{results['peak_retraction_force']:.4f}",
-                    f"{results['peak_position_mm']:.4f}" if not np.isnan(results['peak_position_mm']) else "NaN",
-                    f"{results['propagation_start_time_s']:.4f}" if not np.isnan(results['propagation_start_time_s']) else "NaN",
-                    f"{results['propagation_duration_s']:.4f}" if not np.isnan(results['propagation_duration_s']) else "NaN"
+                    f"{results['cross_sectional_area_mm2']:.4f}" if results['cross_sectional_area_mm2'] is not None else "NaN"
                 ]
                 if is_manual:
                     writer.writerow([timestamp_str] + row_data)
@@ -437,6 +520,7 @@ class PeakForceLogger:
 
             with open(output_csv, 'a', newline='') as f:
                 writer = csv.writer(f)
+                # Match the 11-column header format
                 row_data = [
                     layer_number,
                     f"{results['peak_force']:.4f}",
@@ -445,7 +529,10 @@ class PeakForceLogger:
                     f"{results['peel_time_s']:.4f}" if not np.isnan(results['peel_time_s']) else "NaN",
                     f"{results['total_time_s']:.4f}" if not np.isnan(results['total_time_s']) else "NaN",
                     f"{results['distance_to_peak_mm']:.4f}" if not np.isnan(results['distance_to_peak_mm']) else "NaN",
-                    f"{results['peak_retraction_force']:.4f}"
+                    "NaN",  # Distance_to_Propagate_mm (not calculated in simple method)
+                    f"{results['distance_to_peak_mm']:.4f}" if not np.isnan(results['distance_to_peak_mm']) else "NaN",  # Total_Peel_Distance_mm (use distance_to_peak as approximation)
+                    f"{results['peak_retraction_force']:.4f}",
+                    f"{results['cross_sectional_area_mm2']:.4f}" if results['cross_sectional_area_mm2'] is not None else "NaN"
                 ]
                 if is_manual:
                     writer.writerow([timestamp_str] + row_data)
