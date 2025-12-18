@@ -743,3 +743,188 @@ class MasterPlotter:
         plt.close()
         
         return output_file
+    
+    
+    def generate_absolute_force_plot(self,
+                                     df: pd.DataFrame,
+                                     plot_name: str = 'MASTER_absolute_peak_force_analysis.png') -> Path:
+        """
+        Generate master absolute peak force plot (peak force - baseline force).
+        
+        Creates 1x2 subplot:
+        - Left: Layer vs Absolute Peak Force
+        - Right: Radius vs Absolute Peak Force
+        
+        Both with power law fits and R² values.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with columns: layer_number, absolute_peak_force_N, radius_mm (or area_mm2)
+        plot_name : str, optional
+            Output filename
+            
+        Returns
+        -------
+        Path
+            Path to saved plot file
+        """
+        print("\n📊 Generating absolute peak force analysis plot...")
+        
+        # Calculate radius from area if needed
+        if 'radius_mm' not in df.columns and 'area_mm2' in df.columns:
+            df = df.copy()
+            df['radius_mm'] = np.sqrt(df['area_mm2'] / np.pi)
+        
+        if 'radius_mm' not in df.columns:
+            print("ERROR: Cannot calculate radius - area_mm2 column not found")
+            return None
+        
+        # Check for absolute_peak_force_N column
+        if 'absolute_peak_force_N' not in df.columns:
+            print("ERROR: absolute_peak_force_N column not found in DataFrame")
+            return None
+        
+        # Get condition column
+        condition_col = self._get_condition_column(df)
+        if condition_col is None:
+            print("ERROR: No condition column found")
+            return None
+        
+        # Filter out invalid forces
+        df_filtered = df[df['absolute_peak_force_N'] > 0].copy()
+        
+        print(f"  Total measurements: {len(df_filtered)}")
+        print(f"  Conditions: {df_filtered[condition_col].nunique()}")
+        print(f"  Absolute peak force range: {df_filtered['absolute_peak_force_N'].min():.4f} - {df_filtered['absolute_peak_force_N'].max():.4f} N")
+        
+        # Create 1x2 subplot figure
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7))
+        fig.suptitle('Master Absolute Peak Force Analysis\n(Peak Force - Baseline Force)', 
+                     fontsize=16, fontweight='bold', y=0.98)
+        
+        # Color scheme
+        conditions = sorted(df_filtered[condition_col].unique())
+        colors = plt.cm.Set2(np.linspace(0, 1, len(conditions)))
+        
+        # ============================================
+        # Plot 1: Layer vs Absolute Peak Force
+        # ============================================
+        for idx, condition in enumerate(conditions):
+            df_cond = df_filtered[df_filtered[condition_col] == condition]
+            
+            x = df_cond['layer_number'].values
+            y = df_cond['absolute_peak_force_N'].values
+            
+            # Remove NaN
+            mask = ~(np.isnan(x) | np.isnan(y))
+            x_clean, y_clean = x[mask], y[mask]
+            
+            if len(x_clean) < 3:
+                continue
+            
+            color = colors[idx]
+            
+            # Plot individual points
+            ax1.scatter(x_clean, y_clean, alpha=0.4, s=40, color=color, 
+                       label=f'{condition} (n={len(x_clean)})')
+            
+            # Fit power law
+            try:
+                from scipy.optimize import curve_fit
+                mask_positive = (x_clean > 0) & (y_clean > 0)
+                if mask_positive.sum() >= 3:
+                    popt, _ = curve_fit(lambda x, a, b: a * np.power(x, b), 
+                                       x_clean[mask_positive], y_clean[mask_positive],
+                                       p0=[0.01, 1.0], maxfev=5000)
+                    
+                    # Calculate R²
+                    y_pred = popt[0] * np.power(x_clean[mask_positive], popt[1])
+                    ss_res = np.sum((y_clean[mask_positive] - y_pred) ** 2)
+                    ss_tot = np.sum((y_clean[mask_positive] - np.mean(y_clean[mask_positive])) ** 2)
+                    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                    
+                    # Plot fit
+                    x_fit = np.linspace(x_clean.min(), x_clean.max(), 100)
+                    y_fit = popt[0] * np.power(x_fit, popt[1])
+                    ax1.plot(x_fit, y_fit, '-', color=color, linewidth=2.5, alpha=0.8)
+                    
+                    # Update legend with equation
+                    handles, labels = ax1.get_legend_handles_labels()
+                    if handles:
+                        eq_text = f'  [{popt[0]:.3f} × x^{popt[1]:.3f}, R²={r_squared:.3f}]'
+                        labels[-1] = labels[-1] + eq_text
+                        ax1.legend(handles, labels, fontsize=9, loc='best', framealpha=0.9)
+            except Exception as e:
+                print(f"    Warning: Power law fit failed for {condition}: {e}")
+        
+        ax1.set_xlabel('Layer Number', fontsize=13, fontweight='bold')
+        ax1.set_ylabel('Absolute Peak Force (N)', fontsize=13, fontweight='bold')
+        ax1.set_title('Layer vs Absolute Peak Force', fontsize=14, fontweight='bold', pad=10)
+        ax1.grid(True, alpha=0.3, linestyle='--')
+        
+        # ============================================
+        # Plot 2: Radius vs Absolute Peak Force
+        # ============================================
+        for idx, condition in enumerate(conditions):
+            df_cond = df_filtered[df_filtered[condition_col] == condition]
+            
+            x = df_cond['radius_mm'].values
+            y = df_cond['absolute_peak_force_N'].values
+            
+            # Remove NaN
+            mask = ~(np.isnan(x) | np.isnan(y))
+            x_clean, y_clean = x[mask], y[mask]
+            
+            if len(x_clean) < 3:
+                continue
+            
+            color = colors[idx]
+            
+            # Plot individual points
+            ax2.scatter(x_clean, y_clean, alpha=0.4, s=40, color=color,
+                       label=f'{condition} (n={len(x_clean)})')
+            
+            # Fit power law
+            try:
+                from scipy.optimize import curve_fit
+                mask_positive = (x_clean > 0) & (y_clean > 0)
+                if mask_positive.sum() >= 3:
+                    popt, _ = curve_fit(lambda x, a, b: a * np.power(x, b), 
+                                       x_clean[mask_positive], y_clean[mask_positive],
+                                       p0=[0.01, 1.0], maxfev=5000)
+                    
+                    # Calculate R²
+                    y_pred = popt[0] * np.power(x_clean[mask_positive], popt[1])
+                    ss_res = np.sum((y_clean[mask_positive] - y_pred) ** 2)
+                    ss_tot = np.sum((y_clean[mask_positive] - np.mean(y_clean[mask_positive])) ** 2)
+                    r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                    
+                    # Plot fit
+                    x_fit = np.linspace(x_clean.min(), x_clean.max(), 100)
+                    y_fit = popt[0] * np.power(x_fit, popt[1])
+                    ax2.plot(x_fit, y_fit, '-', color=color, linewidth=2.5, alpha=0.8)
+                    
+                    # Update legend with equation
+                    handles, labels = ax2.get_legend_handles_labels()
+                    if handles:
+                        eq_text = f'  [{popt[0]:.3f} × x^{popt[1]:.3f}, R²={r_squared:.3f}]'
+                        labels[-1] = labels[-1] + eq_text
+                        ax2.legend(handles, labels, fontsize=9, loc='best', framealpha=0.9)
+            except Exception as e:
+                print(f"    Warning: Power law fit failed for {condition}: {e}")
+        
+        ax2.set_xlabel('Radius (mm)', fontsize=13, fontweight='bold')
+        ax2.set_ylabel('Absolute Peak Force (N)', fontsize=13, fontweight='bold')
+        ax2.set_title('Radius vs Absolute Peak Force', fontsize=14, fontweight='bold', pad=10)
+        ax2.grid(True, alpha=0.3, linestyle='--')
+        
+        # Adjust layout and save
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        
+        output_file = self.output_directory / plot_name
+        plt.savefig(output_file, dpi=self.dpi, bbox_inches='tight')
+        print(f"    ✓ Saved: {output_file}")
+        plt.close()
+        
+        return output_file
