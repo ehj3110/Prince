@@ -2098,6 +2098,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         """Open or show the experimental conditions window."""
         if self.exp_conditions_window is None:
             self.exp_conditions_window = ExperimentalConditionsWindow(self.win, self.update_status_message)
+            self.exp_conditions_window.show_window()
             self.update_status_message("Experimental conditions window opened")
         else:
             self.exp_conditions_window.show_window()

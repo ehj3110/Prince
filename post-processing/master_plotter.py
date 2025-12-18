@@ -47,6 +47,54 @@ class MasterPlotter:
         """
         self.output_directory = Path(output_directory)
         self.dpi = dpi
+    
+    def _bin_areas(self, df: pd.DataFrame, area_col: str = 'area_mm2', tolerance: float = 0.05):
+        """
+        Bin areas that are within tolerance % of each other.
+        Replaces similar area values with their mean.
+        
+        Args:
+            df: DataFrame with area column
+            area_col: Name of area column
+            tolerance: Fractional tolerance (0.05 = 5%)
+        
+        Returns:
+            DataFrame with binned areas
+        """
+        df = df.copy()
+        unique_areas = sorted(df[area_col].unique())
+        area_bins = {}
+        
+        for area in unique_areas:
+            # Check if this area fits into an existing bin
+            binned = False
+            for bin_center in area_bins.keys():
+                if abs(area - bin_center) / bin_center <= tolerance:
+                    area_bins[bin_center].append(area)
+                    binned = True
+                    break
+            
+            # Create new bin if needed
+            if not binned:
+                area_bins[area] = [area]
+        
+        # Create mapping from original areas to bin means
+        area_mapping = {}
+        for bin_areas in area_bins.values():
+            bin_mean = np.mean(bin_areas)
+            for area in bin_areas:
+                area_mapping[area] = bin_mean
+        
+        # Apply mapping
+        df[area_col] = df[area_col].map(area_mapping)
+        
+        # Report binning results
+        n_original = len(unique_areas)
+        n_binned = len(area_bins)
+        if n_binned < n_original:
+            print(f"  Binned {n_original} unique areas into {n_binned} bins (±{tolerance*100:.0f}% tolerance)")
+        
+        return df
         
     def generate_area_analysis_plot(self,
                                     df: pd.DataFrame,
@@ -60,7 +108,7 @@ class MasterPlotter:
         Generate a master area analysis plot with configurable metrics.
         
         Args:
-            df: DataFrame with columns: condition_label, area_mm2, [metric columns]
+            df: DataFrame with columns: membrane_type, tank_type, area_mm2, [metric columns]
             metrics: List of (column_name, ylabel) tuples to plot
                     Example: [('peak_force_N', 'Peak Force (N)'),
                              ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)')]
@@ -75,6 +123,10 @@ class MasterPlotter:
             Path to saved plot file
         """
         print(f"  Creating {plot_name}...")
+        
+        # Create detailed condition label: Membrane + Tank
+        if 'detailed_condition' not in df.columns:
+            df['detailed_condition'] = df['membrane_type'] + ' + ' + df['tank_type']
         
         # Determine subplot layout based on number of metrics
         n_metrics = len(metrics)
@@ -104,7 +156,7 @@ class MasterPlotter:
             axes = axes.flatten()
         
         # Define color map for conditions
-        conditions = sorted(df['condition_label'].unique())
+        conditions = sorted(df['detailed_condition'].unique())
         colors = plt.cm.tab10(np.linspace(0, 1, len(conditions)))
         color_map = dict(zip(conditions, colors))
         
@@ -113,40 +165,72 @@ class MasterPlotter:
             ax = axes[idx]
             
             for condition in conditions:
-                condition_data = df[df['condition_label'] == condition].copy()
+                condition_data = df[df['detailed_condition'] == condition].copy()
                 color = color_map[condition]
                 
                 # Apply absolute value if requested
                 if apply_abs and metric_col in apply_abs:
                     condition_data[metric_col] = condition_data[metric_col].abs()
                 
-                # Group by area and calculate mean + SEM
-                grouped = condition_data.groupby('area_mm2')[metric_col].agg(['mean', 'sem'])
-                areas = grouped.index.values
+                # Bin similar areas together (within 5%)
+                condition_data = self._bin_areas(condition_data, 'area_mm2', tolerance=0.05)
+                
+                # Group by area and calculate mean, std, count
+                grouped = condition_data.groupby('area_mm2')[metric_col].agg(['mean', 'std', 'count']).reset_index()
+                areas = grouped['area_mm2'].values
                 means = grouped['mean'].values
-                sems = grouped['sem'].values
+                stds = grouped['std'].values
+                counts = grouped['count'].values
                 
-                # Plot mean with markers
-                ax.plot(areas, means, 'o', color=color, markersize=3, alpha=0.7, label=condition)
+                # Calculate SEM (Standard Error of Mean)
+                sems = stds / np.sqrt(counts)
+                # Replace NaN (from single-sample groups) with 0
+                sems = np.nan_to_num(sems, nan=0.0)
                 
-                # Add shaded SEM region
-                ax.fill_between(areas, means - sems, means + sems, color=color, alpha=0.2)
+                # Debug: Print SEM stats for first condition
+                if idx == 0 and conditions.index(condition) == 0:
+                    print(f"    SEM range for {condition}: {sems[sems>0].min():.6f} to {sems[sems>0].max():.6f}" if any(sems>0) else f"    No SEM (all single samples) for {condition}")
                 
-                # Add polynomial trendline
+                # Add filled SEM error region (only where SEM > 0)
+                ax.fill_between(areas, means - sems, means + sems, color=color, alpha=0.2, zorder=1)
+                
+                # Plot means as markers only (no connecting line)
+                ax.plot(areas, means, 'o', color=color, markersize=4, 
+                       alpha=0.8, label=condition, zorder=3)
+                
+                # Add polynomial trendline through the means
                 if add_trendlines and len(areas) > 2:
                     try:
+                        # Fit polynomial to grouped means
                         z = np.polyfit(areas, means, 2)
                         p = np.poly1d(z)
+                        
+                        # Create smooth x-axis for plotting trendline
                         area_smooth = np.linspace(areas.min(), areas.max(), 100)
-                        ax.plot(area_smooth, p(area_smooth), '-', color=color, linewidth=1.5, alpha=0.8)
-                    except:
+                        trendline = p(area_smooth)
+                        
+                        # Plot trendline (dotted)
+                        ax.plot(area_smooth, trendline, ':', color=color, linewidth=1, alpha=0.7, zorder=2)
+                    except Exception as e:
                         pass  # Skip trendline if fitting fails
             
-            # Format subplot
-            ax.set_xlabel('Contact Area (mm²)', fontsize=11)
-            ax.set_ylabel(ylabel, fontsize=11)
-            ax.legend(fontsize=8, loc='best')
+            # Format subplot (V4 style)
+            ax.set_xlabel('Contact Area (mm²)', fontsize=12, fontweight='bold')
+            ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+            ax.legend(fontsize=10, loc='best')
             ax.grid(True, alpha=0.3)
+            
+            # Set y-axis to start at 0 if all values are positive
+            if len(axes) > idx:  # Safety check
+                y_data = []
+                for condition in conditions:
+                    condition_data = df[df['detailed_condition'] == condition].copy()
+                    if apply_abs and metric_col in apply_abs:
+                        condition_data[metric_col] = condition_data[metric_col].abs()
+                    grouped = condition_data.groupby('area_mm2')[metric_col].mean()
+                    y_data.extend(grouped.values)
+                if len(y_data) > 0 and min(y_data) >= 0:
+                    ax.set_ylim(bottom=0)
         
         # Hide unused subplots
         for idx in range(n_metrics, len(axes)):
@@ -187,7 +271,8 @@ class MasterPlotter:
             plot_name=plot_name,
             title='Master Distance Analysis',
             apply_abs=['distance_to_peak_mm', 'propagation_distance_mm'],
-            add_trendlines=True
+            add_trendlines=True,
+            figsize=(16, 6)  # Match subplot dimensions: 1x2 layout with same height/width as 2x2
         )
     
     def generate_stiffness_analysis_plot(self,
@@ -233,13 +318,17 @@ class MasterPlotter:
         """
         print(f"  Creating {plot_name}...")
         
+        # Create detailed condition label: Membrane + Tank
+        if 'detailed_condition' not in df.columns:
+            df['detailed_condition'] = df['membrane_type'] + ' + ' + df['tank_type']
+        
         # Create figure with 2x2 subplots
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
         fig.suptitle('Master Area Ratio Analysis', fontsize=16, fontweight='bold')
         axes = axes.flatten()
         
         # Define color map for conditions
-        conditions = sorted(df['condition_label'].unique())
+        conditions = sorted(df['detailed_condition'].unique())
         colors = plt.cm.tab10(np.linspace(0, 1, len(conditions)))
         color_map = dict(zip(conditions, colors))
         
@@ -247,7 +336,7 @@ class MasterPlotter:
         metrics = [
             ('peak_force_N', 'Peak Force (N)'),
             ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)'),
-            ('peel_distance_mm', 'Peel Distance (mm)'),
+            ('pre_initiation_distance_mm', 'Pre-Initiation Distance (mm)'),
             ('total_peel_time_s', 'Total Peel Time (s)')
         ]
         
@@ -256,39 +345,55 @@ class MasterPlotter:
             ax = axes[idx]
             
             for condition in conditions:
-                condition_data = df[df['condition_label'] == condition].copy()
+                condition_data = df[df['detailed_condition'] == condition].copy()
                 color = color_map[condition]
                 
                 # Apply absolute value for distance metric
-                if metric_col == 'peel_distance_mm':
+                if metric_col == 'pre_initiation_distance_mm':
                     condition_data[metric_col] = condition_data[metric_col].abs()
                 
-                # Group by area_ratio and calculate mean + SEM
-                grouped = condition_data.groupby('area_ratio')[metric_col].agg(['mean', 'sem'])
-                ratios = grouped.index.values
+                # Bin similar area_ratios together (within 5%)
+                condition_data = self._bin_areas(condition_data, 'area_ratio', tolerance=0.05)
+                
+                # Group by area_ratio and calculate mean, std, count
+                grouped = condition_data.groupby('area_ratio')[metric_col].agg(['mean', 'std', 'count']).reset_index()
+                ratios = grouped['area_ratio'].values
                 means = grouped['mean'].values
-                sems = grouped['sem'].values
+                stds = grouped['std'].values
+                counts = grouped['count'].values
                 
-                # Plot mean with markers
-                ax.plot(ratios, means, 'o', color=color, markersize=3, alpha=0.7, label=condition)
+                # Calculate SEM (Standard Error of Mean)
+                sems = stds / np.sqrt(counts)
+                # Replace NaN (from single-sample groups) with 0
+                sems = np.nan_to_num(sems, nan=0.0)
                 
-                # Add shaded SEM region
-                ax.fill_between(ratios, means - sems, means + sems, color=color, alpha=0.2)
+                # Add filled SEM error region (only where SEM > 0)
+                ax.fill_between(ratios, means - sems, means + sems, color=color, alpha=0.2, zorder=1)
                 
-                # Add polynomial trendline
+                # Plot means as markers only (no connecting line)
+                ax.plot(ratios, means, 'o', color=color, markersize=4, 
+                       alpha=0.8, label=condition, zorder=3)
+                
+                # Add polynomial trendline through the means
                 if len(ratios) > 2:
                     try:
+                        # Fit polynomial to grouped means
                         z = np.polyfit(ratios, means, 2)
                         p = np.poly1d(z)
+                        
+                        # Create smooth x-axis for plotting trendline
                         ratio_smooth = np.linspace(ratios.min(), ratios.max(), 100)
-                        ax.plot(ratio_smooth, p(ratio_smooth), '-', color=color, linewidth=1.5, alpha=0.8)
-                    except:
+                        trendline = p(ratio_smooth)
+                        
+                        # Plot trendline (dotted)
+                        ax.plot(ratio_smooth, trendline, ':', color=color, linewidth=1, alpha=0.7, zorder=2)
+                    except Exception as e:
                         pass  # Skip trendline if fitting fails
             
-            # Format subplot
-            ax.set_xlabel('Area Ratio (Layer / Membrane)', fontsize=11)
-            ax.set_ylabel(ylabel, fontsize=11)
-            ax.legend(fontsize=8, loc='best')
+            # Format subplot (V4 style)
+            ax.set_xlabel('Area Ratio (Layer / Membrane)', fontsize=12, fontweight='bold')
+            ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+            ax.legend(fontsize=10, loc='best')
             ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
@@ -327,7 +432,7 @@ class MasterPlotter:
         metrics_modified = [
             ('peak_force_N', 'Peak Force (N)'),
             ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)'),
-            ('peel_distance_mm', 'Peel Distance (mm)'),
+            ('pre_initiation_distance_mm', 'Pre-Initiation Distance (mm)'),
             ('total_peel_time_s', 'Total Peel Time (s)')
         ]
         
@@ -337,7 +442,7 @@ class MasterPlotter:
                 metrics=metrics_modified,
                 plot_name='MASTER_area_analysis.png',
                 title='Master Area Analysis',
-                apply_abs=['peel_distance_mm']
+                apply_abs=['pre_initiation_distance_mm']
             )
         )
         
@@ -383,7 +488,16 @@ class MasterPlotter:
         
         # Add radius column to dataframe
         df_with_radius = df.copy()
+        
+        # Bin areas first (to handle slight measurement variations)
+        df_with_radius = self._bin_areas(df_with_radius, area_col='area_mm2', tolerance=0.05)
+        
+        # Calculate radius from binned areas
         df_with_radius['radius_mm'] = np.sqrt(df_with_radius['area_mm2'] / np.pi)
+        
+        # Create detailed condition label: Membrane + Tank
+        if 'detailed_condition' not in df_with_radius.columns:
+            df_with_radius['detailed_condition'] = df_with_radius['membrane_type'] + ' + ' + df_with_radius['tank_type']
         
         # Determine subplot layout based on number of metrics
         n_metrics = len(metrics)
@@ -413,7 +527,7 @@ class MasterPlotter:
             axes = axes.flatten()
         
         # Define color map for conditions
-        conditions = sorted(df_with_radius['condition_label'].unique())
+        conditions = sorted(df_with_radius['detailed_condition'].unique())
         colors = plt.cm.tab10(np.linspace(0, 1, len(conditions)))
         color_map = dict(zip(conditions, colors))
         
@@ -422,7 +536,7 @@ class MasterPlotter:
             ax = axes[idx]
             
             for condition in conditions:
-                condition_data = df_with_radius[df_with_radius['condition_label'] == condition].copy()
+                condition_data = df_with_radius[df_with_radius['detailed_condition'] == condition].copy()
                 color = color_map[condition]
                 
                 # Apply absolute value if requested
@@ -531,3 +645,101 @@ class MasterPlotter:
         print("\nAll radius-based plots generated successfully!")
         
         return output_files
+    
+    def generate_force_per_radius_plot(self, 
+                                       df: pd.DataFrame,
+                                       plot_name: str = 'MASTER_force_per_radius.png',
+                                       force_col: str = 'peak_force_N',
+                                       area_col: str = 'area_mm2',
+                                       condition_col: str = 'detailed_condition'):
+        """
+        Generate Force/Radius vs Radius plot to analyze edge effects.
+        
+        This plot helps answer: Does force scale with perimeter (edge effect) 
+        or does the force per unit perimeter change with size?
+        
+        Args:
+            df: DataFrame with data
+            plot_name: Output filename
+            force_col: Column name for force values
+            area_col: Column name for area values
+            condition_col: Column for grouping conditions
+        
+        Returns:
+            Path to saved plot
+        """
+        print(f"  Creating {plot_name}...")
+        
+        # Calculate radius and force per radius
+        df_plot = df.copy()
+        df_plot['radius_mm'] = np.sqrt(df_plot[area_col] / np.pi)
+        df_plot['force_per_radius_N_per_mm'] = df_plot[force_col] / df_plot['radius_mm']
+        
+        # Bin areas for consistent grouping
+        df_plot = self._bin_areas(df_plot, area_col=area_col, tolerance=0.05)
+        
+        # Recalculate radius from binned areas
+        df_plot['radius_mm'] = np.sqrt(df_plot[area_col] / np.pi)
+        df_plot['force_per_radius_N_per_mm'] = df_plot[force_col] / df_plot['radius_mm']
+        
+        # Get unique conditions
+        conditions = df_plot[condition_col].unique()
+        colors = plt.cm.Set2(np.linspace(0, 1, len(conditions)))
+        
+        # Create figure
+        fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+        
+        for idx, condition in enumerate(conditions):
+            df_cond = df_plot[df_plot[condition_col] == condition]
+            
+            # Group by radius and calculate mean ± SEM
+            grouped = df_cond.groupby('radius_mm')['force_per_radius_N_per_mm'].agg(['mean', 'sem', 'count'])
+            radii = grouped.index.values
+            means = grouped['mean'].values
+            sems = grouped['sem'].values
+            
+            color = colors[idx]
+            
+            # Plot data points with error bars
+            ax.errorbar(radii, means, yerr=sems, 
+                       fmt='o', markersize=8, capsize=5, capthick=2,
+                       color=color, label=condition, alpha=0.7)
+            
+            # Add polynomial trendline
+            if len(radii) >= 3:
+                try:
+                    z = np.polyfit(radii, means, deg=2)
+                    p = np.poly1d(z)
+                    x_smooth = np.linspace(radii.min(), radii.max(), 100)
+                    y_smooth = p(x_smooth)
+                    ax.plot(x_smooth, y_smooth, '--', color=color, linewidth=2, alpha=0.6)
+                except:
+                    pass
+        
+        # Formatting
+        ax.set_xlabel('Contact Radius (mm)', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Force / Radius (N/mm)', fontsize=12, fontweight='bold')
+        ax.set_title('Peak Force per Unit Radius vs Contact Radius\n(Edge Effect Analysis)', 
+                    fontsize=14, fontweight='bold', pad=20)
+        ax.legend(fontsize=10, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        # Add interpretation text
+        textstr = ('Interpretation:\n'
+                  '• Constant F/r → Force scales with perimeter (edge-dominated)\n'
+                  '• Increasing F/r → Bulk effects dominate at larger sizes\n'
+                  '• Decreasing F/r → Edge effects more important at small sizes')
+        ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=9,
+               verticalalignment='top', bbox=dict(boxstyle='round', 
+               facecolor='wheat', alpha=0.3))
+        
+        plt.tight_layout()
+        
+        # Save
+        output_file = self.output_directory / plot_name
+        plt.savefig(output_file, dpi=self.dpi, bbox_inches='tight')
+        print(f"    Saved: {output_file}")
+        
+        plt.close()
+        
+        return output_file

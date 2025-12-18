@@ -343,16 +343,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 
                 self.update_main_status(f"Automated work of adhesion logging configured. Output: {automated_csv_path}")
                 
-                # Start monitoring for layer 1 immediately (will be updated when actual layer processing begins)
-                try:
-                    self.automated_peak_force_logger.start_monitoring_for_layer(
-                        1,  # Start with layer 1
-                        z_peel_peak=1.0,  # Default peel start position
-                        z_return_pos=3.0  # Default peel end position
-                    )
-                    self.update_main_status("Automated peak force monitoring started for initial layer.")
-                except Exception as e:
-                    self.update_main_status(f"Error starting initial automated monitoring: {e}")
+                # Note: Monitoring will start automatically when the first layer begins in the print loop
+                # No need to pre-start monitoring here to avoid duplicate layer 1 entries
                 
                 # Automatically start live readout if not already enabled (required for data collection)
                 if not self.is_live_readout_enabled:

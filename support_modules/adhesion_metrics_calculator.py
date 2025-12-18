@@ -556,14 +556,14 @@ class AdhesionMetricsCalculator:
         """
         Calculate work and energy metrics.
         
-        Work of adhesion is integrated from PEAK FORCE to PROPAGATION END
-        (not from pre-initiation start).
+        Work of adhesion is integrated from PRE-INITIATION START to PROPAGATION END
+        (entire loading phase: pre-initiation + propagation).
         """
         results = {}
         
-        # Extract peel region data - FROM PEAK TO PROPAGATION END
-        peel_positions = positions[peak_idx:prop_end_idx+1]
-        peel_forces = forces[peak_idx:prop_end_idx+1]
+        # Extract peel region data - FROM PRE-INITIATION START TO PROPAGATION END
+        peel_positions = positions[pre_init_idx:prop_end_idx+1]
+        peel_forces = forces[pre_init_idx:prop_end_idx+1]
         peel_forces_corrected = peel_forces - baseline
         
         if len(peel_positions) < 2:

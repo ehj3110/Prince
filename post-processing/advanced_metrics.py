@@ -80,7 +80,8 @@ class AdvancedMetricsCalculator:
     def fit_scaling_law(self, df: pd.DataFrame, 
                        y_metric: str = 'peak_force_N',
                        x_metric: str = 'area_mm2',
-                       condition: Optional[str] = None) -> Dict:
+                       condition: Optional[str] = None,
+                       condition_column: str = 'condition_label') -> Dict:
         """
         Fit power-law scaling: y = k * x^n
         
@@ -94,13 +95,14 @@ class AdvancedMetricsCalculator:
             y_metric: Dependent variable (e.g., 'peak_force_N')
             x_metric: Independent variable (e.g., 'area_mm2')
             condition: Filter to specific condition (e.g., 'Water_1mm_1000um_s')
+            condition_column: Column name to use for filtering (default: 'condition_label')
             
         Returns:
             Dictionary with fit results
         """
         # Filter data if condition specified
         if condition:
-            data = df[df['condition_label'] == condition].copy()
+            data = df[df[condition_column] == condition].copy()
             label = condition
         else:
             data = df.copy()
@@ -156,7 +158,8 @@ class AdvancedMetricsCalculator:
     
     def fit_scaling_laws_by_condition(self, df: pd.DataFrame,
                                       y_metric: str = 'peak_force_N',
-                                      x_metric: str = 'area_mm2') -> pd.DataFrame:
+                                      x_metric: str = 'area_mm2',
+                                      condition_column: str = 'condition_label') -> pd.DataFrame:
         """
         Fit scaling laws for each condition separately.
         
@@ -164,18 +167,19 @@ class AdvancedMetricsCalculator:
             df: DataFrame with data
             y_metric: Dependent variable
             x_metric: Independent variable
+            condition_column: Column name to group by (default: 'condition_label')
             
         Returns:
             DataFrame with scaling law parameters for each condition
         """
         results = []
         
-        for condition in sorted(df['condition_label'].unique()):
-            result = self.fit_scaling_law(df, y_metric, x_metric, condition)
+        for condition in sorted(df[condition_column].unique()):
+            result = self.fit_scaling_law(df, y_metric, x_metric, condition, condition_column)
             results.append(result)
         
         # Also fit overall (all conditions combined)
-        overall = self.fit_scaling_law(df, y_metric, x_metric, condition=None)
+        overall = self.fit_scaling_law(df, y_metric, x_metric, condition=None, condition_column=condition_column)
         results.append(overall)
         
         results_df = pd.DataFrame(results)
