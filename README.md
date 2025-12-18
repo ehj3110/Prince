@@ -41,14 +41,66 @@ python Prince_Segmented.py
 ```
 Ensure all required libraries (Tkinter, OpenCV, Zaber-Motion, Phidget22, etc.) are installed in your Python environment.
 
-## Recent Changes (September 2025)
+## Project Organization
 
-The project recently underwent a significant refactoring to unify the adhesion analysis pipeline, ensuring consistent and accurate results across all parts of the system.
+### Directory Structure
+```
+Prince_Segmented_20250926/
+├── Prince_Segmented.py          # Main printing application
+├── batch_processors/            # Batch data processing scripts
+│   ├── batch_process_universal.py    # Universal processor (recommended)
+│   ├── batch_process_v4_data.py      # Legacy V4 processor
+│   ├── batch_process_v5_data.py      # Legacy V5 processor
+│   └── README.md                     # Batch processor guide
+├── support_modules/             # Core libraries and utilities
+│   ├── adhesion_metrics_calculator.py  # Unified adhesion analysis
+│   ├── ForceGaugeManager.py           # Force gauge control
+│   ├── AutoHomeRoutine.py             # Homing sequences
+│   └── ...
+├── post-processing/             # Analysis and plotting tools
+│   ├── master_plotter.py              # Master comparison plots
+│   ├── analysis_plotter.py            # Individual analysis plots
+│   ├── hybrid_adhesion_plotter.py     # Hybrid analysis system
+│   └── ...
+├── ui_components/               # GUI components
+└── documentation/               # All documentation and guides
+    ├── UNIVERSAL_PROCESSOR_GUIDE.md   # Universal processor guide
+    ├── TESTING_GUIDE.md               # Testing and validation
+    ├── DEPLOYMENT_GUIDE.md            # Setup instructions
+    └── ...
+```
 
-- **Unified Analysis Engine**: The `adhesion_metrics_calculator.py` is now the single, authoritative source for all adhesion calculations.
-- **Upgraded Peak Force Logger**: `PeakForceLogger.py` was completely rewritten to use the new unified calculator, replacing a system where multiple, inconsistent analysis methods were used.
-- **Hybrid Adhesion System**: A new "Hybrid Adhesion Analysis System" (`hybrid_adhesion_plotter.py`) was introduced for streamlined, one-command post-print analysis and visualization.
-- **Validation**: The new unified system was validated against `autolog_L48-L50.csv` and `autolog_L198-L200.csv` datasets to confirm its accuracy.
-- **Documentation**: Markdown files like `UNIFIED_CALCULATOR_IMPLEMENTATION.md` and `PROJECT_UPDATE_HYBRID_SYSTEM.md` were created to document these changes.
+### Documentation - Workflow Guides
 
-This effort resolved inconsistencies in data analysis and has made the system more robust, maintainable, and accurate.
+**New Comprehensive Guides (December 2025):**
+- **Pre-Print Setup**: [documentation/PRE_PRINT_SETUP_GUIDE.md](documentation/PRE_PRINT_SETUP_GUIDE.md) - Hardware setup, camera calibration, force gauge, verification checklist
+- **Printing Process**: [documentation/PRINTING_PROCESS_GUIDE.md](documentation/PRINTING_PROCESS_GUIDE.md) - Print flow, phases, logging systems, sandwich routine, real-time metrics
+- **Post-Processing**: [documentation/POST_PROCESSING_GUIDE.md](documentation/POST_PROCESSING_GUIDE.md) - Batch processing, analysis tools, master plots, statistical analysis
+
+**Additional Resources:**
+- **Troubleshooting**: See [TroubleshootingIdeas.md](TroubleshootingIdeas.md)
+- **GitHub Setup**: See [GITHUB_SETUP_GUIDE.md](GITHUB_SETUP_GUIDE.md)
+- **Deployment**: See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+- **Legacy Documentation**: See [archive/legacy_docs/](archive/legacy_docs/) (archived Dec 2025)
+
+## Recent Changes
+
+### December 2025 - Documentation Consolidation
+- **Three Comprehensive Guides**: Consolidated 28+ fragmented documentation files into 3 workflow-based guides
+  - Pre-print setup (hardware, calibration, verification)
+  - Printing process (print loop, logging, sandwich routine, metrics)
+  - Post-processing (batch processing, analysis tools, master plots, statistics)
+- **Improved Navigation**: Clear workflow-based organization eliminates redundancy
+- **Legacy Docs Archived**: All redundant documentation moved to `archive/legacy_docs/` with content preserved
+
+### November 2025 - Universal Batch Processor
+- **Universal Processing System**: New `batch_process_universal.py` works with any test version (V4, V5, V6, ...) without code changes
+- **Organized Structure**: Moved all documentation to `documentation/` and batch processors to `batch_processors/`
+- **Future-Proof**: No need to write new batch_process_vX scripts for each test series
+
+### September 2025 - Unified Analysis Pipeline
+- **Unified Analysis Engine**: The `adhesion_metrics_calculator.py` is now the single, authoritative source for all adhesion calculations
+- **Upgraded Peak Force Logger**: `PeakForceLogger.py` was completely rewritten to use the new unified calculator
+- **Hybrid Adhesion System**: New "Hybrid Adhesion Analysis System" (`hybrid_adhesion_plotter.py`) for streamlined post-print analysis
+- **Validation**: System validated against multiple datasets to confirm accuracy
+- **Documentation**: Comprehensive documentation in `documentation/` folder
