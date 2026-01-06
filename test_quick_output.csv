@@ -1,0 +1,4 @@
+Layer_Number,Peak_Force_N,Work_of_Adhesion_mJ,Initiation_Time_s,Propagation_Duration_s,Total_Duration_s,Distance_to_Peak_mm,Distance_to_Propagate_mm,Total_Peel_Distance_mm,Peak_Retraction_Force_N,Cross_Sectional_Area_mm2
+
+1,0.9999,0.0300,0.4900,0.0100,0.0200,0.0300,0.0300,0.0600,0.0000,0.8896
+2,0.9999,0.0300,0.4900,0.0100,0.0200,0.0300,0.0300,0.0600,0.0000,1.4724

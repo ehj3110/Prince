@@ -274,22 +274,30 @@ class RawDataProcessor:
         """
         print("\n=== Detecting Boundaries from Phase Markers ===")
         
+        # Convert to string and handle NaN values
+        import pandas as pd
+        phase_data_clean = pd.Series(phase_data).fillna('').astype(str).values
+        
+        # Debug: Show unique phases and their counts
+        unique_phases = pd.Series(phase_data_clean).value_counts()
+        print(f"Unique phases found: {dict(unique_phases)}")
+        
         boundaries = []
         i = 0
         
-        while i < len(phase_data):
+        while i < len(phase_data_clean):
             # Look for start of Lift phase
-            if phase_data[i] == 'Lift':
+            if phase_data_clean[i] == 'Lift':
                 lift_start = i
                 
                 # Search backwards to find the ACTUAL start of lifting (before mislabeled Sandwich)
                 # Stop when we hit a Pause phase or reach the beginning
                 actual_lift_start = lift_start
                 search_idx = lift_start - 1
-                while search_idx >= 0 and phase_data[search_idx] != 'Pause':
+                while search_idx >= 0 and phase_data_clean[search_idx] != 'Pause':
                     # Check if this earlier phase should be part of lifting
                     # (Sandwich and Exposure phases before Lift are often mislabeled)
-                    if phase_data[search_idx] in ['Sandwich', 'Exposure']:
+                    if phase_data_clean[search_idx] in ['Sandwich', 'Exposure']:
                         actual_lift_start = search_idx
                         search_idx -= 1
                     else:
@@ -303,19 +311,19 @@ class RawDataProcessor:
                 
                 # Find end of Lift phase
                 lift_end = lift_start
-                while lift_end < len(phase_data) and phase_data[lift_end] in ['Lift', 'Sandwich', 'Exposure']:
+                while lift_end < len(phase_data_clean) and phase_data_clean[lift_end] in ['Lift', 'Sandwich', 'Exposure']:
                     lift_end += 1
                 lift_end -= 1  # Back to last Lift index
                 
                 # Look for subsequent Retract phase
                 retract_start = lift_end + 1
-                while retract_start < len(phase_data) and phase_data[retract_start] not in ['Retract', 'Lift']:
+                while retract_start < len(phase_data_clean) and phase_data_clean[retract_start] not in ['Retract', 'Lift']:
                     retract_start += 1
                 
-                if retract_start < len(phase_data) and phase_data[retract_start] == 'Retract':
+                if retract_start < len(phase_data_clean) and phase_data_clean[retract_start] == 'Retract':
                     # Find end of Retract phase
                     retract_end = retract_start
-                    while retract_end < len(phase_data) and phase_data[retract_end] == 'Retract':
+                    while retract_end < len(phase_data_clean) and phase_data_clean[retract_end] == 'Retract':
                         retract_end += 1
                     retract_end -= 1  # Back to last Retract index
                     

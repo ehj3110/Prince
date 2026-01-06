@@ -795,10 +795,16 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.plot_data_y_position.clear()
         self.plot_data_y_force.clear()
         
-        # Also clear the force data queue to prevent stale data
+        # Clear ALL queues to prevent stale data accumulation
         while not self.force_data_queue_for_logger.empty():
             try:
                 self.force_data_queue_for_logger.get_nowait()
+            except queue.Empty:
+                break
+        
+        while not self.position_plot_queue.empty():
+            try:
+                self.position_plot_queue.get_nowait()
             except queue.Empty:
                 break
 
@@ -914,6 +920,18 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # Limit queue processing to prevent GUI blocking
             MAX_QUEUE_ITEMS_PER_CYCLE = 100
             items_processed = 0
+            
+            # Check queue size and warn if it's growing too large
+            queue_size = self.position_plot_queue.qsize()
+            if queue_size > 1000:
+                print(f"Warning: Position plot queue is large ({queue_size} items). GUI may slow down.")
+                # Aggressively drain if queue is very large
+                if queue_size > 5000:
+                    drained = 0
+                    while not self.position_plot_queue.empty() and drained < queue_size - 1000:
+                        self.position_plot_queue.get_nowait()
+                        drained += 1
+                    print(f"Drained {drained} old data points from queue to prevent freeze.")
 
             while not self.position_plot_queue.empty() and items_processed < MAX_QUEUE_ITEMS_PER_CYCLE:
                 time_stamp, position, force = self.position_plot_queue.get_nowait()

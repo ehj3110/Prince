@@ -41,6 +41,16 @@ class PositionLogger(threading.Thread):
 
         self.daemon = True # Thread will exit when main program exits
 
+    def set_phase(self, phase_name):
+        """
+        Explicitly set the current phase from Prince_Segmented.
+        This overrides movement-based phase detection.
+        
+        Args:
+            phase_name: One of "Exposure", "Lift", "Retract", "Pause", "Sandwich"
+        """
+        self._current_phase = phase_name
+
     def _open_log_file(self):
         """
         Opens the log file specified by self.log_file_name.
@@ -219,8 +229,8 @@ class PositionLogger(threading.Thread):
                     if self._writer and self._csv_logging_session_start_time is not None:
                         elapsed_time_for_csv = current_loop_time - self._csv_logging_session_start_time
                         
-                        # Determine current phase based on position
-                        current_phase = self._determine_phase(position)
+                        # Use phase explicitly set by Prince_Segmented via set_phase()
+                        # (No longer using movement-based phase detection)
                         
                         pos_str = f"{position:.4f}" if isinstance(position, (int, float)) else "N/A"
                         force_str = f"{latest_force_value_for_log:.6f}" if isinstance(latest_force_value_for_log, (int, float)) else "N/A"
@@ -229,7 +239,7 @@ class PositionLogger(threading.Thread):
                             f"{elapsed_time_for_csv:.3f}",
                             pos_str,
                             force_str,
-                            current_phase
+                            self._current_phase  # Use explicitly set phase from Prince_Segmented
                         ]
                         try:
                             self._writer.writerow(row_data)

@@ -22,8 +22,12 @@ import numpy as np
 from datetime import datetime
 import os
 
-from .AlliedVisionCameraManager import AlliedVisionCameraManager
-from .CalibrationWorkflow import CalibrationWorkflow
+try:
+    from .AlliedVisionCameraManager import AlliedVisionCameraManager
+    from .CalibrationWorkflow import CalibrationWorkflow
+except ImportError:
+    from AlliedVisionCameraManager import AlliedVisionCameraManager
+    from CalibrationWorkflow import CalibrationWorkflow
 
 
 class CameraViewWindow:
@@ -370,6 +374,18 @@ class CameraViewWindow:
     def update_frame(self, image: np.ndarray):
         """
         Update display with new camera frame.
+        Called from camera thread, must use after() to update GUI in main thread.
+        
+        Args:
+            image: Numpy array from camera
+        """
+        # Schedule GUI update in main thread
+        if hasattr(self, 'window') and self.window.winfo_exists():
+            self.window.after(0, self._update_frame_gui, image)
+    
+    def _update_frame_gui(self, image: np.ndarray):
+        """
+        Internal method to update frame in main GUI thread.
         
         Args:
             image: Numpy array from camera
@@ -377,19 +393,31 @@ class CameraViewWindow:
         try:
             self.current_image = image
             
-            # Convert to RGB if grayscale
+            # Handle different image formats
             if len(image.shape) == 2:
-                image = np.stack([image] * 3, axis=-1)
-            
-            # Convert to PIL Image
-            pil_image = Image.fromarray(image)
+                # Grayscale image
+                pil_image = Image.fromarray(image, mode='L')
+            elif len(image.shape) == 3 and image.shape[2] == 1:
+                # Grayscale with extra dimension
+                pil_image = Image.fromarray(image[:, :, 0], mode='L')
+            elif len(image.shape) == 3 and image.shape[2] == 3:
+                # RGB image
+                pil_image = Image.fromarray(image, mode='RGB')
+            else:
+                # Unknown format, try to squeeze and convert
+                image_2d = np.squeeze(image)
+                pil_image = Image.fromarray(image_2d, mode='L')
             
             # Resize to fit canvas
             canvas_width = self.canvas.winfo_width()
             canvas_height = self.canvas.winfo_height()
             
             if canvas_width > 1 and canvas_height > 1:
-                pil_image.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
+                # Use Image.LANCZOS for older Pillow versions (< 9.0)
+                try:
+                    pil_image.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
+                except AttributeError:
+                    pil_image.thumbnail((canvas_width, canvas_height), Image.LANCZOS)
             
             # Convert to PhotoImage
             self.display_image = ImageTk.PhotoImage(pil_image)

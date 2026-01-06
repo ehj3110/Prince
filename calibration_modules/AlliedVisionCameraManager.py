@@ -34,8 +34,12 @@ try:
     from .ChArucoCalibrator import ChArucoCalibrator
     CHARUCO_AVAILABLE = True
 except ImportError:
-    CHARUCO_AVAILABLE = False
-    print("WARNING: ChArUco calibrator not available. Focus/tilt detection will be limited.")
+    try:
+        from ChArucoCalibrator import ChArucoCalibrator
+        CHARUCO_AVAILABLE = True
+    except ImportError:
+        CHARUCO_AVAILABLE = False
+        print("WARNING: ChArUco calibrator not available. Focus/tilt detection will be limited.")
 
 
 class AlliedVisionCameraManager:
@@ -167,6 +171,7 @@ class AlliedVisionCameraManager:
     
     def _streaming_loop(self):
         """Internal streaming loop (runs in separate thread)"""
+        self._frame_count = 0
         try:
             # Start frame acquisition
             self.camera.start_streaming(handler=self._frame_handler)
@@ -180,6 +185,8 @@ class AlliedVisionCameraManager:
             
         except Exception as e:
             print(f"ERROR in streaming loop: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.is_streaming = False
     
@@ -192,16 +199,24 @@ class AlliedVisionCameraManager:
             frame: Frame object from Vimba
         """
         try:
+            self._frame_count += 1
+            
             # Convert frame to numpy array
             if frame.get_status() == 0:  # Frame is valid
-                image = frame.as_numpy_ndarray()
+                # CRITICAL: Make a copy of the frame data before it's requeued
+                image = frame.as_numpy_ndarray().copy()
                 
                 # Call user callback with image
                 if self.frame_callback:
                     self.frame_callback(image)
+            
+            # CRITICAL: Requeue the frame back to the camera for continuous streaming
+            cam.queue_frame(frame)
                     
         except Exception as e:
-            print(f"ERROR processing frame: {e}")
+            print(f"ERROR processing frame {self._frame_count}: {e}")
+            import traceback
+            traceback.print_exc()
     
     def stop_streaming(self):
         """Stop continuous frame acquisition"""

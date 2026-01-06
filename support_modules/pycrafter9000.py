@@ -504,6 +504,58 @@ class dmd():
             print ('uploading...')
             self.bmpload(encodedimages[(num-1)//24-i],sizes[(num-1)//24-i])
 
+    def display_static_pattern(self, image_array, exposure_us=100000, repeat_count=0):
+        """
+        Display a single static 1-bit pattern (fast upload, ~3 seconds).
+        This provides stable, non-choppy display suitable for calibration patterns.
+        
+        Args:
+            image_array: 2D numpy array (1600×2560) of pattern (0-255 uint8)
+            exposure_us: Exposure time in microseconds (default 100ms = 100000us)
+            repeat_count: Number of times to repeat (0 = infinite loop)
+        
+        Example:
+            import cv2
+            pattern = cv2.imread('charuco_pattern.png', cv2.IMREAD_GRAYSCALE)
+            pattern_resized = cv2.resize(pattern, (2560, 1600))
+            dmd.display_static_pattern(pattern_resized, exposure_us=100000)
+        """
+        print(f"Uploading 1-bit pattern (exposure: {exposure_us}us)...")
+        
+        # Ensure correct dtype and size
+        if image_array.dtype != numpy.uint8:
+            image_array = image_array.astype(numpy.uint8)
+        if image_array.shape != (1600, 2560):
+            raise ValueError(f"Image must be (1600, 2560), got {image_array.shape}")
+        
+        # Convert to binary (threshold at 128)
+        binary_pattern = (image_array > 128).astype(numpy.uint8)
+        
+        # Pack into bits (8 pixels per byte)
+        # 2560 × 1600 = 4,096,000 pixels → 512,000 bytes at 1-bit
+        flat = binary_pattern.flatten()
+        packed = numpy.packbits(flat)
+        image_bytes = packed.tolist()
+        size = len(image_bytes)
+        
+        # Configure pattern LUT (1 pattern, repeat count)
+        self.configurelut(1, repeat_count)
+        
+        # Set up and upload BMP
+        self.setbmp(0, size)
+        self.bmpload(image_bytes, size)
+        
+        # Define pattern (1-bit depth, white color)
+        self.definepattern(
+            index=0, exposure=exposure_us, bitdepth=1, color='111',
+            triggerin=0, darktime=0, triggerout=0, patind=0, bitpos=0
+        )
+        
+        # Start display
+        self.startsequence()
+        print("✓ Pattern displayed")
+
+
 
 
 

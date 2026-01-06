@@ -1,0 +1,20 @@
+{
+  "directory": "C:\\Users\\cheng sun\\BoyuanSun\\Slicing\\Evan\\Pyramid_90Perc_5samples_50umLayers",
+  "led_current": "80",
+  "move_distance": "25",
+  "layer_thickness": "50",
+  "exposure_time": "2",
+  "base_curing_time": "30",
+  "step_speed": "500",
+  "overstep": "6000",
+  "pause": "3",
+  "acceleration": "1000",
+  "auto_home_guess": "10.0",
+  "contact_threshold_abs": "0.1",
+  "contact_threshold_delta": "0.02",
+  "sandwich_gap": "0.8",
+  "sandwich_contact_force": "0.25",
+  "sandwich_speed": "400",
+  "sandwich_pause": "3.0",
+  "adaptive_sandwich_enabled": false
+}

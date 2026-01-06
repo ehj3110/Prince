@@ -206,7 +206,7 @@ class CalibrationWorkflow:
             return False
     
     def _project_pattern(self) -> bool:
-        """Project ChArUco pattern with DLP at power=10."""
+        """Project ChArUco pattern using pattern-on-the-fly mode for stable display."""
         if self.dlp_controller is None:
             print("WARNING: No DLP controller available")
             print(f"Please manually project: {self.pattern_path}")
@@ -214,17 +214,38 @@ class CalibrationWorkflow:
             return True  # Continue anyway
         
         try:
-            # Set DLP power to 10 for calibration
-            self.dlp_controller.set_power(10)
+            import cv2
             
-            # Project pattern
-            self.dlp_controller.project_image(self.pattern_path)
+            # Set DLP LED power for calibration (0-255 current)
+            self.dlp_controller.power(10)
             
-            print("ChArUco pattern projected (DLP power = 10)")
+            # Load pattern as grayscale
+            pattern = cv2.imread(self.pattern_path, cv2.IMREAD_GRAYSCALE)
+            if pattern is None:
+                print(f"ERROR: Could not load pattern from {self.pattern_path}")
+                return False
+            
+            # Resize to DLP native resolution if needed (2560×1600 for DLP9000)
+            if pattern.shape != (1600, 2560):
+                pattern = cv2.resize(pattern, (2560, 1600))
+            
+            # Switch to pattern mode and display using pattern-on-the-fly
+            # This provides stable, non-choppy display unlike video mode
+            self.dlp_controller.changemode(4)  # Pattern mode
+            self.dlp_controller.display_static_pattern(
+                pattern,
+                exposure_us=100000,  # 100ms exposure for stable display
+                repeat_count=0       # Infinite loop
+            )
+            
+            print("ChArUco pattern projected using pattern-on-the-fly mode (DLP power = 10)")
+            print("Pattern display is stable and non-choppy")
             return True
             
         except Exception as e:
             print(f"ERROR projecting pattern: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _restore_dlp(self):
@@ -234,16 +255,21 @@ class CalibrationWorkflow:
             return
         
         try:
-            # Clear projection
-            self.dlp_controller.clear()
+            # Stop pattern sequence
+            self.dlp_controller.stopsequence()
+            
+            # Return to video mode (mode 3)
+            self.dlp_controller.changemode(3)
             
             # Restore normal power (you may want to set specific value)
             # self.dlp_controller.set_power(100)  # or whatever is normal
             
-            print("DLP restored to normal state")
+            print("DLP restored to normal state (video mode)")
             
         except Exception as e:
             print(f"ERROR restoring DLP: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _auto_optimize_camera(self) -> bool:
         """

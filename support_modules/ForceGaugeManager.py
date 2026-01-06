@@ -515,9 +515,8 @@ class ForceGaugeManager:
                     if len(self.decimation_buffer) > 0:
                         averaged_voltage = sum(self.decimation_buffer) / len(self.decimation_buffer)
                         
-                        # DEBUG: Very occasional output sample logging (every 5000 samples = ~60 seconds at 12ms rate)
-                        if self.output_count % 5000 == 0 and self.output_count > 0:
-                            print(f"[DECIMATION] Output sample #{self.output_count}: averaging {self.decimation_factor} samples at {self.user_sampling_interval_ms}ms intervals")
+                        # Decimation debug messages removed to reduce terminal clutter
+                        # (Decimation is working properly - no need for continuous logging)
                         
                         # Push averaged sample to queue (this matches user's sampling rate)
                         try:

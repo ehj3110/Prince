@@ -32,7 +32,7 @@ class ChArucoCalibrator:
                  squares_x: int = 8,
                  squares_y: int = 6,
                  square_length: float = 100,  # pixels
-                 marker_length: float = 75,   # pixels
+                 marker_length: float = 50,   # pixels (smaller = better focus sensitivity)
                  dictionary=cv2.aruco.DICT_4X4_50):
         """
         Initialize ChArUco calibrator.
@@ -153,15 +153,16 @@ class ChArucoCalibrator:
         
         return mask
     
-    def calculate_focus_score(self, image: np.ndarray) -> float:
+    def calculate_focus_score(self, image: np.ndarray, method: str = 'edge') -> float:
         """
-        Calculate focus quality using Laplacian variance (MTF proxy).
+        Calculate focus quality using edge-based measurement.
         
-        Uses only center ROI to avoid vignetting effects.
-        Higher score = better focus.
+        Uses edge sharpness of ArUco markers for superior focus detection.
+        Smaller markers provide better sensitivity to defocus.
         
         Args:
             image: Camera frame (grayscale or BGR)
+            method: 'edge' (default, best), 'tenengrad', or 'laplacian'
             
         Returns:
             Focus score (higher = sharper)
@@ -178,9 +179,73 @@ class ChArucoCalibrator:
         # Apply mask
         roi = cv2.bitwise_and(gray, gray, mask=mask)
         
-        # Calculate Laplacian variance on ROI
-        laplacian = cv2.Laplacian(roi, cv2.CV_64F)
-        focus_score = laplacian.var()
+        if method == 'edge':
+            # Edge-based focus using gradient magnitude on marker edges
+            # This is most sensitive to defocus on small features
+            focus_score = self._edge_focus_score(roi)
+        elif method == 'tenengrad':
+            # Tenengrad gradient method (better than Laplacian)
+            gx = cv2.Sobel(roi, cv2.CV_64F, 1, 0, ksize=3)
+            gy = cv2.Sobel(roi, cv2.CV_64F, 0, 1, ksize=3)
+            focus_score = np.mean(gx**2 + gy**2)
+        else:
+            # Laplacian variance (original method)
+            laplacian = cv2.Laplacian(roi, cv2.CV_64F)
+            focus_score = laplacian.var()
+        
+        return focus_score
+    
+    def _edge_focus_score(self, image: np.ndarray) -> float:
+        """
+        Calculate focus score based on edge sharpness.
+        
+        Detects ArUco marker edges and measures gradient strength.
+        Sharp edges have high gradients; blurry edges have low gradients.
+        
+        Args:
+            image: Grayscale image
+            
+        Returns:
+            Focus score based on edge sharpness
+        """
+        # Detect ArUco markers to find edges
+        corners, ids, rejected = cv2.aruco.detectMarkers(
+            image,
+            self.aruco_dict,
+            parameters=self.detector_params
+        )
+        
+        if ids is None or len(ids) == 0:
+            # No markers found - fall back to gradient-based method
+            gx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
+            gy = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
+            gradient_magnitude = np.sqrt(gx**2 + gy**2)
+            return np.mean(gradient_magnitude)
+        
+        # Calculate gradients
+        gx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
+        gy = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(gx**2 + gy**2)
+        
+        # Create mask for marker edges (dilate marker regions)
+        edge_mask = np.zeros(image.shape, dtype=np.uint8)
+        
+        for corner in corners:
+            # Get marker corners
+            pts = corner[0].astype(np.int32)
+            
+            # Draw marker boundary with thickness for edge detection
+            cv2.polylines(edge_mask, [pts], True, 255, thickness=10)
+        
+        # Measure gradient strength only at marker edges
+        edge_gradients = gradient_magnitude[edge_mask > 0]
+        
+        if len(edge_gradients) == 0:
+            # No edges found - use full image
+            return np.mean(gradient_magnitude)
+        
+        # Return mean gradient at edges (higher = sharper)
+        focus_score = np.mean(edge_gradients)
         
         return focus_score
     

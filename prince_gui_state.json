@@ -1,0 +1,22 @@
+{
+  "directory": "C:\\Users\\cheng sun\\BoyuanSun\\Slicing\\Evan\\SteppedCone_V1_10mm2to100mm2_50umLayers_V2",
+  "reference": 70.25,
+  "move_distance": "0.2",
+  "layer_thickness": "50",
+  "layer_pause": "1",
+  "overstep": "45",
+  "offset": "200",
+  "sensor_window_open": 1,
+  "exp_conditions_window_open": false,
+  "enable_sandwich_precalib": true,
+  "enable_adaptive_sandwich": false,
+  "enable_scaled_force_sandwich": true,
+  "sandwich_gap": "2",
+  "sandwich_force": "7500",
+  "max_area_force": "-2",
+  "sensor_settings": {
+    "auto_log_enabled": true,
+    "record_work": true,
+    "force_gauge_calibrated": true
+  }
+}

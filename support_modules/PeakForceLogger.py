@@ -110,6 +110,20 @@ class PeakForceLogger:
             logger.add_data_point(time.time(), 10.5, 0.2)
             logger.stop_monitoring_and_log_peak()
 
+    def pause_monitoring(self):
+        """Temporarily pause data collection (for sandwich routines, etc.)"""
+        with self._lock:
+            if self._monitoring:
+                self._monitoring = False
+                print(f"PFL: Monitoring paused for layer {self.current_layer_number}")
+    
+    def resume_monitoring(self):
+        """Resume data collection after pause"""
+        with self._lock:
+            if not self._monitoring:
+                self._monitoring = True
+                print(f"PFL: Monitoring resumed for layer {self.current_layer_number}")
+    
     def start_monitoring_for_layer(self, layer_number, z_peel_peak=None, z_return_pos=None, image_path=None):
         """
         Start monitoring for a new layer.
@@ -121,6 +135,11 @@ class PeakForceLogger:
             image_path: Path to the PNG image for this layer (optional, for area calculation)
         """
         with self._lock:
+            # Prevent duplicate recording if already monitoring this layer
+            if self._monitoring and self.current_layer_number == layer_number:
+                print(f"PFL: Already monitoring layer {layer_number}, ignoring duplicate start request")
+                return
+            
             self.current_layer_number = layer_number
             self.z_peel_peak_mm = z_peel_peak
             self.z_return_pos_mm = z_return_pos
@@ -360,6 +379,10 @@ class PeakForceLogger:
     def _analyze_with_corrected_calculator(self, timestamps, positions, forces, layer_number, output_csv, is_manual, lifting_start_idx=None, cross_sectional_area_mm2=None):
         """Analyze data using the corrected AdhesionMetricsCalculator."""
         try:
+            # Skip layer 0 - it's used for initialization/calibration only
+            if layer_number == 0:
+                return False
+            
             # Use the corrected calculator with phase awareness
             results = self.calculator.calculate_from_arrays(
                 timestamps, positions, forces, layer_number=layer_number,

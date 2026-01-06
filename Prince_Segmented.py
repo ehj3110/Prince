@@ -9,6 +9,8 @@ import sys
 import os
 import winsound
 import usb.core
+import json
+import json
 
 # Add support_modules to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'support_modules'))
@@ -30,8 +32,8 @@ import traceback
 from tkinter import messagebox
 from SensorDataWindow import SensorDataWindow
 from AutoHomeRoutine import AutoHomer
-from SandwichRoutine import SandwichRoutine, perform_sandwich_step_blocking
 from support_modules.ExperimentalConditionsWindow import ExperimentalConditionsWindow
+from support_modules.SandwichRoutines import SandwichRoutineManager
 
 
 class MyWindow:
@@ -57,6 +59,19 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.pause_list = []
         self.intensity_list = []
         self.active_instruction_file_path = None  # Track instruction file for copying
+        
+        # Initialize session log file
+        self.session_log_file = None
+        self.detailed_log_file = None
+        self._init_session_log()
+        
+        # Logging verbosity levels
+        self.LOG_MINIMAL = 0   # Only critical errors and major events
+        self.LOG_NORMAL = 1    # Standard operation messages (default for terminal)
+        self.LOG_DETAILED = 2  # Diagnostic info (detailed log only)
+        self.LOG_DEBUG = 3     # Everything including DEBUG statements
+        self.terminal_verbosity = self.LOG_NORMAL  # What shows in terminal
+        self.file_verbosity = self.LOG_DEBUG       # What goes to detailed log
 
         # Progress section header
         self.lbl_progress_header = Label(win, text='Progress', font='Helvetica 12 bold')
@@ -108,6 +123,20 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         self.b_reconnect_dlp = Button(win, text="Reconnect DLP", command=self.reconnect_dlp, state=DISABLED)
         self.b_reconnect_dlp.place(x=1050, y=95) # Side by side with disconnect, 125px gap
+        
+        # State save/load buttons
+        self.b_save_state = Button(win, text="Save State", command=self.save_gui_state)
+        self.b_save_state.place(x=800, y=130) # Below reload script button
+        
+        self.b_load_state = Button(win, text="Load State", command=self.load_gui_state)
+        self.b_load_state.place(x=925, y=130) # Side by side with save state
+        
+        # State save/load buttons
+        self.b_save_state = Button(win, text="Save State", command=self.save_gui_state)
+        self.b_save_state.place(x=800, y=130) # Below reload script button
+        
+        self.b_load_state = Button(win, text="Load State", command=self.load_gui_state)
+        self.b_load_state.place(x=925, y=130) # Side by side with save state
         
         self.sensor_data_window_instance = None
         self.exp_conditions_window = None
@@ -245,15 +274,44 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.chk_adaptive_sandwich = Checkbutton(
             self.frame_sandwich,
             text='Use Adaptive Sandwich (Force-Responsive)',
-            variable=self.enable_adaptive_sandwich
+            variable=self.enable_adaptive_sandwich,
+            command=self._on_sandwich_mode_change
         )
         self.chk_adaptive_sandwich.grid(row=1, column=3, columnspan=3, padx=2, pady=5, sticky=W)
+        
+        # Row 2: Force at Max Area input (for bidirectional sandwich)
+        self.lbl_max_area_force = Label(self.frame_sandwich, text='Force at Max Area (N):')
+        self.lbl_max_area_force.grid(row=2, column=0, padx=2, pady=2, sticky=W)
+        self.t_max_area_force = Entry(self.frame_sandwich, width=8)
+        self.t_max_area_force.grid(row=2, column=1, padx=2, pady=2)
+        self.t_max_area_force.insert(END, "-2.0")  # Default: -2.0N at 100mm²
+        
+        # Linear area-scaled force sandwich checkbox (row 2, right side)
+        self.enable_scaled_force_sandwich = BooleanVar(value=False)  # Linear area-scaled force method
+        self.chk_scaled_force_sandwich = Checkbutton(
+            self.frame_sandwich,
+            text='Use Linear Area-Scaled Sandwich (Bidirectional Correction)',
+            variable=self.enable_scaled_force_sandwich,
+            command=self._on_sandwich_mode_change
+        )
+        self.chk_scaled_force_sandwich.grid(row=2, column=3, columnspan=3, padx=2, pady=5, sticky=W)
 
         self.sandwich_thread = None  # Track sandwich routine thread
         
         # Variables to store pre-calibration results
         self.measured_gap_mm = None  # Measured gap distance from pre-calibration
         self.measured_derivative_threshold = None  # Measured force derivative threshold
+        
+        # Variables for linear area-scaled force sandwich
+        self.scaled_force_max_area = 100.0  # mm² - maximum area for scaling
+        # scaled_force_at_max_area will be read from UI field (t_max_area_force)
+        self.scaled_force_calibration_force = -0.6  # N - calibration force for gap measurement
+        self.scaled_force_safety_limit = -4.0  # N - absolute safety limit
+        self.scaled_force_base_flatness_threshold = 0.05  # N - base flatness threshold (calibrated on first layer)
+        self.scaled_force_max_iterations = 3  # Maximum correction iterations (reduced from 5)
+        
+        # Unified sandwich routine manager (initialized later after axis/force gauge are available)
+        self.sandwich_manager = None
 
 
         # --- Existing Layer Logger instantiation removed ---
@@ -400,7 +458,51 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         self.update_auto_home_button_state()
         self.update_status_message("System Ready.") # Example of setting initial status
+        
+        # Try to auto-load state on startup
+        self.win.after(100, self._try_autoload_state)
+        
+        # Try to auto-load state on startup
+        self.win.after(100, self._try_autoload_state)
 
+    def _init_session_log(self):
+        """Initialize session log files for this GUI session."""
+        try:
+            # Create logs directory if it doesn't exist
+            log_dir = os.path.join(os.path.dirname(__file__), 'SessionLogs')
+            os.makedirs(log_dir, exist_ok=True)
+            
+            # Create timestamped log files
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Standard session log (terminal mirror)
+            log_filename = f"prince_session_{timestamp}.log"
+            self.session_log_file = os.path.join(log_dir, log_filename)
+            
+            # Detailed diagnostics log (verbose)
+            detailed_log_filename = f"prince_detailed_{timestamp}.log"
+            self.detailed_log_file = os.path.join(log_dir, detailed_log_filename)
+            
+            # Write headers to both log files
+            with open(self.session_log_file, 'w') as f:
+                f.write(f"Prince GUI Session Log (Terminal Mirror)\n")
+                f.write(f"Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"="*80 + "\n\n")
+            
+            with open(self.detailed_log_file, 'w') as f:
+                f.write(f"Prince GUI Detailed Diagnostics Log\n")
+                f.write(f"Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"This log contains verbose diagnostic information.\n")
+                f.write(f"="*80 + "\n\n")
+            
+            print(f"Session logs initialized:")
+            print(f"  Standard: {self.session_log_file}")
+            print(f"  Detailed: {self.detailed_log_file}")
+        except Exception as e:
+            print(f"Warning: Could not initialize session logs: {e}")
+            self.session_log_file = None
+            self.detailed_log_file = None
+    
     def _update_gui_progress(self, progress_value, total_layers, current_layer_index):
         """Updates the progress bar and layer count display."""
         if hasattr(self, 'p1'):
@@ -632,6 +734,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 'support_modules.AutoHomeRoutine',
                 'support_modules.two_step_baseline_analyzer',
                 'support_modules.SandwichRoutine',
+                'support_modules.SandwichRoutines',  # Added - the new unified sandwich manager
                 'post_print_analyzer',
                 'support_modules.ExperimentalConditionsWindow'
             ]
@@ -689,6 +792,186 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.update_status_message("DLP reset to safe state (video mode, power=0)")
         except Exception as e:
             self.update_status_message(f"Error resetting DLP: {e}", error=True)
+    
+    def save_gui_state(self):
+        """Save current GUI state to JSON file."""
+        try:
+            state = {
+                # File paths
+                'directory': self.t1.get(),
+                'reference': self.reference,
+                
+                # GUI entry fields
+                'move_distance': self.t9.get(),
+                'layer_thickness': self.t10.get(),
+                'layer_pause': self.t11.get(),
+                'overstep': self.t11_2.get(),
+                'offset': self.t14.get(),
+                
+                # Window states
+                'sensor_window_open': (self.sensor_data_window_instance is not None and 
+                                      self.sensor_data_window_instance.sensor_window.winfo_exists()),
+                'exp_conditions_window_open': (self.exp_conditions_window is not None and 
+                                              self.exp_conditions_window.window.winfo_exists()),
+                
+                # Sandwich settings
+                'enable_sandwich_precalib': self.enable_sandwich_precalib.get(),
+                'enable_adaptive_sandwich': self.enable_adaptive_sandwich.get(),
+                'enable_scaled_force_sandwich': self.enable_scaled_force_sandwich.get(),
+                'sandwich_gap': self.t_sandwich_gap.get() if hasattr(self, 't_sandwich_gap') else '0.5',
+                'sandwich_force': self.t_sandwich_force.get() if hasattr(self, 't_sandwich_force') else '15790',
+                'max_area_force': self.t_max_area_force.get() if hasattr(self, 't_max_area_force') else '-2.0',
+                
+                # Sensor data window settings (if window exists)
+                'sensor_settings': {}
+            }
+            
+            # Save sensor window settings if window is open
+            if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
+                try:
+                    sdw = self.sensor_data_window_instance
+                    state['sensor_settings'] = {
+                        'auto_log_enabled': sdw.auto_log_enabled_var.get() if hasattr(sdw, 'auto_log_enabled_var') else False,
+                        'record_work': sdw.record_work_var.get() if hasattr(sdw, 'record_work_var') else False,
+                        'force_gauge_calibrated': sdw.is_force_gauge_calibrated_internally() if hasattr(sdw, 'is_force_gauge_calibrated_internally') else False
+                    }
+                except Exception as sensor_err:
+                    self.update_status_message(f"Warning: Could not save all sensor settings: {sensor_err}")
+            
+            # Save to file in the same directory as Prince_Segmented.py
+            state_file = os.path.join(os.path.dirname(__file__), 'prince_gui_state.json')
+            with open(state_file, 'w') as f:
+                json.dump(state, f, indent=2)
+            
+            self.update_status_message(f"GUI state saved to {os.path.basename(state_file)}")
+            
+        except Exception as e:
+            self.update_status_message(f"Error saving GUI state: {e}", error=True)
+            traceback.print_exc()
+    
+    def load_gui_state(self):
+        """Load GUI state from JSON file."""
+        try:
+            state_file = os.path.join(os.path.dirname(__file__), 'prince_gui_state.json')
+            
+            if not os.path.exists(state_file):
+                self.update_status_message("No saved state found. Use 'Save State' to create one.")
+                return
+            
+            with open(state_file, 'r') as f:
+                state = json.load(f)
+            
+            # Restore file paths
+            if 'directory' in state and state['directory']:
+                self.t1.delete(0, END)
+                self.t1.insert(0, state['directory'])
+                # Try to load the directory
+                try:
+                    self.input_directory()
+                except:
+                    pass
+            
+            if 'reference' in state:
+                self.reference = state['reference']
+            
+            # Restore GUI entry fields
+            if 'move_distance' in state:
+                self.t9.delete(0, END)
+                self.t9.insert(0, state['move_distance'])
+            
+            if 'layer_thickness' in state:
+                self.t10.delete(0, END)
+                self.t10.insert(0, state['layer_thickness'])
+            
+            if 'layer_pause' in state:
+                self.t11.delete(0, END)
+                self.t11.insert(0, state['layer_pause'])
+            
+            if 'overstep' in state:
+                self.t11_2.delete(0, END)
+                self.t11_2.insert(0, state['overstep'])
+            
+            if 'offset' in state:
+                self.t14.delete(0, END)
+                self.t14.insert(0, state['offset'])
+            
+            # Restore sandwich settings
+            if 'enable_sandwich_precalib' in state:
+                self.enable_sandwich_precalib.set(state['enable_sandwich_precalib'])
+            
+            if 'enable_adaptive_sandwich' in state:
+                self.enable_adaptive_sandwich.set(state['enable_adaptive_sandwich'])
+            
+            if 'enable_scaled_force_sandwich' in state:
+                self.enable_scaled_force_sandwich.set(state['enable_scaled_force_sandwich'])
+            
+            if 'sandwich_gap' in state and hasattr(self, 't_sandwich_gap'):
+                self.t_sandwich_gap.delete(0, END)
+                self.t_sandwich_gap.insert(0, state['sandwich_gap'])
+            
+            if 'sandwich_force' in state and hasattr(self, 't_sandwich_force'):
+                self.t_sandwich_force.delete(0, END)
+                self.t_sandwich_force.insert(0, state['sandwich_force'])
+            
+            if 'max_area_force' in state and hasattr(self, 't_max_area_force'):
+                self.t_max_area_force.delete(0, END)
+                self.t_max_area_force.insert(0, state['max_area_force'])
+            
+            # Restore window states
+            if state.get('sensor_window_open', False):
+                if not (self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists()):
+                    self.win.after(100, self.open_sensor_panel)
+            
+            if state.get('exp_conditions_window_open', False):
+                if not (self.exp_conditions_window and self.exp_conditions_window.window.winfo_exists()):
+                    self.win.after(200, self.open_exp_conditions_window)
+            
+            # Restore sensor settings (will be applied when sensor window opens)
+            if 'sensor_settings' in state and state['sensor_settings']:
+                # Store for later application
+                self._pending_sensor_settings = state['sensor_settings']
+                # Try to apply if sensor window is already open
+                if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
+                    self.win.after(300, self._apply_sensor_settings)
+            
+            self.update_status_message(f"GUI state loaded from {os.path.basename(state_file)}")
+            
+        except Exception as e:
+            self.update_status_message(f"Error loading GUI state: {e}", error=True)
+            traceback.print_exc()
+    
+    def _apply_sensor_settings(self):
+        """Apply pending sensor settings if sensor window is open."""
+        try:
+            if not hasattr(self, '_pending_sensor_settings'):
+                return
+            
+            if not (self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists()):
+                return
+            
+            settings = self._pending_sensor_settings
+            sdw = self.sensor_data_window_instance
+            
+            if 'auto_log_enabled' in settings and hasattr(sdw, 'auto_log_enabled_var'):
+                sdw.auto_log_enabled_var.set(settings['auto_log_enabled'])
+            
+            if 'record_work' in settings and hasattr(sdw, 'record_work_var'):
+                sdw.record_work_var.set(settings['record_work'])
+            
+            delattr(self, '_pending_sensor_settings')
+            self.update_status_message("Sensor window settings restored")
+            
+        except Exception as e:
+            self.update_status_message(f"Warning: Could not apply sensor settings: {e}")
+    
+    def _try_autoload_state(self):
+        """Try to automatically load state on startup (silent if no state exists)."""
+        try:
+            state_file = os.path.join(os.path.dirname(__file__), 'prince_gui_state.json')
+            if os.path.exists(state_file):
+                self.load_gui_state()
+        except:
+            pass  # Silently fail if autoload doesn't work
 
 
     def _set_phase_robust(self, phase_name):
@@ -809,11 +1092,20 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 # Get sandwich speed for first layer to use during pre-calibration
                 first_layer_sandwich_speed = self.sandwich_speed_list[0] if len(self.sandwich_speed_list) > 0 else 500
                 
-                # Run simplified pre-calibration (force threshold only)
-                measured_gap = self.perform_precalibration_simple(
+                # Initialize sandwich manager if needed
+                if self.sandwich_manager is None:
+                    force_gauge = self.sensor_data_window_instance.force_gauge_manager
+                    self.sandwich_manager = SandwichRoutineManager(
+                        self.axis, force_gauge, self.update_status_message,
+                        set_phase_callback=self._set_phase_robust
+                    )
+                
+                # Run pre-calibration using module
+                measured_gap = self.sandwich_manager.perform_precalibration(
                     gap_estimate_mm=gap_estimate_for_precal,
                     contact_force_threshold=max_force_for_precal,
-                    sandwich_speed_um_s=first_layer_sandwich_speed
+                    sandwich_speed_um_s=first_layer_sandwich_speed,
+                    stop_flag_callback=lambda: self.flag
                 )
                 
                 if measured_gap is not None:
@@ -886,14 +1178,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 
                 actual_layer_pause_s = self.pause_list[i] if i < len(self.pause_list) else layer_pause_s
 
-                # Update DLP power if it's per-layer and different from the last commanded power
-                if hasattr(self, 'controller'):
-                    # Convert actual_dlp_power to int for comparison and setting
-                    current_layer_target_power = int(actual_dlp_power)
-                    if current_layer_target_power != last_commanded_dlp_power:
-                        self.controller.power(current=current_layer_target_power)
-                        last_commanded_dlp_power = current_layer_target_power # Update last commanded power
-                        self.update_status_message(f"Layer {current_layer_num_for_display}: DLP power set to {current_layer_target_power}.")
+                # DLP power setting removed from here - now handled within each mode (stepped/continuous)
+                # to avoid setting power before exposure is ready
 
                 # --- TARGET Z CALCULATION for current layer i ---
                 current_target_z_microns = (self.reference * 1000) - sum(self.thickness[k] for k in range(i + 1) if k < len(self.thickness))
@@ -911,6 +1197,18 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     if calculated_continuous_velocity_um_s <= 1e-6: # Ensure velocity is positive
                         self.update_status_message(f"L{current_layer_num_for_display} (Cont.): Calculated velocity too low. Using default speed.", error=True)
                         calculated_continuous_velocity_um_s = actual_step_speed_um_s # Fallback
+
+                    # 1.5. Ensure DLP power is set correctly for this layer's exposure
+                    if hasattr(self, 'controller'):
+                        try:
+                            current_dlp_power = int(actual_dlp_power)
+                            # Only update if different from last commanded value to reduce unnecessary commands
+                            if current_dlp_power != last_commanded_dlp_power:
+                                self.controller.power(current=current_dlp_power)
+                                last_commanded_dlp_power = current_dlp_power
+                                self.update_status_message(f"L{current_layer_num_for_display}: DLP power set to {current_dlp_power}")
+                        except Exception as e:
+                            self.update_status_message(f"L{current_layer_num_for_display}: Could not set DLP power: {e}", error=True)
 
                     # 2. Display image for layer i
                     image_path = self.image_list[i]
@@ -1158,531 +1456,139 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                     actual_pause = self.pause_list[i] if i < len(self.pause_list) else 0.0
                                     
                                     # ========== CHOOSE SANDWICH ROUTINE TYPE ==========
-                                    if self.enable_adaptive_sandwich.get():
-                                        # === ADAPTIVE SANDWICH ROUTINE (FORCE-RESPONSIVE) ===
-                                        self.update_status_message(f"L{current_layer_num_for_display}: Using ADAPTIVE sandwich routine")
+                                    if self.enable_scaled_force_sandwich.get():
+                                        # === LINEAR AREA-SCALED FORCE SANDWICH WITH BIDIRECTIONAL CORRECTION ===
+                                        self.update_status_message(f"L{current_layer_num_for_display}: Using LINEAR AREA-SCALED sandwich with bidirectional correction")
                                         
-                                        # ========== ADAPTIVE SANDWICH PARAMETERS ==========
-                                        # Check if we have adaptive speed override from previous layer
-                                        # ONLY use adaptive speed if this is NOT the first sandwich layer
-                                        # SAFETY: Clamp adaptive speed to reasonable range (50-2000 µm/s)
-                                        if (hasattr(self, 'adaptive_sandwich_speed_um_s') and 
-                                            self.adaptive_sandwich_speed_um_s is not None and
-                                            hasattr(self, 'sandwich_layer_count') and self.sandwich_layer_count > 0):
-                                            base_sandwich_speed = max(50.0, min(2000.0, self.adaptive_sandwich_speed_um_s))
-                                            if base_sandwich_speed != self.adaptive_sandwich_speed_um_s:
-                                                self.update_status_message(f"L{current_layer_num_for_display}: CLAMPED adaptive speed: {self.adaptive_sandwich_speed_um_s:.0f}µm/s → {base_sandwich_speed:.0f}µm/s")
+                                        # Initialize sandwich manager on first use
+                                        if self.sandwich_manager is None:
+                                            self.sandwich_manager = SandwichRoutineManager(
+                                                self.axis, force_gauge, self.update_status_message,
+                                                set_phase_callback=self._set_phase_robust
+                                            )
+                                            # Configure parameters from UI/settings
+                                            self.sandwich_manager.max_area = self.scaled_force_max_area
+                                            self.sandwich_manager.calibration_force = self.scaled_force_calibration_force
+                                            self.sandwich_manager.safety_limit = self.scaled_force_safety_limit
+                                            self.sandwich_manager.base_flatness_threshold = self.scaled_force_base_flatness_threshold
+                                            self.sandwich_manager.max_iterations = self.scaled_force_max_iterations
+                                            
+                                            # ===== SMOOTH SANDWICH MODE (DISABLED) =====
+                                            # Set to True to skip tiered ramping and use smooth acceleration
+                                            # This eliminates force spikes from direction changes
+                                            self.sandwich_manager.use_smooth_sandwich = False  # ← CHANGE TO True FOR SMOOTH MODE
+                                            self.sandwich_manager.smooth_liftoff_accel_mm_s2 = 1.0  # Gentle 1mm/s² liftoff
+                                            self.sandwich_manager.smooth_pause_at_contact_s = 0.5   # 0.5s pause before liftoff
+                                        
+                                        # Set speeds from current sandwich speed (divide by 4 for linear scaled)
+                                        self.sandwich_manager.set_speeds_from_base(actual_sandwich_speed_um_s, speed_division=4.0)
+                                        
+                                        # Get force at max area from UI
+                                        try:
+                                            self.sandwich_manager.force_at_max_area = float(self.t_max_area_force.get())
+                                        except:
+                                            self.sandwich_manager.force_at_max_area = -2.0
+                                            self.update_status_message(f"L{current_layer_num_for_display}: Invalid max area force, using -2.0N", error=True)
+                                        
+                                        # Pause PeakForceLogger to avoid recording sandwich movements as separate layers
+                                        if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
+                                            self.automated_peak_force_logger.pause_monitoring()
+                                        
+                                        # Calculate area directly from current layer image
+                                        current_area_mm2 = None
+                                        
+                                        # Try to calculate from image_list first (always available during print)
+                                        if hasattr(self, 'image_list') and i < len(self.image_list):
+                                            try:
+                                                image_path = self.image_list[i]
+                                                img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+                                                
+                                                if img is not None:
+                                                    # Count white pixels (≥250 threshold)
+                                                    white_pixel_count = np.sum(img >= 250)
+                                                    
+                                                    if white_pixel_count > 0:
+                                                        # Calculate area using 7.607µm pixel size (matches PeakForceLogger)
+                                                        PIXEL_SIZE_MM = 0.007607  # 7.607µm = 0.007607mm
+                                                        PIXEL_AREA_MM2 = PIXEL_SIZE_MM ** 2
+                                                        current_area_mm2 = white_pixel_count * PIXEL_AREA_MM2
+                                                        self.update_status_message(f"L{current_layer_num_for_display}: Area calculated from image: {current_area_mm2:.2f} mm²")
+                                                    else:
+                                                        self.update_status_message(f"L{current_layer_num_for_display}: Warning - No white pixels in image", error=True)
+                                                else:
+                                                    self.update_status_message(f"L{current_layer_num_for_display}: Warning - Could not read image for area calculation", error=True)
+                                            except Exception as e:
+                                                self.update_status_message(f"L{current_layer_num_for_display}: Error calculating area from image: {e}", error=True)
+                                        
+                                        # Fallback to img_area_list if image calculation failed
+                                        if current_area_mm2 is None:
+                                            if hasattr(self, 'img_area_list') and i < len(self.img_area_list):
+                                                current_area_mm2 = self.img_area_list[i]
+                                                self.update_status_message(f"L{current_layer_num_for_display}: Area from instruction file: {current_area_mm2:.2f} mm²")
                                             else:
-                                                self.update_status_message(f"L{current_layer_num_for_display}: Using ADAPTIVE speed: {base_sandwich_speed:.0f}µm/s (adjusted from previous layer)")
-                                        else:
-                                            base_sandwich_speed = actual_sandwich_speed_um_s
-                                            if not hasattr(self, 'sandwich_layer_count'):
-                                                self.sandwich_layer_count = 0
-                                            self.update_status_message(f"L{current_layer_num_for_display}: Using USER speed: {base_sandwich_speed:.0f}µm/s")
+                                                current_area_mm2 = 10.0  # Final fallback
+                                                self.update_status_message(f"L{current_layer_num_for_display}: Warning - Using default area 10mm²", error=True)
                                         
-                                        # Calculate 3-tier speeds (divide by 3 and 9, not 2 and 4)
-                                        speed_tier1 = base_sandwich_speed        # 0-33% of gap
-                                        speed_tier2 = base_sandwich_speed / 3.0  # 33-67% of gap  
-                                        speed_tier3 = base_sandwich_speed / 9.0  # 67-100% of gap (slowest)
-                                        
-                                        # Force thresholds for adaptive behavior and hard failsafe
-                                        adaptive_force_threshold = contact_force_threshold * 0.75  # 75% - triggers adaptive stop
-                                        relaxation_force_threshold = contact_force_threshold * 0.5  # 50% - relaxation target
-                                        hard_failsafe_threshold = -5.0  # Absolute 5N limit (negative = compression)
-                                        
-                                        # Calculate waypoint positions for 3-TIER DESCENT
-                                        waypoint_33pct_um = current_pos_um + (gap_um * 0.33)
-                                        waypoint_67pct_um = current_pos_um + (gap_um * 0.67)
-                                        
-                                        self.update_status_message(f"L{current_layer_num_for_display}: ADAPTIVE SANDWICH - 3-Tier Ramping")
-                                        self.update_status_message(f"L{current_layer_num_for_display}: Speeds: {speed_tier1:.0f}/{speed_tier2:.0f}/{speed_tier3:.0f}µm/s, Gap:{measured_gap:.3f}mm")
-                                        self.update_status_message(f"L{current_layer_num_for_display}: Pressure thresholds: Adaptive=75% ({abs(adaptive_force_threshold):.3f}N), Relax=50% ({abs(relaxation_force_threshold):.3f}N), HARD FAILSAFE=200% ({abs(hard_failsafe_threshold):.3f}N)")
-                                        
-                                        # ========== ADAPTIVE DESCENT PHASE ==========
-                                        speed_was_reduced = False
-                                        final_tier3_speed = speed_tier3
-                                        adaptive_iteration_count = 0  # Track number of adaptations this layer
-                                        max_adaptive_iterations = 3  # Failsafe: assume at glass after 3 adaptations
-                                        min_speed_floor = 50.0  # Failsafe: don't go below 50 µm/s
-                                        
-                                        # Define descent segments
-                                        descent_segments = [
-                                            (waypoint_33pct_um, speed_tier1, "1/3", "0-33%"),
-                                            (waypoint_67pct_um, speed_tier2, "2/3", "33-67%"),
-                                            (target_glass_um, speed_tier3, "3/3", "67-100%")
-                                        ]
-                                        
-                                        reached_glass = False
-                                        
-                                        for seg_idx, (segment_target_um, initial_seg_speed, seg_label, seg_range) in enumerate(descent_segments):
-                                            if reached_glass:
-                                                break
-                                            
-                                            current_seg_speed = initial_seg_speed
-                                            segment_start_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                            
-                                            self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG {seg_label}] {segment_start_pos/1000.0:.4f}mm → {segment_target_um/1000.0:.4f}mm @ {current_seg_speed:.0f}µm/s ({seg_range})")
-                                            
-                                            # Move toward segment target with adaptive behavior
-                                            while not reached_glass:
-                                                current_position = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                                
-                                                # Check if we've reached segment target
-                                                if abs(current_position - segment_target_um) < 5.0:  # Within 5µm
-                                                    self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG {seg_label} DONE] Reached: {current_position/1000.0:.4f}mm")
-                                                    break  # Exit the while loop for this segment
-                                                
-                                                # Start movement to segment target
-                                                self.axis.move_absolute(
-                                                    position=segment_target_um,
-                                                    unit=Units.LENGTH_MICROMETRES,
-                                                    wait_until_idle=False,
-                                                    velocity=current_seg_speed / 1000.0,
-                                                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                                    acceleration=1000.0,
-                                                    acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                                )
-                                                
-                                                # Monitor force during movement
-                                                adaptive_stop_triggered = False
-                                                while self.axis.is_busy():
-                                                    if self.flag:
-                                                        self.axis.stop()
-                                                        raise Exception("User stopped print during sandwich descent")
-                                                    
-                                                    current_force = force_gauge.get_latest_calibrated_force()
-                                                    
-                                                    # Check for 5N absolute threshold (HARD FAILSAFE)
-                                                    hard_failsafe_threshold = -5.0  # Absolute 5N limit
-                                                    if current_force <= hard_failsafe_threshold:
-                                                        self.axis.stop()
-                                                        while self.axis.is_busy():
-                                                            time.sleep(0.01)
-                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** HARD FORCE FAILSAFE *** Force={current_force:.4f}N exceeded 200% limit ({abs(hard_failsafe_threshold):.4f}N)", error=True)
-                                                        raise Exception(f"HARD FORCE FAILSAFE: Force {current_force:.4f}N exceeded 200% of limit ({abs(hard_failsafe_threshold):.4f}N)")
-                                                    
-                                                    # Check for 75% threshold (ADAPTIVE STOP)
-                                                    if current_force <= adaptive_force_threshold:
-                                                        self.axis.stop()
-                                                        while self.axis.is_busy():
-                                                            time.sleep(0.01)
-                                                        
-                                                        adaptive_stop_triggered = True
-                                                        stopped_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** ADAPTIVE STOP *** Force={current_force:.4f}N at {stopped_pos/1000.0:.4f}mm", error=False)
-                                                        break
-                                                    
-                                                    time.sleep(0.02)
-                                                
-                                                if self.flag:
-                                                    raise Exception("User stopped print")
-                                                
-                                                # If adaptive stop was triggered
-                                                if adaptive_stop_triggered:
-                                                    # CRITICAL: Ensure axis is fully stopped before proceeding
-                                                    while self.axis.is_busy():
-                                                        time.sleep(0.01)
-                                                    
-                                                    # Record force at stop
-                                                    force_at_stop = current_force
-                                                    stopped_position = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                                    
-                                                    # WAIT for force relaxation or 3 seconds
-                                                    self.update_status_message(f"L{current_layer_num_for_display}: Waiting for force relaxation (target: ≥{relaxation_force_threshold:.3f}N or 3s)...")
-                                                    wait_start = time.time()
-                                                    final_force = current_force
-                                                    
-                                                    while time.time() - wait_start < 3.0:
-                                                        final_force = force_gauge.get_latest_calibrated_force()
-                                                        # Force is negative, so >= means less compression (more relaxed)
-                                                        if final_force >= relaxation_force_threshold:
-                                                            self.update_status_message(f"L{current_layer_num_for_display}: Force relaxed to {final_force:.4f}N after {time.time()-wait_start:.2f}s")
-                                                            break
-                                                        time.sleep(0.1)
-                                                    
-                                                    if final_force < relaxation_force_threshold:
-                                                        self.update_status_message(f"L{current_layer_num_for_display}: 3s timeout reached, force={final_force:.4f}N")
-                                                    
-                                                    # CHECK FORCE STABILITY: Did force relax by >20%?
-                                                    # Force is negative, so relaxation means less negative (closer to zero)
-                                                    force_change = final_force - force_at_stop  # Positive if relaxed
-                                                    force_change_percent = (force_change / abs(force_at_stop)) * 100.0 if force_at_stop != 0 else 0.0
-                                                    
-                                                    self.update_status_message(f"L{current_layer_num_for_display}: Force stability check: {force_at_stop:.4f}N → {final_force:.4f}N (change: {force_change_percent:.1f}%)")
-                                                    
-                                                    # If force changed by <20%, we're already at glass - don't adapt
-                                                    if abs(force_change_percent) < 20.0:
-                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** GLASS REACHED *** Force stable (<20% change), assuming contact established")
-                                                        reached_glass = True
-                                                        break  # Exit movement loop
-                                                    
-                                                    # Force relaxed significantly (>20%), safe to adapt and continue
-                                                    adaptive_iteration_count += 1
-                                                    
-                                                    # FAILSAFE: Check iteration count
-                                                    if adaptive_iteration_count >= max_adaptive_iterations:
-                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** FAILSAFE *** {max_adaptive_iterations} adaptations reached, assuming glass contact")
-                                                        reached_glass = True
-                                                        break  # Exit movement loop
-                                                    
-                                                    # Calculate new speed with floor
-                                                    new_speed = current_seg_speed * 0.5
-                                                    if new_speed < min_speed_floor:
-                                                        self.update_status_message(f"L{current_layer_num_for_display}: *** FAILSAFE *** Speed floor reached ({min_speed_floor:.0f}µm/s), assuming glass contact")
-                                                        reached_glass = True
-                                                        break  # Exit movement loop
-                                                    
-                                                    # REDUCE SPEED by 50%
-                                                    current_seg_speed = new_speed
-                                                    final_tier3_speed = current_seg_speed  # Track final speed used
-                                                    speed_was_reduced = True
-                                                    self.update_status_message(f"L{current_layer_num_for_display}: Speed reduced to {current_seg_speed:.0f}µm/s (50% reduction, iteration {adaptive_iteration_count}/{max_adaptive_iterations})")
-                                                    
-                                                    # Continue loop - will start new movement at reduced speed
-                                                    continue
-                                                
-                                                # If no adaptive stop, movement completed normally to segment target
-                                                # Exit the inner while loop to proceed to next segment
-                                                final_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                                
-                                                # Check if we reached final glass position (last segment)
-                                                if abs(final_pos - target_glass_um) < 5.0:  # Within 5µm of glass
-                                                    reached_glass = True
-                                                    self.update_status_message(f"L{current_layer_num_for_display}: Reached glass position at {final_pos/1000.0:.4f}mm")
-                                                
-                                                # Exit inner while loop for this segment
-                                                break
-                                        
-                                        final_descent_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT COMPLETE] Final position: {final_descent_pos_um/1000.0:.4f}mm")
-                                        
-                                        # ========== SPEED ADAPTATION FOR FUTURE LAYERS ==========
-                                        if speed_was_reduced:
-                                            # Calculate new base speed so final tier3 equals our final speed
-                                            # new_base / 9 = final_tier3_speed  =>  new_base = final_tier3_speed * 9
-                                            new_base_speed = final_tier3_speed * 9.0
-                                            self.adaptive_sandwich_speed_um_s = new_base_speed
-                                            self.update_status_message(f"L{current_layer_num_for_display}: *** SPEED ADAPTED *** New base speed for future layers: {new_base_speed:.0f}µm/s (Tier3={final_tier3_speed:.0f}µm/s)")
-                                        
-                                        # ========== SIMPLIFIED ASCENT PHASE ==========
-                                        # Use final speeds from descent (respecting any adaptive changes)
-                                        if speed_was_reduced:
-                                            ascent_tier1 = final_tier3_speed * 9.0
-                                            ascent_tier2 = final_tier3_speed * 3.0
-                                            ascent_tier3 = final_tier3_speed
-                                        else:
-                                            ascent_tier1 = speed_tier1
-                                            ascent_tier2 = speed_tier2
-                                            ascent_tier3 = speed_tier3
-                                        
-                                        # Calculate ascent waypoints based on ACTUAL distance to travel
-                                        # (not the full gap, since we may have stopped early)
-                                        actual_travel_distance_um = sandwich_target_position_um - final_descent_pos_um
-                                        waypoint_33pct_up_um = final_descent_pos_um + (actual_travel_distance_um * 0.33)  # 33% of way back
-                                        waypoint_50pct_up_um = final_descent_pos_um + (actual_travel_distance_um * 0.5)   # 50% of way back (PAUSE HERE)
-                                        
-                                        self.update_status_message(f"L{current_layer_num_for_display}: ========== STARTING ASCENT ==========")
-                                        self.update_status_message(f"L{current_layer_num_for_display}: Ascent speeds: {ascent_tier3:.0f}→{ascent_tier2:.0f}µm/s, PAUSE, then {ascent_tier1:.0f}µm/s")
-                                        
-                                        # Segment 1: 0→33% at tier3 (slowest, leaving glass)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 1/3] {final_descent_pos_um/1000.0:.4f}mm → {waypoint_33pct_up_um/1000.0:.4f}mm @ {ascent_tier3:.0f}µm/s")
-                                        self.axis.move_absolute(
-                                            position=waypoint_33pct_up_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=True,
-                                            velocity=ascent_tier3 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        # Execute sandwich routine using dedicated module
+                                        success = self.sandwich_manager.execute_linear_scaled_sandwich(
+                                            current_area_mm2=current_area_mm2,
+                                            layer_height_um=sandwich_target_position_um,
+                                            measured_gap_mm=measured_gap,
+                                            layer_display_num=current_layer_num_for_display,
+                                            pause_time_s=actual_pause,
+                                            stop_flag_callback=lambda: self.flag,
+                                            layer_thickness_um=current_thickness_um
                                         )
                                         
-                                        # Segment 2: 33→50% at tier2
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 2/3] {waypoint_33pct_up_um/1000.0:.4f}mm → {waypoint_50pct_up_um/1000.0:.4f}mm @ {ascent_tier2:.0f}µm/s")
-                                        self.axis.move_absolute(
-                                            position=waypoint_50pct_up_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=True,
-                                            velocity=ascent_tier2 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        # Resume PeakForceLogger after sandwich completes
+                                        if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
+                                            self.automated_peak_force_logger.resume_monitoring()
+                                        
+                                        if not success:
+                                            # Sandwich was aborted by stop flag
+                                            break
+                                        
+                                        # Note: All old inline sandwich code removed - now handled by LinearScaledSandwich module
+                                    
+                                    elif self.enable_adaptive_sandwich.get():
+                                        # === ADAPTIVE SANDWICH ROUTINE (FORCE-RESPONSIVE) ===
+                                        # Execute adaptive sandwich using dedicated module
+                                        success = self.sandwich_manager.execute_adaptive_sandwich(
+                                            layer_height_um=sandwich_target_position_um,
+                                            measured_gap_mm=measured_gap,
+                                            contact_force_threshold=contact_force_threshold,
+                                            base_sandwich_speed_um_s=actual_sandwich_speed_um_s,
+                                            layer_display_num=current_layer_num_for_display,
+                                            pause_time_s=actual_pause,
+                                            stop_flag_callback=lambda: self.flag
                                         )
                                         
-                                        # PAUSE at 50% point (FIRST HALF of user-defined pause)
-                                        if actual_pause > 0:
-                                            pause_half = actual_pause / 2.0
-                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 1/2] Pausing {pause_half:.1f}s at 50% point")
-                                            # Keep phase as Sandwich during pause (part of sandwich routine)
-                                            time.sleep(pause_half)
-                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 1/2 DONE] Resuming")
+                                        # Resume PeakForceLogger after sandwich completes
+                                        if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
+                                            self.automated_peak_force_logger.resume_monitoring()
                                         
-                                        # Segment 3: 50→100% (to layer position) at tier1 (fastest)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 3/3] {waypoint_50pct_up_um/1000.0:.4f}mm → {sandwich_target_position_um/1000.0:.4f}mm @ {ascent_tier1:.0f}µm/s")
-                                        self.axis.move_absolute(
-                                            position=sandwich_target_position_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=True,
-                                            velocity=ascent_tier1 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                        )
-                                        
-                                        final_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT COMPLETE] Reached layer height at {final_pos/1000.0:.4f}mm")
-                                        
-                                        # PAUSE at layer height (SECOND HALF of user-defined pause)
-                                        if actual_pause > 0:
-                                            pause_half = actual_pause / 2.0
-                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 2/2] Pausing {pause_half:.1f}s at layer height")
-                                            # Keep phase as Sandwich during pause (part of sandwich routine)
-                                            time.sleep(pause_half)
-                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE 2/2 DONE]")
-                                        
-                                        # Increment sandwich layer counter for adaptive speed tracking
-                                        self.sandwich_layer_count += 1
-                                        
-                                        self.update_status_message(f"L{current_layer_num_for_display}: ========== SANDWICH ROUTINE COMPLETE ==========")
+                                        if not success:
+                                            # Sandwich was aborted by stop flag
+                                            break
                                     
                                     else:
                                         # === CLASSIC SANDWICH ROUTINE (4-TIER RAMPING) ===
-                                        self.update_status_message(f"L{current_layer_num_for_display}: Using CLASSIC sandwich routine")
-                                        
-                                        # Calculate speed tiers (used for BOTH descent and ascent)
-                                        # Slower near window, faster away from window
-                                        speed_tier1 = actual_sandwich_speed_um_s  # 0-50% of gap (far from window)
-                                        speed_tier2 = actual_sandwich_speed_um_s / 2.0  # 50-75% of gap
-                                        speed_tier3 = actual_sandwich_speed_um_s / 4.0  # 75-100% of gap (near window)
-                                        speed_tier4 = min(50.0, actual_sandwich_speed_um_s / 8.0)  # First/last 100µm
-                                        
-                                        # Calculate waypoint positions for DESCENT (moving DOWN toward glass)
-                                        waypoint_50pct_um = current_pos_um + (gap_um * 0.5)
-                                        waypoint_75pct_um = current_pos_um + (gap_um * 0.75)
-                                        waypoint_100um_before_glass_um = target_glass_um - 100.0
-                                        
-                                        self.update_status_message(f"L{current_layer_num_for_display}: DESCENT with ramping (Gap:{measured_gap:.3f}mm, Speeds:{speed_tier1:.0f}/{speed_tier2:.0f}/{speed_tier3:.0f}/{speed_tier4:.0f}µm/s)")
-                                        
-                                        # ========== DESCENT PHASE (RAMPED, 4 TIERS) ==========
-                                        # Segment 1: 0% to 50% at V_s
-                                        current_pos_before = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 1/4] Current pos: {current_pos_before/1000.0:.4f}mm → Target: {waypoint_50pct_um/1000.0:.4f}mm @ {speed_tier1:.0f}µm/s")
-                                        
-                                        self.axis.move_absolute(
-                                            position=waypoint_50pct_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=False,
-                                            velocity=speed_tier1 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
+                                        # Execute classic sandwich using dedicated module
+                                        success = self.sandwich_manager.execute_classic_sandwich(
+                                            layer_height_um=sandwich_target_position_um,
+                                            measured_gap_mm=measured_gap,
+                                            contact_force_threshold=contact_force_threshold,
+                                            base_sandwich_speed_um_s=actual_sandwich_speed_um_s,
+                                            layer_display_num=current_layer_num_for_display,
+                                            pause_time_s=actual_pause,
+                                            stop_flag_callback=lambda: self.flag
                                         )
                                         
-                                        failsafe_triggered = False
-                                        while self.axis.is_busy():
-                                            if self.flag:
-                                                self.axis.stop()
-                                                break
-                                            if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
-                                                self.axis.stop()
-                                                failsafe_triggered = True
-                                                self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 1", error=True)
-                                                break
-                                            time.sleep(0.02)
+                                        if not success:
+                                            # Sandwich was aborted by stop flag
+                                            break
                                         
-                                        if failsafe_triggered:
-                                            self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
-                                            raise Exception("Force failsafe triggered during descent segment 1")
-                                        
-                                        if self.flag:
-                                            break  # User stopped print
-                                        
-                                        pos_after_seg1 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 1 DONE] Reached: {pos_after_seg1/1000.0:.4f}mm")
-                                        
-                                        # Segment 2: 50% to 75% at V_s/2
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 2/4] Current pos: {pos_after_seg1/1000.0:.4f}mm → Target: {waypoint_75pct_um/1000.0:.4f}mm @ {speed_tier2:.0f}µm/s")
-                                        
-                                        self.axis.move_absolute(
-                                            position=waypoint_75pct_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=False,
-                                            velocity=speed_tier2 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                        )
-                                        
-                                        while self.axis.is_busy():
-                                            if self.flag:
-                                                self.axis.stop()
-                                                break
-                                            if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
-                                                self.axis.stop()
-                                                failsafe_triggered = True
-                                                self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 2", error=True)
-                                                break
-                                            time.sleep(0.02)
-                                        
-                                        if failsafe_triggered:
-                                            self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
-                                            raise Exception("Force failsafe triggered during descent segment 2")
-                                        
-                                        if self.flag:
-                                            break  # User stopped print
-                                        
-                                        pos_after_seg2 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 2 DONE] Reached: {pos_after_seg2/1000.0:.4f}mm")
-                                        
-                                        # Segment 3: 75% to (100%-100µm) at V_s/4
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 3/4] Current pos: {pos_after_seg2/1000.0:.4f}mm → Target: {waypoint_100um_before_glass_um/1000.0:.4f}mm @ {speed_tier3:.0f}µm/s")
-                                        
-                                        self.axis.move_absolute(
-                                            position=waypoint_100um_before_glass_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=False,
-                                            velocity=speed_tier3 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                        )
-                                        
-                                        while self.axis.is_busy():
-                                            if self.flag:
-                                                self.axis.stop()
-                                                break
-                                            if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
-                                                self.axis.stop()
-                                                failsafe_triggered = True
-                                                self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 3", error=True)
-                                                break
-                                            time.sleep(0.02)
-                                        
-                                        if failsafe_triggered:
-                                            self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
-                                            raise Exception("Force failsafe triggered during descent segment 3")
-                                        
-                                        if self.flag:
-                                            break  # User stopped print
-                                        
-                                        pos_after_seg3 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 3 DONE] Reached: {pos_after_seg3/1000.0:.4f}mm")
-                                        
-                                        # Segment 4: Last 100µm at min(50µm/s, V_s/8)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT SEG 4/4] Current pos: {pos_after_seg3/1000.0:.4f}mm → Target: {target_glass_um/1000.0:.4f}mm @ {speed_tier4:.0f}µm/s (SLOWEST - near glass)")
-                                        
-                                        self.axis.move_absolute(
-                                            position=target_glass_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=False,
-                                            velocity=speed_tier4 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                        )
-                                        
-                                        while self.axis.is_busy():
-                                            if self.flag:
-                                                self.axis.stop()
-                                                break
-                                            if force_gauge.get_latest_calibrated_force() <= contact_force_threshold:
-                                                self.axis.stop()
-                                                failsafe_triggered = True
-                                                self.update_status_message(f"L{current_layer_num_for_display}: FORCE FAILSAFE during descent segment 4 (last 100µm)", error=True)
-                                                break
-                                            time.sleep(0.02)
-                                        
-                                        if failsafe_triggered:
-                                            self.axis.move_absolute(sandwich_target_position_um, Units.LENGTH_MICROMETRES, wait_until_idle=True)
-                                            raise Exception("Force failsafe triggered during descent segment 4 (last 100µm)")
-                                        
-                                        if self.flag:
-                                            break  # User stopped print
-                                        
-                                        final_descent_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [DESCENT COMPLETE] Reached glass at {final_descent_pos_um/1000.0:.4f}mm")
-                                        
-                                        # ========== ASCENT PHASE (RAMPED, SYMMETRICAL) ==========
-                                        # Calculate waypoints for ASCENT (moving UP/decreasing position away from glass)
-                                        waypoint_100um_after_glass_um = final_descent_pos_um - 100.0
-                                        waypoint_75pct_up_um = sandwich_target_position_um + (gap_um * 0.25)  # 75% complete
-                                        waypoint_50pct_up_um = sandwich_target_position_um + (gap_um * 0.5)   # 50% complete (PAUSE HERE)
-                                        
-                                        self.update_status_message(f"L{current_layer_num_for_display}: ========== STARTING ASCENT (RAMPED) - Target: {sandwich_target_position_um/1000.0:.4f}mm ==========")
-                                        self.update_status_message(f"L{current_layer_num_for_display}: ASCENT will use speeds: {speed_tier4:.0f}→{speed_tier3:.0f}→{speed_tier2:.0f}→{speed_tier1:.0f}µm/s, Pause:{actual_pause}s at 50%")
-                                        
-                                        # Segment 1: First 100µm away from glass at slowest speed (tier 4)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 1/4] Current pos: {final_descent_pos_um/1000.0:.4f}mm → Target: {waypoint_100um_after_glass_um/1000.0:.4f}mm @ {speed_tier4:.0f}µm/s (SLOWEST - leaving glass)")
-                                        
-                                        self.axis.move_absolute(
-                                            position=waypoint_100um_after_glass_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=True,
-                                            velocity=speed_tier4 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                        )
-                                        
-                                        pos_after_ascent_seg1 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 1 DONE] Reached: {pos_after_ascent_seg1/1000.0:.4f}mm")
-                                        
-                                        # Segment 2: 100µm to 25% complete (which is 75% from glass) at tier 3
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 2/4] Current pos: {pos_after_ascent_seg1/1000.0:.4f}mm → Target: {waypoint_75pct_up_um/1000.0:.4f}mm @ {speed_tier3:.0f}µm/s")
-                                        
-                                        self.axis.move_absolute(
-                                            position=waypoint_75pct_up_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=True,
-                                            velocity=speed_tier3 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                        )
-                                        
-                                        pos_after_ascent_seg2 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 2 DONE] Reached: {pos_after_ascent_seg2/1000.0:.4f}mm")
-                                        
-                                        # Segment 3: 25% to 50% at tier 2
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 3/4] Current pos: {pos_after_ascent_seg2/1000.0:.4f}mm → Target: {waypoint_50pct_up_um/1000.0:.4f}mm @ {speed_tier2:.0f}µm/s")
-                                        
-                                        self.axis.move_absolute(
-                                            position=waypoint_50pct_up_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=True,
-                                            velocity=speed_tier2 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                        )
-                                        
-                                        pos_after_ascent_seg3 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 3 DONE] Reached 50% point at: {pos_after_ascent_seg3/1000.0:.4f}mm")
-                                        
-                                        # PAUSE AT 50% POINT if specified
-                                        if actual_pause > 0:
-                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE] Pausing {actual_pause}s at 50% ascent point")
-                                            # Keep phase as Sandwich during pause (part of sandwich routine)
-                                            time.sleep(actual_pause)
-                                            pos_after_pause = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                            self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT PAUSE DONE] Resuming from: {pos_after_pause/1000.0:.4f}mm")
-                                        
-                                        # Segment 4: 50% to 0% (layer position) at fastest speed (tier 1)
-                                        current_pos_seg4 = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT SEG 4/4] Current pos: {current_pos_seg4/1000.0:.4f}mm → Target: {sandwich_target_position_um/1000.0:.4f}mm @ {speed_tier1:.0f}µm/s (FASTEST)")
-                                        
-                                        self.axis.move_absolute(
-                                            position=sandwich_target_position_um,
-                                            unit=Units.LENGTH_MICROMETRES,
-                                            wait_until_idle=True,
-                                            velocity=speed_tier1 / 1000.0,
-                                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                                            acceleration=1000.0,
-                                            acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                                        )
-                                        
-                                        final_pos = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                        self.update_status_message(f"L{current_layer_num_for_display}: [ASCENT COMPLETE] Sandwich complete at {final_pos/1000.0:.4f}mm")
-                                        self.update_status_message(f"L{current_layer_num_for_display}: ========== SANDWICH ROUTINE COMPLETE ==========")
+                                        # Note: All old inline sandwich code removed - now handled by SandwichRoutines module
                                         
                             except Exception as sandwich_error:
                                 self.update_status_message(f"L{current_layer_num_for_display}: Sandwich routine error: {sandwich_error}", error=True)
@@ -1878,8 +1784,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     
                     if should_save_instruction_file and hasattr(self, 'active_instruction_file_path') and self.active_instruction_file_path:
                         if os.path.exists(self.active_instruction_file_path):
+                            # Get updated directory path from ExperimentalConditionsWindow after folder rename
+                            target_dir = self.current_print_session_log_dir
+                            if (hasattr(self, 'exp_conditions_window') and self.exp_conditions_window and 
+                                hasattr(self.exp_conditions_window, 'current_print_dir') and 
+                                self.exp_conditions_window.current_print_dir):
+                                target_dir = str(self.exp_conditions_window.current_print_dir)
+                            
                             instruction_filename = os.path.basename(self.active_instruction_file_path)
-                            saved_instruction_path = os.path.join(self.current_print_session_log_dir, instruction_filename)
+                            saved_instruction_path = os.path.join(target_dir, instruction_filename)
                             shutil.copy2(self.active_instruction_file_path, saved_instruction_path)
                             self.update_status_message(f"Instruction file saved: {instruction_filename}")
                         else:
@@ -2047,30 +1960,98 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # Automatically load the generated instruction file
         self.input_directory()
     
-    def update_status_message(self, message, error=False):
-        """Updates the status message label and logs to console."""
+    def _on_sandwich_mode_change(self):
+        """Ensure only one sandwich mode is selected at a time."""
+        # Determine which checkbox was just clicked by checking current states
+        # If both are True, we need to disable the one that wasn't just clicked
+        if self.enable_adaptive_sandwich.get() and self.enable_scaled_force_sandwich.get():
+            # Both are checked - disable scaled force (adaptive was clicked last)
+            self.enable_scaled_force_sandwich.set(False)
+        
+        # Normal mutual exclusion
+        if self.enable_adaptive_sandwich.get():
+            self.enable_scaled_force_sandwich.set(False)
+        elif self.enable_scaled_force_sandwich.get():
+            self.enable_adaptive_sandwich.set(False)
+    
+    def log(self, message, level=None, error=False, category=""):
+        """
+        Enhanced logging with verbosity control.
+        
+        Args:
+            message: Message to log
+            level: Log level (LOG_MINIMAL, LOG_NORMAL, LOG_DETAILED, LOG_DEBUG)
+                   If None, defaults to LOG_NORMAL for regular messages, LOG_MINIMAL for errors
+            error: Whether this is an error message
+            category: Optional category prefix (e.g., "SANDWICH", "FORCE", "POSITION")
+        """
+        # Default level
+        if level is None:
+            level = self.LOG_MINIMAL if error else self.LOG_NORMAL
+        
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        # Concatenate for console/text area, but use raw message for status_message_var
-        log_message = f"[{timestamp}] {message}" 
         
-        try:
-            if self.win.winfo_exists():
-                 self.status_message_var.set(message) # Set the StringVar for the Label
-        except TclError:
-            pass 
-
-        if error:
-            print(f"ERROR: {log_message}")
+        # Build message with optional category
+        if category:
+            full_message = f"[{category}] {message}"
         else:
-            print(f"Status Update: {log_message}")
+            full_message = message
         
-        if hasattr(self, 'status_text_area') and self.status_text_area:
+        log_message = f"[{timestamp}] {full_message}"
+        
+        # Terminal output (based on terminal_verbosity)
+        if level <= self.terminal_verbosity:
+            if error:
+                print(f"ERROR: {log_message}")
+            else:
+                print(f"Status Update: {log_message}")
+        
+        # GUI text area (based on terminal_verbosity)
+        if level <= self.terminal_verbosity:
+            if hasattr(self, 'status_text_area') and self.status_text_area:
+                try:
+                    if self.status_text_area.winfo_exists():
+                        self.status_text_area.insert(END, log_message + "\n")
+                        self.status_text_area.see(END)
+                except TclError:
+                    pass
+        
+        # Update status label for NORMAL or higher priority messages
+        if level <= self.LOG_NORMAL:
             try:
-                if self.status_text_area.winfo_exists():
-                    self.status_text_area.insert(END, log_message + "\n")
-                    self.status_text_area.see(END)
+                if self.win.winfo_exists():
+                    self.status_message_var.set(full_message)
             except TclError:
-                 pass
+                pass
+        
+        # Session log file (mirrors terminal)
+        if self.session_log_file and level <= self.terminal_verbosity:
+            try:
+                with open(self.session_log_file, 'a', encoding='utf-8') as f:
+                    prefix = "ERROR: " if error else "Status: "
+                    f.write(f"{prefix}{log_message}\n")
+            except Exception as e:
+                print(f"Warning: Could not write to session log: {e}")
+        
+        # Detailed log file (includes everything up to file_verbosity)
+        if self.detailed_log_file and level <= self.file_verbosity:
+            try:
+                with open(self.detailed_log_file, 'a', encoding='utf-8') as f:
+                    level_names = {0: "MIN", 1: "INFO", 2: "DETAIL", 3: "DEBUG"}
+                    level_str = level_names.get(level, "INFO")
+                    prefix = "ERROR" if error else level_str
+                    f.write(f"[{prefix}] {log_message}\n")
+            except Exception as e:
+                print(f"Warning: Could not write to detailed log: {e}")
+    
+    def update_status_message(self, message, error=False):
+        """Updates the status message label and logs to console and file.
+        
+        This method is kept for backward compatibility. 
+        New code should use self.log() with appropriate verbosity levels.
+        """
+        # Route through new logging system at NORMAL level
+        self.log(message, level=self.LOG_NORMAL, error=error)
 
     def update_auto_home_button_state(self):
         if (self.sensor_data_window_instance and
@@ -2154,682 +2135,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         self.update_auto_home_button_state()
 
-    # ========== SANDWICH PRE-CALIBRATION AND ADAPTIVE SPEED HELPERS ==========
-    
-    def calculate_force_derivative(self, force_history, dt=0.02):
-        """
-        Calculate force derivative (dF/dt) using a sliding window.
-        
-        Args:
-            force_history: List of recent force measurements (most recent last)
-            dt: Time interval between measurements in seconds (default 20ms)
-            
-        Returns:
-            Force derivative in N/s, or 0 if insufficient data
-        """
-        if len(force_history) < 2:
-            return 0.0
-        
-        # Use last 5 samples for smoothing (or fewer if not available)
-        window_size = min(5, len(force_history))
-        recent_forces = force_history[-window_size:]
-        
-        # Calculate derivative using first and last point in window
-        df = recent_forces[-1] - recent_forces[0]
-        time_span = dt * (window_size - 1)
-        
-        if time_span == 0:
-            return 0.0
-        
-        derivative = df / time_span
-        return derivative
-    
-    def adaptive_speed_move(self, target_position_um, current_position_um, gap_distance_mm, 
-                           base_speed_um_s, direction='down', accel_mm_s2=1.0, 
-                           force_gauge_manager=None, max_force_threshold=None,
-                           derivative_threshold=None, stop_flag_check=None):
-        """
-        Move to target position using adaptive 3-stage speed control.
-        
-        Speed profile:
-        - First 50% of gap: base_speed
-        - Next 25% (50-75%): base_speed / 2
-        - Final 25% (75-100%): base_speed / 4
-        
-        Args:
-            target_position_um: Final target position in micrometers
-            current_position_um: Starting position in micrometers
-            gap_distance_mm: Total gap distance for calculating waypoints
-            base_speed_um_s: Initial speed in micrometers/second
-            direction: 'down' (moving positive) or 'up' (moving negative)
-            accel_mm_s2: Acceleration in mm/s²
-            force_gauge_manager: Optional force gauge for monitoring during movement
-            max_force_threshold: Optional max force limit (absolute value)
-            derivative_threshold: Optional force derivative threshold for contact detection
-            stop_flag_check: Optional function that returns True if movement should stop
-            
-        Returns:
-            Dictionary with:
-                - 'reached_target': Boolean
-                - 'stopped_at_um': Position where movement stopped
-                - 'stop_reason': 'complete', 'force_limit', 'derivative', 'user_stop', or 'error'
-                - 'contact_detected': Boolean (True if stopped due to force/derivative)
-        """
-        result = {
-            'reached_target': False,
-            'stopped_at_um': current_position_um,
-            'stop_reason': 'unknown',
-            'contact_detected': False
-        }
-        
-        try:
-            # Calculate waypoints based on gap distance
-            gap_distance_um = gap_distance_mm * 1000.0
-            
-            if direction == 'down':
-                # Moving in positive direction (down toward glass)
-                waypoint_50pct = current_position_um + (gap_distance_um * 0.5)
-                waypoint_75pct = current_position_um + (gap_distance_um * 0.75)
-            else:  # 'up'
-                # Moving in negative direction (up away from glass)
-                waypoint_50pct = current_position_um - (gap_distance_um * 0.5)
-                waypoint_75pct = current_position_um - (gap_distance_um * 0.75)
-            
-            # Define the three movement segments
-            segments = [
-                {'target_um': waypoint_50pct, 'speed_um_s': base_speed_um_s},
-                {'target_um': waypoint_75pct, 'speed_um_s': base_speed_um_s / 2.0},
-                {'target_um': target_position_um, 'speed_um_s': base_speed_um_s / 4.0}
-            ]
-            
-            # Convert acceleration once
-            accel_um_s2 = accel_mm_s2 * 1000.0
-            
-            # Execute each segment with force monitoring
-            force_history = []
-            
-            for i, segment in enumerate(segments):
-                segment_target = segment['target_um']
-                segment_speed = segment['speed_um_s']
-                segment_speed_mm_s = segment_speed / 1000.0
-                
-                # Start movement
-                self.axis.move_absolute(
-                    position=segment_target,
-                    unit=Units.LENGTH_MICROMETRES,
-                    wait_until_idle=False,
-                    velocity=segment_speed_mm_s,
-                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                    acceleration=accel_mm_s2,
-                    acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                )
-                
-                # Monitor force during movement if available
-                if force_gauge_manager:
-                    while self.axis.is_busy():
-                        # Check user stop flag
-                        if stop_flag_check and stop_flag_check():
-                            self.axis.stop()
-                            while self.axis.is_busy():
-                                time.sleep(0.01)
-                            result['stopped_at_um'] = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                            result['stop_reason'] = 'user_stop'
-                            return result
-                        
-                        # Get current force
-                        current_force = force_gauge_manager.get_latest_calibrated_force()
-                        force_history.append(current_force)
-                        
-                        # Keep force history manageable
-                        if len(force_history) > 20:
-                            force_history.pop(0)
-                        
-                        # Check absolute force threshold
-                        if max_force_threshold and abs(current_force) >= abs(max_force_threshold):
-                            self.axis.stop()
-                            while self.axis.is_busy():
-                                time.sleep(0.01)
-                            result['stopped_at_um'] = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                            result['stop_reason'] = 'force_limit'
-                            result['contact_detected'] = True
-                            return result
-                        
-                        # Check derivative threshold
-                        if derivative_threshold and len(force_history) >= 3:
-                            current_derivative = self.calculate_force_derivative(force_history)
-                            if abs(current_derivative) >= abs(derivative_threshold):
-                                self.axis.stop()
-                                while self.axis.is_busy():
-                                    time.sleep(0.01)
-                                result['stopped_at_um'] = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                result['stop_reason'] = 'derivative'
-                                result['contact_detected'] = True
-                                return result
-                        
-                        time.sleep(0.02)  # 20ms sampling rate
-                else:
-                    # No force monitoring, just wait for completion
-                    while self.axis.is_busy():
-                        if stop_flag_check and stop_flag_check():
-                            self.axis.stop()
-                            while self.axis.is_busy():
-                                time.sleep(0.01)
-                            result['stopped_at_um'] = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                            result['stop_reason'] = 'user_stop'
-                            return result
-                        time.sleep(0.02)
-            
-            # All segments completed successfully
-            result['reached_target'] = True
-            result['stopped_at_um'] = self.axis.get_position(Units.LENGTH_MICROMETRES)
-            result['stop_reason'] = 'complete'
-            return result
-            
-        except Exception as e:
-            result['stopped_at_um'] = self.axis.get_position(Units.LENGTH_MICROMETRES)
-            result['stop_reason'] = f'error: {str(e)}'
-            return result
-
-    def perform_precalibration_simple(self, gap_estimate_mm, contact_force_threshold, sandwich_speed_um_s=500):
-        """
-        Simplified pre-calibration routine using force threshold only (no derivative).
-        
-        This routine:
-        1. Moves down with 3-tier ramping (matching sandwich routine speeds)
-        2. Performs 5 touches with 1s pause between each
-        3. Records contact position on each descent
-        4. Calculates average gap
-        5. Returns to starting position with 3s pause before printing
-        
-        Args:
-            gap_estimate_mm: Estimated gap distance (used for search limit and ramping waypoints)
-            contact_force_threshold: Force threshold for contact detection (N, positive value)
-            sandwich_speed_um_s: Base sandwich speed to use (should match first layer sandwich speed)
-            
-        Returns:
-            average_gap_mm or None on failure
-        """
-        try:
-            self.update_status_message("=== STARTING SIMPLIFIED PRE-CALIBRATION (FORCE THRESHOLD) ===")
-            
-            # Check force gauge availability
-            if not (hasattr(self, 'sensor_data_window_instance') and 
-                   self.sensor_data_window_instance and 
-                   hasattr(self.sensor_data_window_instance, 'force_gauge_manager') and
-                   self.sensor_data_window_instance.force_gauge_manager and
-                   self.sensor_data_window_instance.is_force_gauge_calibrated_internally()):
-                self.update_status_message("Pre-calibration failed: Force gauge not available/calibrated", error=True)
-                return None
-            
-            force_gauge = self.sensor_data_window_instance.force_gauge_manager
-            force_threshold = -abs(contact_force_threshold)  # Negative for compression
-            
-            # Record starting position
-            start_position_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-            start_position_mm = start_position_um / 1000.0
-            
-            # Calculate expected glass position
-            expected_glass_mm = start_position_mm + gap_estimate_mm
-            max_search_mm = expected_glass_mm + 0.5  # Safety margin
-            max_search_um = max_search_mm * 1000.0
-            
-            self.update_status_message(f"Pre-cal: Starting at {start_position_mm:.3f}mm, searching to {max_search_mm:.3f}mm")
-            self.update_status_message(f"Pre-cal: Contact force threshold: {contact_force_threshold:.3f}N")
-            
-            contact_positions_um = []
-            
-            # Calculate 3-tier speeds matching sandwich routine (use provided sandwich speed)
-            speed_tier1 = sandwich_speed_um_s        # 0-50%
-            speed_tier2 = sandwich_speed_um_s / 2.0  # 50-75%
-            speed_tier3 = sandwich_speed_um_s / 4.0  # 75-100%
-            
-            self.update_status_message(f"Pre-cal: Using sandwich speeds: {speed_tier1:.0f}→{speed_tier2:.0f}→{speed_tier3:.0f} µm/s")
-            
-            # Perform 5 touches
-            for touch_num in range(5):
-                current_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                contact_found = False
-                contact_pos_um = None
-                
-                # For first touch: use full 3-tier ramping
-                # For subsequent touches: only 200µm away from glass, use slowest speed only
-                if touch_num == 0:
-                    # First touch: Full 3-tier ramping from starting position
-                    self.update_status_message(f"Pre-cal: Touch {touch_num + 1}/5 - 3-tier descent ({speed_tier1:.0f}→{speed_tier2:.0f}→{speed_tier3:.0f} µm/s)")
-                    gap_um = gap_estimate_mm * 1000.0  # Use FIXED gap estimate
-                    
-                    # Calculate waypoints for 3-tier descent (based on gap estimate)
-                    waypoint_50pct_um = current_pos_um + (gap_um * 0.5)
-                    waypoint_75pct_um = current_pos_um + (gap_um * 0.75)
-                    
-                    # Segment 1: 0→50% at V_s
-                    print(f"[PRE-CAL SEG 1/3] Start:{current_pos_um/1000.0:.3f}mm → Target:{waypoint_50pct_um/1000.0:.3f}mm @ {speed_tier1}µm/s (accel:{1000000.0}µm/s²)")
-                    self.axis.move_absolute(
-                        position=waypoint_50pct_um,
-                        unit=Units.LENGTH_MICROMETRES,
-                        wait_until_idle=False,
-                        velocity=speed_tier1 / 1000.0,
-                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                        acceleration=1000000.0,
-                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                    )
-                
-                while self.axis.is_busy():
-                    if self.flag:
-                        self.axis.stop()
-                        raise Exception("Pre-calibration stopped by user")
-                    
-                    current_force = force_gauge.get_latest_calibrated_force()
-                    if current_force <= force_threshold:
-                        self.axis.stop()
-                        while self.axis.is_busy():
-                            time.sleep(0.01)
-                        contact_found = True
-                        contact_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                        break
-                    time.sleep(0.02)
-                
-                    # Segment 2: 50→75% at V_s/2 - only if no contact yet
-                    if not contact_found:
-                        current_pos_now = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                        print(f"[PRE-CAL SEG 2/3] Start:{current_pos_now/1000.0:.3f}mm → Target:{waypoint_75pct_um/1000.0:.3f}mm @ {speed_tier2}µm/s (accel:{1000000.0}µm/s²)")
-                        self.axis.move_absolute(
-                            position=waypoint_75pct_um,
-                            unit=Units.LENGTH_MICROMETRES,
-                            wait_until_idle=False,
-                            velocity=speed_tier2 / 1000.0,
-                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                            acceleration=1000000.0,
-                            acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                        )
-                        
-                        while self.axis.is_busy():
-                            if self.flag:
-                                self.axis.stop()
-                                raise Exception("Pre-calibration stopped by user")
-                            
-                            current_force = force_gauge.get_latest_calibrated_force()
-                            if current_force <= force_threshold:
-                                self.axis.stop()
-                                while self.axis.is_busy():
-                                    time.sleep(0.01)
-                                contact_found = True
-                                contact_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                break
-                            time.sleep(0.02)
-                    
-                    # Segment 3: 75→100% at V_s/4 - only if no contact yet
-                    if not contact_found:
-                        current_pos_now = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                        print(f"[PRE-CAL SEG 3/3] Start:{current_pos_now/1000.0:.3f}mm → Target:{max_search_um/1000.0:.3f}mm @ {speed_tier3}µm/s (accel:{1000000.0}µm/s²)")
-                        self.axis.move_absolute(
-                            position=max_search_um,
-                            unit=Units.LENGTH_MICROMETRES,
-                            wait_until_idle=False,
-                            velocity=speed_tier3 / 1000.0,
-                            velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                            acceleration=1000000.0,
-                            acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                        )
-                        
-                        while self.axis.is_busy():
-                            if self.flag:
-                                self.axis.stop()
-                                raise Exception("Pre-calibration stopped by user")
-                            
-                            current_force = force_gauge.get_latest_calibrated_force()
-                            if current_force <= force_threshold:
-                                self.axis.stop()
-                                while self.axis.is_busy():
-                                    time.sleep(0.01)
-                                contact_found = True
-                                contact_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                                break
-                            time.sleep(0.02)
-                
-                else:
-                    # Subsequent touches (2-5): Already close to glass (200µm away), use slowest speed only
-                    self.update_status_message(f"Pre-cal: Touch {touch_num + 1}/5 - Single speed descent (near glass: {speed_tier3:.0f} µm/s)")
-                    print(f"[PRE-CAL SLOW] Start:{current_pos_um/1000.0:.3f}mm → Target:{max_search_um/1000.0:.3f}mm @ {speed_tier3}µm/s (accel:{1000000.0}µm/s²)")
-                    self.axis.move_absolute(
-                        position=max_search_um,
-                        unit=Units.LENGTH_MICROMETRES,
-                        wait_until_idle=False,
-                        velocity=speed_tier3 / 1000.0,
-                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                        acceleration=1000000.0,
-                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                    )
-                    
-                    while self.axis.is_busy():
-                        if self.flag:
-                            self.axis.stop()
-                            raise Exception("Pre-calibration stopped by user")
-                        
-                        current_force = force_gauge.get_latest_calibrated_force()
-                        if current_force <= force_threshold:
-                            self.axis.stop()
-                            while self.axis.is_busy():
-                                time.sleep(0.01)
-                            contact_found = True
-                            contact_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                            break
-                        time.sleep(0.02)
-                
-                # Record contact result
-                if contact_found:
-                    contact_positions_um.append(contact_pos_um)
-                    gap_measured = (contact_pos_um - start_position_um) / 1000.0
-                    self.update_status_message(f"Pre-cal: Touch {touch_num + 1}/5 - Contact at {contact_pos_um/1000.0:.3f}mm (Gap:{gap_measured:.3f}mm, Force:{force_gauge.get_latest_calibrated_force():.4f}N)")
-                else:
-                    self.update_status_message(f"Pre-cal: Touch {touch_num + 1}/5 - No contact detected", error=True)
-                
-                # Retract 200µm before next touch with 3-tier ramping (symmetric ascent)
-                if touch_num < 4 and contact_found:  # Don't retract after last touch
-                    retract_pos_um = contact_pos_um - 200.0
-                    retract_distance_um = 200.0
-                    
-                    # Calculate symmetric ascent waypoints
-                    waypoint_75pct_up_um = contact_pos_um - (retract_distance_um * 0.25)  # 25% up = 75% remaining
-                    waypoint_50pct_up_um = contact_pos_um - (retract_distance_um * 0.5)   # 50% up = 50% remaining
-                    
-                    # Segment 1: First 25% at V_s/4 (slowest near glass)
-                    print(f"[PRE-CAL ASCENT 1/3] Start:{contact_pos_um/1000.0:.3f}mm → Target:{waypoint_75pct_up_um/1000.0:.3f}mm @ {speed_tier3}µm/s (accel:{1000000.0}µm/s²)")
-                    self.axis.move_absolute(
-                        position=waypoint_75pct_up_um,
-                        unit=Units.LENGTH_MICROMETRES,
-                        wait_until_idle=True,
-                        velocity=speed_tier3 / 1000.0,
-                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                        acceleration=1000000.0,
-                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                    )
-                    
-                    # Segment 2: 25→50% at V_s/2
-                    print(f"[PRE-CAL ASCENT 2/3] Start:{waypoint_75pct_up_um/1000.0:.3f}mm → Target:{waypoint_50pct_up_um/1000.0:.3f}mm @ {speed_tier2}µm/s (accel:{1000000.0}µm/s²)")
-                    self.axis.move_absolute(
-                        position=waypoint_50pct_up_um,
-                        unit=Units.LENGTH_MICROMETRES,
-                        wait_until_idle=True,
-                        velocity=speed_tier2 / 1000.0,
-                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                        acceleration=1000000.0,
-                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                    )
-                    
-                    # Segment 3: 50→100% at V_s (fastest away from glass)
-                    print(f"[PRE-CAL ASCENT 3/3] Start:{waypoint_50pct_up_um/1000.0:.3f}mm → Target:{retract_pos_um/1000.0:.3f}mm @ {speed_tier1}µm/s (accel:{1000000.0}µm/s²)")
-                    self.axis.move_absolute(
-                        position=retract_pos_um,
-                        unit=Units.LENGTH_MICROMETRES,
-                        wait_until_idle=True,
-                        velocity=speed_tier1 / 1000.0,
-                        velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                        acceleration=1000000.0,
-                        acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
-                    )
-                    
-                    self.update_status_message(f"Pre-cal: Pausing 1s before next touch...")
-                    time.sleep(1.0)
-            
-            # Calculate average gap
-            if len(contact_positions_um) < 2:
-                self.update_status_message("Pre-cal: Insufficient contact data for averaging", error=True)
-                self.axis.move_absolute(
-                    position=start_position_um,
-                    unit=Units.LENGTH_MICROMETRES,
-                    wait_until_idle=True,
-                    velocity=0.5,
-                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND
-                )
-                return None
-            
-            avg_contact_pos_um = sum(contact_positions_um) / len(contact_positions_um)
-            avg_gap_mm = (avg_contact_pos_um - start_position_um) / 1000.0
-            
-            self.update_status_message(f"Pre-cal: Average gap from {len(contact_positions_um)} contacts: {avg_gap_mm:.3f}mm")
-            
-            # Return to starting position
-            self.update_status_message("Pre-cal: Returning to start position...")
-            self.axis.move_absolute(
-                position=start_position_um,
-                unit=Units.LENGTH_MICROMETRES,
-                wait_until_idle=True,
-                velocity=0.5,
-                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                acceleration=1000.0,
-                acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-            )
-            
-            self.update_status_message("Pre-cal: Pausing 3s before starting print...")
-            time.sleep(3.0)
-            
-            self.update_status_message(f"=== PRE-CALIBRATION COMPLETE: Gap={avg_gap_mm:.3f}mm ===")
-            return avg_gap_mm
-            
-        except Exception as e:
-            self.update_status_message(f"Pre-calibration error: {e}", error=True)
-            try:
-                self.axis.move_absolute(
-                    position=start_position_um,
-                    unit=Units.LENGTH_MICROMETRES,
-                    wait_until_idle=True,
-                    velocity=0.5,
-                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND
-                )
-            except:
-                pass
-            return None
-
-    def perform_precalibration(self, gap_estimate_mm, derivative_threshold_initial=0.075):
-        """
-        Perform pre-calibration routine to measure actual gap and force derivative threshold.
-        
-        This routine:
-        1. Moves down using adaptive speed (500→250→100 µm/s) until derivative threshold hit
-        2. Performs 5 oscillations (±100µm) with 1s pause between each
-        3. Records contact position on each descent
-        4. Calculates average gap and average peak derivative
-        5. Returns to starting position with 5s pause before printing
-        
-        Args:
-            gap_estimate_mm: Estimated gap distance (used for adaptive speed calculation)
-            derivative_threshold_initial: Initial derivative threshold for first contact (N/s)
-            
-        Returns:
-            Tuple of (average_gap_mm, average_peak_derivative) or (None, None) on failure
-        """
-        try:
-            self.update_status_message("=== STARTING PRE-CALIBRATION ROUTINE ===")
-            
-            # Check force gauge availability
-            if not (hasattr(self, 'sensor_data_window_instance') and 
-                   self.sensor_data_window_instance and 
-                   hasattr(self.sensor_data_window_instance, 'force_gauge_manager') and
-                   self.sensor_data_window_instance.force_gauge_manager and
-                   self.sensor_data_window_instance.is_force_gauge_calibrated_internally()):
-                self.update_status_message("Pre-calibration failed: Force gauge not available/calibrated", error=True)
-                return (None, None)
-            
-            force_gauge = self.sensor_data_window_instance.force_gauge_manager
-            
-            # Record starting position
-            start_position_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-            start_position_mm = start_position_um / 1000.0
-            
-            # Calculate expected glass position
-            expected_glass_mm = start_position_mm + gap_estimate_mm
-            max_search_mm = expected_glass_mm + 0.5  # Safety margin
-            max_search_um = max_search_mm * 1000.0
-            
-            self.update_status_message(f"Pre-cal: Starting at {start_position_mm:.3f}mm, searching to {max_search_mm:.3f}mm")
-            self.update_status_message(f"Pre-cal: Using derivative threshold {derivative_threshold_initial:.4f} N/s")
-            
-            # Phase 1: Initial descent to find first contact
-            self.update_status_message("Pre-cal: Phase 1 - Initial descent with adaptive speed...")
-            move_result = self.adaptive_speed_move(
-                target_position_um=max_search_um,
-                current_position_um=start_position_um,
-                gap_distance_mm=gap_estimate_mm,
-                base_speed_um_s=500.0,  # 500 µm/s base speed
-                direction='down',
-                accel_mm_s2=1.0,  # Slow acceleration
-                force_gauge_manager=force_gauge,
-                max_force_threshold=None,  # No force limit, only derivative
-                derivative_threshold=derivative_threshold_initial,
-                stop_flag_check=lambda: self.flag
-            )
-            
-            if not move_result['contact_detected']:
-                self.update_status_message(f"Pre-cal: No contact detected (reason: {move_result['stop_reason']})", error=True)
-                # Return to start
-                self.axis.move_absolute(
-                    position=start_position_um,
-                    unit=Units.LENGTH_MICROMETRES,
-                    wait_until_idle=True,
-                    velocity=0.5,  # 500 µm/s
-                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND
-                )
-                return (None, None)
-            
-            first_contact_um = move_result['stopped_at_um']
-            first_contact_mm = first_contact_um / 1000.0
-            measured_gap_initial = (first_contact_um - start_position_um) / 1000.0
-            
-            self.update_status_message(f"Pre-cal: First contact at {first_contact_mm:.3f}mm (gap: {measured_gap_initial:.3f}mm)")
-            
-            # Phase 2: Oscillation to refine measurement (5 cycles)
-            self.update_status_message("Pre-cal: Phase 2 - Performing 5 oscillations for averaging...")
-            
-            contact_positions_um = [first_contact_um]
-            peak_derivatives = []
-            
-            oscillation_amplitude_um = 100.0  # ±100µm
-            oscillation_speed_um_s = 50.0  # 50 µm/s
-            oscillation_speed_mm_s = oscillation_speed_um_s / 1000.0
-            oscillation_accel_mm_s2 = 1.0
-            
-            for osc_num in range(5):
-                # Move up 100µm from contact
-                retract_position_um = first_contact_um - oscillation_amplitude_um
-                
-                self.update_status_message(f"Pre-cal: Oscillation {osc_num + 1}/5 - Moving up to {retract_position_um/1000.0:.3f}mm")
-                self.axis.move_absolute(
-                    position=retract_position_um,
-                    unit=Units.LENGTH_MICROMETRES,
-                    wait_until_idle=True,
-                    velocity=oscillation_speed_mm_s,
-                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                    acceleration=oscillation_accel_mm_s2,
-                    acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                )
-                
-                # Pause 1 second
-                self.update_status_message(f"Pre-cal: Pausing 1s before descent {osc_num + 1}/5...")
-                time.sleep(1.0)
-                
-                # Move back down to detect contact with derivative monitoring
-                self.update_status_message(f"Pre-cal: Oscillation {osc_num + 1}/5 - Moving down to find contact...")
-                
-                # Move down slowly with derivative monitoring
-                search_target_um = first_contact_um + 50.0  # Search slightly past expected contact
-                force_history = []
-                contact_found = False
-                contact_pos_um = None
-                peak_derivative_this_cycle = 0.0
-                
-                self.axis.move_absolute(
-                    position=search_target_um,
-                    unit=Units.LENGTH_MICROMETRES,
-                    wait_until_idle=False,
-                    velocity=oscillation_speed_mm_s,
-                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                    acceleration=oscillation_accel_mm_s2,
-                    acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-                )
-                
-                while self.axis.is_busy():
-                    if self.flag:
-                        self.axis.stop()
-                        raise Exception("Pre-calibration stopped by user")
-                    
-                    current_force = force_gauge.get_latest_calibrated_force()
-                    force_history.append(current_force)
-                    if len(force_history) > 20:
-                        force_history.pop(0)
-                    
-                    # Calculate derivative
-                    if len(force_history) >= 3:
-                        current_derivative = self.calculate_force_derivative(force_history)
-                        peak_derivative_this_cycle = max(peak_derivative_this_cycle, abs(current_derivative))
-                        
-                        # Check if derivative threshold exceeded
-                        if abs(current_derivative) >= derivative_threshold_initial:
-                            self.axis.stop()
-                            while self.axis.is_busy():
-                                time.sleep(0.01)
-                            contact_found = True
-                            contact_pos_um = self.axis.get_position(Units.LENGTH_MICROMETRES)
-                            break
-                    
-                    time.sleep(0.02)
-                
-                if contact_found:
-                    contact_positions_um.append(contact_pos_um)
-                    peak_derivatives.append(peak_derivative_this_cycle)
-                    self.update_status_message(f"Pre-cal: Oscillation {osc_num + 1}/5 - Contact at {contact_pos_um/1000.0:.3f}mm, peak dF/dt={peak_derivative_this_cycle:.4f} N/s")
-                else:
-                    self.update_status_message(f"Pre-cal: Oscillation {osc_num + 1}/5 - No contact detected", error=True)
-            
-            # Calculate averages
-            if len(contact_positions_um) < 2:
-                self.update_status_message("Pre-cal: Insufficient contact data for averaging", error=True)
-                # Return to start
-                self.axis.move_absolute(
-                    position=start_position_um,
-                    unit=Units.LENGTH_MICROMETRES,
-                    wait_until_idle=True,
-                    velocity=0.5,
-                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND
-                )
-                return (None, None)
-            
-            avg_contact_position_um = sum(contact_positions_um) / len(contact_positions_um)
-            avg_gap_mm = (avg_contact_position_um - start_position_um) / 1000.0
-            
-            if len(peak_derivatives) > 0:
-                avg_peak_derivative = sum(peak_derivatives) / len(peak_derivatives)
-            else:
-                avg_peak_derivative = derivative_threshold_initial  # Fallback
-            
-            self.update_status_message(f"Pre-cal: RESULTS - Avg gap: {avg_gap_mm:.3f}mm, Avg peak dF/dt: {avg_peak_derivative:.4f} N/s")
-            self.update_status_message(f"Pre-cal: Contact measurements: {len(contact_positions_um)} samples")
-            
-            # Phase 3: Return to starting position
-            self.update_status_message(f"Pre-cal: Returning to start position {start_position_mm:.3f}mm...")
-            self.axis.move_absolute(
-                position=start_position_um,
-                unit=Units.LENGTH_MICROMETRES,
-                wait_until_idle=True,
-                velocity=0.5,  # 500 µm/s return speed
-                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
-                acceleration=5.0,  # Normal acceleration for return
-                acceleration_unit=Units.ACCELERATION_MILLIMETRES_PER_SECOND_SQUARED
-            )
-            
-            # Final 5-second pause
-            self.update_status_message("Pre-cal: Pausing 5 seconds before starting print...")
-            time.sleep(5.0)
-            
-            self.update_status_message("=== PRE-CALIBRATION COMPLETE ===")
-            return (avg_gap_mm, avg_peak_derivative)
-            
-        except Exception as e:
-            self.update_status_message(f"Pre-calibration error: {e}", error=True)
-            return (None, None)
-
-    # ========== END PRE-CALIBRATION HELPERS ==========
-
     def start_sandwich_routine(self):
         """Manual sandwich test - removed (use pre-calibration + printing instead)."""
         self.update_status_message("Manual sandwich test removed. Use 'Enable Sandwich Routine' checkbox during printing.")
@@ -2897,14 +2202,24 @@ Evan Jones, evanjones2026@u.northwestern.edu
         try:
             self.update_status_message("Starting post-print analysis...")
             
+            # Get updated directory path from ExperimentalConditionsWindow after folder rename
+            analysis_dir = self.current_print_session_log_dir
+            if (hasattr(self, 'exp_conditions_window') and self.exp_conditions_window and 
+                hasattr(self.exp_conditions_window, 'current_print_dir') and 
+                self.exp_conditions_window.current_print_dir):
+                analysis_dir = str(self.exp_conditions_window.current_print_dir)
+            
             # Check if we have a valid log directory
-            if not hasattr(self, 'current_print_session_log_dir') or not self.current_print_session_log_dir:
+            if not analysis_dir:
                 self.update_status_message("No log directory available for post-print analysis.")
                 return
             
-            if not os.path.exists(self.current_print_session_log_dir):
-                self.update_status_message("Log directory does not exist for post-print analysis.")
+            if not os.path.exists(analysis_dir):
+                self.update_status_message(f"Log directory does not exist for post-print analysis: {analysis_dir}")
                 return
+            
+            # Update the stored path for use below
+            self.current_print_session_log_dir = analysis_dir
             
             # Import and run post-print analyzer
             from post_print_analyzer import PostPrintAnalyzer
