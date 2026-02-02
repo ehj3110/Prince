@@ -34,6 +34,8 @@ from SensorDataWindow import SensorDataWindow
 from AutoHomeRoutine import AutoHomer
 from support_modules.ExperimentalConditionsWindow import ExperimentalConditionsWindow
 from support_modules.SandwichRoutines import SandwichRoutineManager
+from support_modules.SessionManager import SessionManager
+from support_modules.motion_controller import MotionController
 
 
 class MyWindow:
@@ -60,10 +62,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.intensity_list = []
         self.active_instruction_file_path = None  # Track instruction file for copying
         
-        # Initialize session log file
+        # Initialize session manager and logs
         self.session_log_file = None
         self.detailed_log_file = None
-        self._init_session_log()
+        self.session_manager = SessionManager(self)
+        self.session_manager.init_session_log()
         
         # Logging verbosity levels
         self.LOG_MINIMAL = 0   # Only critical errors and major events
@@ -383,6 +386,25 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.b5.place(x=100, y=500)
         self.b6.place(x=200, y=500)
         self.b7.place(x=400, y=550)
+        
+        # Smooth motion checkboxes next to Simple input txt generator button
+        self.smoother_retraction_var = tk.IntVar(value=0)
+        self.chk_smoother_retraction = tk.Checkbutton(
+            win, 
+            text='Smooth Retraction', 
+            variable=self.smoother_retraction_var,
+            command=self.toggle_smoother_retraction
+        )
+        self.chk_smoother_retraction.place(x=580, y=550)
+        
+        self.smooth_lifting_var = tk.IntVar(value=0)
+        self.chk_smooth_lifting = tk.Checkbutton(
+            win,
+            text='Smooth Lifting',
+            variable=self.smooth_lifting_var,
+            command=self.toggle_smooth_lifting
+        )
+        self.chk_smooth_lifting.place(x=720, y=550)
 
         # --- Initialize active_logging_windows_filepath AFTER t1 and status_message_var are created ---
         # self.active_logging_windows_filepath = None
@@ -431,6 +453,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
         except Exception as e:
             self.update_status_message(f"Error setting default stage acceleration: {e}", error=True)
             traceback.print_exc() # Print full traceback for debugging
+        
+        # Initialize MotionController for smooth lifting and retraction
+        self.motion_controller = MotionController(axis=self.axis, force_gauge_manager=None)
+        self.update_status_message("MotionController initialized")
 
         # --- Initial t.insert values ---
         self.t1.delete(0, 'end')
@@ -464,44 +490,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         # Try to auto-load state on startup
         self.win.after(100, self._try_autoload_state)
-
-    def _init_session_log(self):
-        """Initialize session log files for this GUI session."""
-        try:
-            # Create logs directory if it doesn't exist
-            log_dir = os.path.join(os.path.dirname(__file__), 'SessionLogs')
-            os.makedirs(log_dir, exist_ok=True)
-            
-            # Create timestamped log files
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # Standard session log (terminal mirror)
-            log_filename = f"prince_session_{timestamp}.log"
-            self.session_log_file = os.path.join(log_dir, log_filename)
-            
-            # Detailed diagnostics log (verbose)
-            detailed_log_filename = f"prince_detailed_{timestamp}.log"
-            self.detailed_log_file = os.path.join(log_dir, detailed_log_filename)
-            
-            # Write headers to both log files
-            with open(self.session_log_file, 'w') as f:
-                f.write(f"Prince GUI Session Log (Terminal Mirror)\n")
-                f.write(f"Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"="*80 + "\n\n")
-            
-            with open(self.detailed_log_file, 'w') as f:
-                f.write(f"Prince GUI Detailed Diagnostics Log\n")
-                f.write(f"Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"This log contains verbose diagnostic information.\n")
-                f.write(f"="*80 + "\n\n")
-            
-            print(f"Session logs initialized:")
-            print(f"  Standard: {self.session_log_file}")
-            print(f"  Detailed: {self.detailed_log_file}")
-        except Exception as e:
-            print(f"Warning: Could not initialize session logs: {e}")
-            self.session_log_file = None
-            self.detailed_log_file = None
     
     def _update_gui_progress(self, progress_value, total_layers, current_layer_index):
         """Updates the progress bar and layer count display."""
@@ -522,11 +510,68 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 # Calculate remaining pause time
                 remaining_pauses = sum(self.pause_list[current_layer_index:]) if hasattr(self, 'pause_list') and current_layer_index < len(self.pause_list) else 0
                 
-                # Estimate movement time: ~3 seconds per layer for peel and return movements
-                estimated_movement = remaining_layers * 3.0
+                # Calculate remaining movement time (lift + retract + sandwich if enabled)
+                remaining_movement_time = 0.0
+                
+                # Get default parameters from GUI (fallbacks)
+                default_overstep = float(self.t19.get()) if hasattr(self, 't19') and self.t19.get() else 0.0
+                default_speed = float(self.t16.get()) if hasattr(self, 't16') and self.t16.get() else 1000.0
+                default_sandwich_speed = float(self.t_sandwich_speed.get()) if hasattr(self, 't_sandwich_speed') and self.t_sandwich_speed.get() else 500.0
+                
+                # Calculate movement time for each remaining layer
+                for layer_idx in range(current_layer_index, total_layers):
+                    # Get layer-specific parameters
+                    layer_overstep = self.overstep_distance_list[layer_idx] if hasattr(self, 'overstep_distance_list') and layer_idx < len(self.overstep_distance_list) else default_overstep
+                    layer_speed = self.step_speed_list[layer_idx] if hasattr(self, 'step_speed_list') and layer_idx < len(self.step_speed_list) else default_speed
+                    layer_sandwich_speed = self.sandwich_speed_list[layer_idx] if hasattr(self, 'sandwich_speed_list') and layer_idx < len(self.sandwich_speed_list) else default_sandwich_speed
+                    
+                    # Lift time calculation (with smooth lifting if enabled)
+                    if self.smooth_lifting_enabled:
+                        # 2-stage smooth lifting: 50µm at 100µm/s + remaining at layer_speed
+                        stage1_time = 0.05 / 0.1  # 50µm / 100µm/s = 0.5 seconds
+                        remaining_distance_mm = layer_overstep - 0.05  # mm
+                        stage2_time = (remaining_distance_mm / layer_speed) if layer_speed > 0 and remaining_distance_mm > 0 else 0
+                        lift_time = stage1_time + stage2_time
+                    else:
+                        # Standard single-stage lift
+                        lift_time = (layer_overstep / layer_speed) if layer_speed > 0 else 0
+                    
+                    # Retract time calculation (with smooth retraction if enabled)
+                    if self.smoother_retraction_enabled:
+                        # 2-stage smooth retraction: most at layer_speed + 200µm at 100µm/s
+                        remaining_distance_mm = layer_overstep - 0.2  # mm (200µm = 0.2mm)
+                        stage1_time = (remaining_distance_mm / layer_speed) if layer_speed > 0 and remaining_distance_mm > 0 else 0
+                        stage2_time = 0.2 / 0.1  # 200µm / 100µm/s = 2.0 seconds
+                        retract_time = stage1_time + stage2_time
+                    else:
+                        # Standard single-stage retraction
+                        retract_time = (layer_overstep / layer_speed) if layer_speed > 0 else 0
+                    
+                    # Sandwich time (if pre-calibration was successful)
+                    sandwich_time = 0.0
+                    if hasattr(self, 'measured_gap_mm') and self.measured_gap_mm is not None:
+                        # Down movement: measured_gap distance at sandwich speed
+                        sandwich_down = (self.measured_gap_mm * 1000.0 / layer_sandwich_speed) if layer_sandwich_speed > 0 else 0
+                        # Up movement: same distance, same speed
+                        sandwich_up = sandwich_down
+                        # 1 second settling time after retract
+                        sandwich_settling = 1.0
+                        sandwich_time = sandwich_down + sandwich_up + sandwich_settling
+                    
+                    # Additional overhead per layer
+                    # Based on empirical testing (7s observed vs 5.2s calculated):
+                    # - Stage acceleration/deceleration and idle transitions: ~0.5-1.0s
+                    # - Image loading and display (cv2.imshow + waitKey): ~0.2-0.5s
+                    # - DLP power changes (2x per layer): ~0.2-0.4s
+                    # - Diagnostics and force readings (pre-peel, pre-return): ~0.1-0.3s
+                    # - Phase changes, GUI updates, communications: ~0.2s
+                    layer_overhead = 1.8  # Total empirical overhead per layer
+                    
+                    # Add to total movement time
+                    remaining_movement_time += lift_time + retract_time + sandwich_time + layer_overhead
                 
                 # Total estimate
-                total_estimated_seconds = remaining_exposure + remaining_pauses + estimated_movement
+                total_estimated_seconds = remaining_exposure + remaining_pauses + remaining_movement_time
                 self.lbl15_var.set(f'Est: {total_estimated_seconds / 60:.1f} min')
             else:
                 self.lbl15_var.set('Est: Done')
@@ -636,24 +681,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
     def _get_next_print_number(self, date_specific_log_dir):
         """Determines the next print number for a given date directory."""
-        next_print_num = 1
-        if os.path.exists(date_specific_log_dir):
-            try:
-                entries = os.listdir(date_specific_log_dir)
-                print_nums = []
-                for entry in entries:
-                    if os.path.isdir(os.path.join(date_specific_log_dir, entry)) and entry.startswith("Print "):
-                        parts = entry.split(" - ")
-                        if len(parts) > 0: # Check if split produced at least one part
-                            num_part = parts[0].replace("Print ", "").strip()
-                            if num_part.isdigit():
-                                print_nums.append(int(num_part)) # Added missing append
-                if print_nums:
-                    next_print_num = max(print_nums) + 1
-            except Exception as e:
-                self.update_status_message(f"Error determining next print number: {e}", error=True)
-                # Fallback to 1 or handle error appropriately, for now, it will return 1
-        return next_print_num
+        return self.session_manager.get_next_print_number(date_specific_log_dir)
 
     def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
         # The try block should start here, encompassing all setup and thread starting
@@ -795,150 +823,35 @@ Evan Jones, evanjones2026@u.northwestern.edu
     
     def save_gui_state(self):
         """Save current GUI state to JSON file."""
-        try:
-            state = {
-                # File paths
-                'directory': self.t1.get(),
-                'reference': self.reference,
-                
-                # GUI entry fields
-                'move_distance': self.t9.get(),
-                'layer_thickness': self.t10.get(),
-                'layer_pause': self.t11.get(),
-                'overstep': self.t11_2.get(),
-                'offset': self.t14.get(),
-                
-                # Window states
-                'sensor_window_open': (self.sensor_data_window_instance is not None and 
-                                      self.sensor_data_window_instance.sensor_window.winfo_exists()),
-                'exp_conditions_window_open': (self.exp_conditions_window is not None and 
-                                              self.exp_conditions_window.window.winfo_exists()),
-                
-                # Sandwich settings
-                'enable_sandwich_precalib': self.enable_sandwich_precalib.get(),
-                'enable_adaptive_sandwich': self.enable_adaptive_sandwich.get(),
-                'enable_scaled_force_sandwich': self.enable_scaled_force_sandwich.get(),
-                'sandwich_gap': self.t_sandwich_gap.get() if hasattr(self, 't_sandwich_gap') else '0.5',
-                'sandwich_force': self.t_sandwich_force.get() if hasattr(self, 't_sandwich_force') else '15790',
-                'max_area_force': self.t_max_area_force.get() if hasattr(self, 't_max_area_force') else '-2.0',
-                
-                # Sensor data window settings (if window exists)
-                'sensor_settings': {}
-            }
-            
-            # Save sensor window settings if window is open
-            if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
-                try:
-                    sdw = self.sensor_data_window_instance
-                    state['sensor_settings'] = {
-                        'auto_log_enabled': sdw.auto_log_enabled_var.get() if hasattr(sdw, 'auto_log_enabled_var') else False,
-                        'record_work': sdw.record_work_var.get() if hasattr(sdw, 'record_work_var') else False,
-                        'force_gauge_calibrated': sdw.is_force_gauge_calibrated_internally() if hasattr(sdw, 'is_force_gauge_calibrated_internally') else False
-                    }
-                except Exception as sensor_err:
-                    self.update_status_message(f"Warning: Could not save all sensor settings: {sensor_err}")
-            
-            # Save to file in the same directory as Prince_Segmented.py
-            state_file = os.path.join(os.path.dirname(__file__), 'prince_gui_state.json')
-            with open(state_file, 'w') as f:
-                json.dump(state, f, indent=2)
-            
-            self.update_status_message(f"GUI state saved to {os.path.basename(state_file)}")
-            
-        except Exception as e:
-            self.update_status_message(f"Error saving GUI state: {e}", error=True)
-            traceback.print_exc()
+        self.session_manager.save_gui_state()
     
     def load_gui_state(self):
         """Load GUI state from JSON file."""
-        try:
-            state_file = os.path.join(os.path.dirname(__file__), 'prince_gui_state.json')
-            
-            if not os.path.exists(state_file):
-                self.update_status_message("No saved state found. Use 'Save State' to create one.")
-                return
-            
-            with open(state_file, 'r') as f:
-                state = json.load(f)
-            
-            # Restore file paths
-            if 'directory' in state and state['directory']:
-                self.t1.delete(0, END)
-                self.t1.insert(0, state['directory'])
-                # Try to load the directory
-                try:
-                    self.input_directory()
-                except:
-                    pass
-            
-            if 'reference' in state:
-                self.reference = state['reference']
-            
-            # Restore GUI entry fields
-            if 'move_distance' in state:
-                self.t9.delete(0, END)
-                self.t9.insert(0, state['move_distance'])
-            
-            if 'layer_thickness' in state:
-                self.t10.delete(0, END)
-                self.t10.insert(0, state['layer_thickness'])
-            
-            if 'layer_pause' in state:
-                self.t11.delete(0, END)
-                self.t11.insert(0, state['layer_pause'])
-            
-            if 'overstep' in state:
-                self.t11_2.delete(0, END)
-                self.t11_2.insert(0, state['overstep'])
-            
-            if 'offset' in state:
-                self.t14.delete(0, END)
-                self.t14.insert(0, state['offset'])
-            
-            # Restore sandwich settings
-            if 'enable_sandwich_precalib' in state:
-                self.enable_sandwich_precalib.set(state['enable_sandwich_precalib'])
-            
-            if 'enable_adaptive_sandwich' in state:
-                self.enable_adaptive_sandwich.set(state['enable_adaptive_sandwich'])
-            
-            if 'enable_scaled_force_sandwich' in state:
-                self.enable_scaled_force_sandwich.set(state['enable_scaled_force_sandwich'])
-            
-            if 'sandwich_gap' in state and hasattr(self, 't_sandwich_gap'):
-                self.t_sandwich_gap.delete(0, END)
-                self.t_sandwich_gap.insert(0, state['sandwich_gap'])
-            
-            if 'sandwich_force' in state and hasattr(self, 't_sandwich_force'):
-                self.t_sandwich_force.delete(0, END)
-                self.t_sandwich_force.insert(0, state['sandwich_force'])
-            
-            if 'max_area_force' in state and hasattr(self, 't_max_area_force'):
-                self.t_max_area_force.delete(0, END)
-                self.t_max_area_force.insert(0, state['max_area_force'])
-            
-            # Restore window states
-            if state.get('sensor_window_open', False):
-                if not (self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists()):
-                    self.win.after(100, self.open_sensor_panel)
-            
-            if state.get('exp_conditions_window_open', False):
-                if not (self.exp_conditions_window and self.exp_conditions_window.window.winfo_exists()):
-                    self.win.after(200, self.open_exp_conditions_window)
-            
-            # Restore sensor settings (will be applied when sensor window opens)
-            if 'sensor_settings' in state and state['sensor_settings']:
-                # Store for later application
-                self._pending_sensor_settings = state['sensor_settings']
-                # Try to apply if sensor window is already open
-                if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
-                    self.win.after(300, self._apply_sensor_settings)
-            
-            self.update_status_message(f"GUI state loaded from {os.path.basename(state_file)}")
-            
-        except Exception as e:
-            self.update_status_message(f"Error loading GUI state: {e}", error=True)
-            traceback.print_exc()
+        self.session_manager.load_gui_state()
+    
+    def toggle_smoother_retraction(self):
+        """Toggle smoother retraction mode with gentle deceleration."""
+        if self.smoother_retraction_var.get() == 1:
+            self.update_status_message("Smooth Retraction ENABLED: Using 1 mm/s² gentle acceleration")
+        else:
+            self.update_status_message("Smooth Retraction DISABLED: Using normal acceleration")
+    
+    @property
+    def smoother_retraction_enabled(self):
+        """Property to check if smoother retraction is enabled."""
+        return self.smoother_retraction_var.get() == 1
+    
+    def toggle_smooth_lifting(self):
+        """Toggle smooth lifting mode with multi-stage velocity ramping."""
+        if self.smooth_lifting_var.get() == 1:
+            self.update_status_message("Smooth Lifting ENABLED: Using 3-stage velocity ramp (200→400→1000 µm/s)")
+        else:
+            self.update_status_message("Smooth Lifting DISABLED: Using constant peel velocity")
+    
+    @property
+    def smooth_lifting_enabled(self):
+        """Property to check if smooth lifting is enabled."""
+        return self.smooth_lifting_var.get() == 1
     
     def _apply_sensor_settings(self):
         """Apply pending sensor settings if sensor window is open."""
@@ -979,9 +892,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
         try:
             if (hasattr(self, 'sensor_data_window_instance') and 
                 self.sensor_data_window_instance and
-                hasattr(self.sensor_data_window_instance, 'position_logger_thread') and
-                self.sensor_data_window_instance.position_logger_thread):
-                self.sensor_data_window_instance.position_logger_thread.set_phase(phase_name)
+                hasattr(self.sensor_data_window_instance, 'position_logger') and
+                self.sensor_data_window_instance.position_logger):
+                self.sensor_data_window_instance.position_logger.set_phase(phase_name)
         except Exception as e:
             print(f"Warning: Could not set phase to {phase_name}: {e}")
     
@@ -1324,22 +1237,36 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     except Exception as diag_e:
                         self.update_status_message(f"DEBUG L{current_layer_num_for_display}: Pre-movement diagnostics failed: {diag_e}")
                     
-                    self.update_status_message(f"Stepped L{current_layer_num_for_display}: Peeling up to {z_peel_peak / 1000.0:.4f} mm (Speed: {actual_step_speed_um_s} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
+                    # Get current position for smooth lift calculation
+                    current_pos_um = self.axis.get_position(unit=Units.LENGTH_MICROMETRES)
+                    
+                    # Display lifting mode
+                    lift_mode = "Smooth 3-stage" if self.smooth_lifting_enabled else "Standard"
+                    self.update_status_message(f"Stepped L{current_layer_num_for_display}: Peeling up to {z_peel_peak / 1000.0:.4f} mm ({lift_mode}, Speed: {actual_step_speed_um_s} um/s, Accel: {actual_acceleration_to_set_um_s2} µm/s²)")
                     
                     # Set phase to Lift (peel movement starts)
                     self._set_phase_robust("Lift")
                     
                     try:
-                        self.axis.move_absolute(
-                            position=z_peel_peak,
-                            unit=Units.LENGTH_MICROMETRES,
-                            wait_until_idle=True,
-                            velocity=actual_step_speed_um_s,
-                            velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
-                            acceleration=actual_acceleration_to_set_um_s2, 
-                            acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+                        # Use MotionController for lift with optional smooth ramping
+                        lift_result = self.motion_controller.execute_lift(
+                            start_pos_um=current_pos_um,
+                            target_pos_um=z_peel_peak,
+                            base_velocity_um_s=actual_step_speed_um_s,
+                            base_acceleration_um_s2=actual_acceleration_to_set_um_s2,
+                            smooth_enabled=self.smooth_lifting_enabled,
+                            smart_peel_enabled=False,  # Future feature
+                            phase_callback=self._set_phase_robust  # Report smooth lifting stages
                         )
-                        self.update_status_message(f"SUCCESS L{current_layer_num_for_display}: Peel movement completed")
+                        
+                        if lift_result['success']:
+                            if self.smooth_lifting_enabled:
+                                self.update_status_message(f"SUCCESS L{current_layer_num_for_display}: Peel completed in {lift_result['movement_time_s']:.2f}s ({lift_result['segments_completed']} segments)")
+                            else:
+                                self.update_status_message(f"SUCCESS L{current_layer_num_for_display}: Peel movement completed")
+                        else:
+                            raise Exception(lift_result.get('error', 'Unknown lift error'))
+                            
                     except Exception as peel_error:
                         self.update_status_message(f"ERROR L{current_layer_num_for_display}: Peel movement failed: {peel_error}", error=True)
                         # Log detailed diagnostics
@@ -1371,20 +1298,27 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     # Set phase to Pause (brief pause at peak before retract)
                     self._set_phase_robust("Pause")
                     
-                    # Set phase to Retract (return movement starts)
-                    self._set_phase_robust("Retract")
+                    # Get current position for smooth retraction calculation
+                    current_pos_um = self.axis.get_position(unit=Units.LENGTH_MICROMETRES)
                     
                     try:
-                        self.axis.move_absolute(
-                            position=z_return_pos, 
-                            unit=Units.LENGTH_MICROMETRES,
-                            wait_until_idle=True, 
-                            velocity=actual_step_speed_um_s,
-                            velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
-                            acceleration=actual_acceleration_to_set_um_s2, 
-                            acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
+                        # Use MotionController for retraction with optional smooth velocity ramping
+                        retraction_result = self.motion_controller.execute_retraction(
+                            start_pos_um=current_pos_um,
+                            target_pos_um=z_return_pos,
+                            base_velocity_um_s=actual_step_speed_um_s,
+                            base_acceleration_um_s2=actual_acceleration_to_set_um_s2,
+                            smooth_enabled=self.smoother_retraction_enabled,
+                            phase_callback=self._set_phase_robust  # Report smooth retraction stages
                         )
-                        self.update_status_message(f"SUCCESS L{current_layer_num_for_display}: Return movement completed")
+                        
+                        if retraction_result['success']:
+                            if self.smoother_retraction_enabled:
+                                self.update_status_message(f"SUCCESS L{current_layer_num_for_display}: Return completed in {retraction_result['movement_time_s']:.2f}s ({retraction_result['segments_completed']} segments)")
+                            else:
+                                self.update_status_message(f"SUCCESS L{current_layer_num_for_display}: Return movement completed")
+                        else:
+                            raise Exception(retraction_result.get('error', 'Unknown retraction error'))
                         
                         # 4a. SANDWICH ROUTINE (FORCE THRESHOLD VERSION)
                         # Only run if pre-calibration was successful (measured_gap_mm is not None)
@@ -1601,6 +1535,24 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         
                     except Exception as return_error:
                         self.update_status_message(f"ERROR L{current_layer_num_for_display}: Return movement failed: {return_error}", error=True)
+                        
+                        # SAVE LIVE PLOT DATA TO FAILURE LOG
+                        try:
+                            self.update_status_message(f"SAVING L{current_layer_num_for_display}: Saving live plot data to failure log...", error=True)
+                            if self.sensor_data_window_instance and hasattr(self.sensor_data_window_instance, 'position_logger'):
+                                failure_log_path = self.sensor_data_window_instance.position_logger.save_failure_log(
+                                    layer_num=current_layer_num_for_display,
+                                    error_message=str(return_error)
+                                )
+                                if failure_log_path:
+                                    self.update_status_message(f"SAVED L{current_layer_num_for_display}: Failure log saved to {failure_log_path}", error=True)
+                                else:
+                                    self.update_status_message(f"WARNING L{current_layer_num_for_display}: Could not save failure log (no data available)", error=True)
+                            else:
+                                self.update_status_message(f"WARNING L{current_layer_num_for_display}: Position logger not available for failure log", error=True)
+                        except Exception as save_error:
+                            self.update_status_message(f"ERROR L{current_layer_num_for_display}: Failed to save failure log: {save_error}", error=True)
+                        
                         # Log detailed diagnostics
                         try:
                             fault_status = self.axis.warnings.get_flags()
@@ -1608,29 +1560,37 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             force_after_fail = self.force_gauge_manager.get_force() if hasattr(self, 'force_gauge_manager') else 0.0
                             self.update_status_message(f"DIAGNOSTICS L{current_layer_num_for_display}: Fault={fault_status}, Pos={pos_after_fail/1000.0:.4f}mm, Force={force_after_fail:.4f}N", error=True)
                             
-                            # RECOVERY ATTEMPT: Clear faults and try gentle movement
-                            self.update_status_message(f"RECOVERY L{current_layer_num_for_display}: Attempting to clear faults and recover...", error=True)
+                            # RECOVERY ATTEMPT: Re-home stage and return to correct position
+                            self.update_status_message(f"RECOVERY L{current_layer_num_for_display}: Re-homing stage to clear fault...", error=True)
                             try:
-                                # Clear any faults by sending home command to reset state
-                                # Note: Zaber warnings don't have a .clear() method
-                                # Instead, we try to reset the axis state
-                                self.axis.home(wait_until_idle=False)
-                                time.sleep(0.5)
-                                self.axis.stop()
-                                time.sleep(0.5)
+                                # Re-home the stage to clear fault and re-establish position reference
+                                self.axis.home(wait_until_idle=True)
+                                self.update_status_message(f"RECOVERY L{current_layer_num_for_display}: Stage re-homed successfully", error=True)
                                 
-                                # Try a very slow, gentle movement back up
-                                recovery_pos = pos_after_fail + 500  # Move up 0.5mm slowly
+                                # Brief wait for forces to dissipate
+                                time.sleep(1.0)
+                                
+                                # Calculate correct position for this layer
+                                # z_return_pos is where we were trying to go
+                                target_pos_mm = z_return_pos / 1000.0
+                                
+                                # Move to target position from home
+                                self.update_status_message(f"RECOVERY L{current_layer_num_for_display}: Moving to target position {target_pos_mm:.4f}mm", error=True)
                                 self.axis.move_absolute(
-                                    position=recovery_pos,
+                                    position=z_return_pos,
                                     unit=Units.LENGTH_MICROMETRES,
                                     wait_until_idle=True,
-                                    velocity=100,  # Very slow: 100 um/s
+                                    velocity=actual_step_speed_um_s,
                                     velocity_unit=Units.VELOCITY_MICROMETRES_PER_SECOND,
-                                    acceleration=10000,  # Lower acceleration
+                                    acceleration=actual_acceleration_to_set_um_s2,
                                     acceleration_unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED
                                 )
-                                self.update_status_message(f"RECOVERY L{current_layer_num_for_display}: Successfully moved to {recovery_pos/1000.0:.4f}mm", error=True)
+                                final_pos = self.axis.get_position(unit=Units.LENGTH_MICROMETRES)
+                                self.update_status_message(f"RECOVERY L{current_layer_num_for_display}: Successfully recovered, position: {final_pos/1000.0:.4f}mm", error=True)
+                                
+                                # Recovery successful - don't abort print, continue to next layer
+                                continue
+                                
                             except Exception as recovery_error:
                                 self.update_status_message(f"RECOVERY FAILED L{current_layer_num_for_display}: {recovery_error}", error=True)
                         except:
@@ -1757,8 +1717,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     except Exception as exp_err:
                         self.update_status_message(f"Error finalizing experimental conditions: {exp_err}", error=True)
 
-                # Save print status file
-                status_file_path = os.path.join(self.current_print_session_log_dir, "print_status.txt")
+                # Save print status file (use updated directory path after folder rename)
+                status_dir = self.current_print_session_log_dir
+                if (hasattr(self, 'exp_conditions_window') and self.exp_conditions_window and 
+                    hasattr(self.exp_conditions_window, 'current_print_dir') and 
+                    self.exp_conditions_window.current_print_dir):
+                    status_dir = self.exp_conditions_window.current_print_dir
+                
+                status_file_path = os.path.join(status_dir, "print_status.txt")
                 try:
                     with open(status_file_path, 'w') as sf:
                         sf.write(status_to_write)
@@ -2199,77 +2165,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         Trigger automated post-print analysis and plot generation.
         This runs whether the print completed successfully or was stopped early.
         """
-        try:
-            self.update_status_message("Starting post-print analysis...")
-            
-            # Get updated directory path from ExperimentalConditionsWindow after folder rename
-            analysis_dir = self.current_print_session_log_dir
-            if (hasattr(self, 'exp_conditions_window') and self.exp_conditions_window and 
-                hasattr(self.exp_conditions_window, 'current_print_dir') and 
-                self.exp_conditions_window.current_print_dir):
-                analysis_dir = str(self.exp_conditions_window.current_print_dir)
-            
-            # Check if we have a valid log directory
-            if not analysis_dir:
-                self.update_status_message("No log directory available for post-print analysis.")
-                return
-            
-            if not os.path.exists(analysis_dir):
-                self.update_status_message(f"Log directory does not exist for post-print analysis: {analysis_dir}")
-                return
-            
-            # Update the stored path for use below
-            self.current_print_session_log_dir = analysis_dir
-            
-            # Import and run post-print analyzer
-            from post_print_analyzer import PostPrintAnalyzer
-            from pathlib import Path
-            
-            analyzer = PostPrintAnalyzer()
-            
-            # Get the daily log directory (parent of current print session)
-            daily_log_dir = os.path.dirname(self.current_print_session_log_dir)
-            
-            # Find only the current session (most recent) instead of all sessions
-            # Use the PostPrintAnalyzer method to find current session in daily directory
-            current_session = analyzer.find_current_session_in_daily_dir(daily_log_dir)
-            
-            if not current_session:
-                self.update_status_message("Post-print analysis: No current session found.")
-                return
-            
-            # Analyze the current session and track results
-            total_plots = 0
-            processed_sessions = 0
-            
-            try:
-                session_results = analyzer.analyze_print_session(current_session)
-                if session_results:
-                    processed_sessions += 1
-                    
-                    # Count plots generated
-                    plots_count = len([r for r in session_results if r.get('plot_path')])
-                    total_plots += plots_count
-                    
-                    # Count total layers processed across all CSV files in this session
-                    total_layers = sum(len(r.get('layers', [])) for r in session_results)
-                    
-                    if plots_count > 0:
-                        session_name = f"{current_session['date']}/{current_session['print_number']}"
-                        self.update_status_message(f"  📊 {session_name}: {total_layers} layers → {plots_count} plots")
-                        
-            except Exception as e:
-                print(f"Error analyzing current session {current_session.get('print_number', 'Unknown')}: {e}")
-        
-            if processed_sessions > 0:
-                self.update_status_message(f"Post-print analysis complete: {processed_sessions} session, {total_plots} plots generated.")
-            else:
-                self.update_status_message("Post-print analysis: No suitable data found for plotting.")
-                
-        except Exception as e:
-            self.update_status_message(f"Error in post-print analysis: {e}")
-            import traceback
-            traceback.print_exc()
+        self.session_manager.trigger_post_print_analysis()
 
     def move_with_retries(self, position_mm, retries=3):
         """

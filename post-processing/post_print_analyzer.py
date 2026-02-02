@@ -27,8 +27,12 @@ import matplotlib
 if threading.current_thread() != threading.main_thread():
     matplotlib.use('Agg')  # Non-interactive backend for background threads
 
-# Add post-processing directory to path so we can import from it
-post_processing_dir = Path(__file__).parent / "post-processing"
+# Add parent directory to path so we can import support_modules
+parent_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(parent_dir))
+
+# Add post-processing directory to path for local imports
+post_processing_dir = Path(__file__).parent
 sys.path.insert(0, str(post_processing_dir))
 
 # Import our analysis tools using RawData_Processor workflow
@@ -236,12 +240,12 @@ class PostPrintAnalyzer:
                 
                 if result:
                     analysis_results.append(result)
-                    print(f"  ✅ Analysis complete - {len(result['layers'])} layers processed")
+                    print(f"  [OK] Analysis complete - {len(result['layers'])} layers processed")
                 else:
-                    print(f"  ❌ Analysis failed")
+                    print(f"  [X] Analysis failed")
                     
             except Exception as e:
-                print(f"  ❌ Error analyzing {csv_file.name}: {e}")
+                print(f"  [X] Error analyzing {csv_file.name}: {e}")
                 import traceback
                 traceback.print_exc()
         
@@ -256,39 +260,60 @@ class PostPrintAnalyzer:
     
     def _analyze_csv_file(self, csv_file, output_dir):
         """
-        Analyze a single CSV file using RawDataProcessor (same as batch processing).
+        Analyze a single CSV file using RawDataProcessor and generate plots.
         """
         print(f"    Processing: {csv_file.name}")
         
-        # Generate plot using RawDataProcessor
+        # Generate plot path
         plot_title = f"Post-Print Analysis - {csv_file.stem}"
         plot_path = output_dir / f"{csv_file.stem}_analysis.png"
         
         try:
-            # Use RawDataProcessor to handle everything (analysis + plotting)
-            layers = self.processor.process_csv(
-                str(csv_file),
-                title=plot_title,
-                save_path=str(plot_path)
-            )
+            # Load data for plotting
+            import pandas as pd
+            df = pd.read_csv(csv_file)
+            time_data = df['Elapsed Time (s)'].to_numpy()
+            force_data = df['Force (N)'].to_numpy()
             
-            if layers and plot_path.exists():
-                print(f"    📊 Plot saved: {plot_path.name}")
-                print(f"    ✅ Analysis complete - {len(layers)} layers processed")
-                
-                return {
-                    'csv_file': csv_file,
-                    'plot_path': plot_path,
-                    'layers': layers,
-                    'data_points': len(layers),  # Number of layers
-                    'time_range': f"Processed {len(layers)} layers"
-                }
-            else:
-                print(f"    ❌ Analysis failed - no layers detected")
+            # Use RawDataProcessor to analyze data
+            layers = self.processor.process_csv(str(csv_file))
+            
+            if not layers or len(layers) == 0:
+                print(f"    [X] Analysis failed - no layers detected")
                 return None
             
+            # Get smoothed force from calculator
+            smoothed_force = self.calculator._apply_smoothing(force_data)
+            
+            # Now generate the plot using AnalysisPlotter
+            try:
+                self.plotter.create_plot(
+                    time_data=time_data,
+                    force_data=force_data,
+                    smoothed_force=smoothed_force,
+                    layers=layers,
+                    title=plot_title,
+                    save_path=str(plot_path)
+                )
+                print(f"    [PLOT] Plot saved: {plot_path.name}")
+            except Exception as plot_err:
+                print(f"    [!] Warning: Plot generation failed: {plot_err}")
+                import traceback
+                traceback.print_exc()
+                # Continue even if plotting fails - we still have the data
+            
+            print(f"    [OK] Analysis complete - {len(layers)} layers processed")
+            
+            return {
+                'csv_file': csv_file,
+                'plot_path': plot_path if plot_path.exists() else None,
+                'layers': layers,
+                'data_points': len(layers),  # Number of layers
+                'time_range': f"Processed {len(layers)} layers"
+            }
+            
         except Exception as e:
-            print(f"    ❌ Error during processing: {e}")
+            print(f"    [X] Error during processing: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -318,12 +343,12 @@ class PostPrintAnalyzer:
             f.write(f"- Consistent with batch processing methodology\n")
             f.write(f"- Automatic layer detection and segmentation\n")
         
-        print(f"  📋 Summary saved: {summary_path.name}")
+        print(f"  [SUMMARY] Summary saved: {summary_path.name}")
     
     def _generate_master_plot(self, session):
         """
         Generate a master plot combining all work of adhesion data for the session.
-        Similar to batch processor master plots but for a single print session.
+        Uses radius (calculated from area) as X-axis, matching batch processing style.
         
         Args:
             session: Dictionary with session information
@@ -338,106 +363,204 @@ class PostPrintAnalyzer:
         woa_files = list(session_path.glob("automated_work_of_adhesion*.csv"))
         
         if not woa_files:
-            print("  ℹ️  No work of adhesion data found for master plot")
+            print("  [INFO] No work of adhesion data found for master plot")
             return
         
         woa_file = woa_files[0]  # Use the first one found
-        print(f"\n  📊 Generating master plot with work of adhesion data from: {woa_file.name}")
+        print(f"\n  [PLOT] Generating master plot with work of adhesion data from: {woa_file.name}")
         
         try:
             # Load work of adhesion data
             df = pd.read_csv(woa_file)
             
             if df.empty or len(df) == 0:
-                print("    ⚠️  Work of adhesion file is empty")
+                print("    [!] Work of adhesion file is empty")
                 return
             
-            # Required columns
-            required_cols = ['Layer', 'Peak_Force_N', 'Work_of_Adhesion_mJ']
+            # Remove the last row (often incomplete/corrupted)
+            if len(df) > 1:
+                df = df.iloc[:-1]
+                print(f"    [INFO] Removed last row, processing {len(df)} layers")
+            
+            # Required columns for master plot
+            required_cols = ['Peak_Force_N', 'Work_of_Adhesion_mJ', 'Cross_Sectional_Area_mm2']
+            layer_col = 'Layer_Number' if 'Layer_Number' in df.columns else 'Layer'
+            
             if not all(col in df.columns for col in required_cols):
-                print(f"    ⚠️  Missing required columns in work of adhesion file")
+                print(f"    [!] Missing required columns in work of adhesion file")
+                print(f"    Required: {required_cols}")
+                print(f"    Available: {df.columns.tolist()}")
                 return
             
-            # Create figure with 3 subplots (Peak Force, Work of Adhesion, Duration)
-            fig, axes = plt.subplots(3, 1, figsize=(12, 14))
+            if layer_col not in df.columns:
+                print(f"    [!] No layer column found (expected 'Layer' or 'Layer_Number')")
+                return
             
-            layers = df['Layer'].values
-            peak_force = df['Peak_Force_N'].values
-            work_of_adhesion = df['Work_of_Adhesion_mJ'].values
+            # Calculate radius from area (r = sqrt(A/π))
+            df['radius_mm'] = np.sqrt(df['Cross_Sectional_Area_mm2'] / np.pi)
             
-            # Plot 1: Peak Force vs Layer
-            axes[0].plot(layers, peak_force, 'o-', color='#2E86AB', linewidth=2, markersize=8,
-                        markerfacecolor='#A23B72', markeredgecolor='white', markeredgewidth=1.5)
-            axes[0].set_xlabel('Layer Number', fontsize=12, fontweight='bold')
-            axes[0].set_ylabel('Peak Force (N)', fontsize=12, fontweight='bold')
-            axes[0].set_title('Peak Adhesion Force by Layer', fontsize=14, fontweight='bold')
-            axes[0].grid(True, alpha=0.3)
+            # Remove the first radius data point (edge case, outside normal conditions)
+            if len(df) > 1:
+                min_radius = df['radius_mm'].min()
+                df = df[df['radius_mm'] > min_radius]
+                print(f"    [INFO] Excluded smallest radius ({min_radius:.3f} mm) as edge case, {len(df)} layers remaining")
             
-            # Add mean line
-            mean_force = np.mean(peak_force)
-            axes[0].axhline(y=mean_force, color='red', linestyle='--', linewidth=2, alpha=0.7,
-                           label=f'Mean: {mean_force:.4f} N')
-            axes[0].legend(fontsize=10)
+            # Check if we have varying radii (expanding cone) or constant radius (cylinder)
+            unique_radii = df['radius_mm'].nunique()
+            radius_range = df['radius_mm'].max() - df['radius_mm'].min()
             
-            # Plot 2: Work of Adhesion vs Layer
-            axes[1].plot(layers, work_of_adhesion, 's-', color='#F18F01', linewidth=2, markersize=8,
-                        markerfacecolor='#C73E1D', markeredgecolor='white', markeredgewidth=1.5)
-            axes[1].set_xlabel('Layer Number', fontsize=12, fontweight='bold')
-            axes[1].set_ylabel('Work of Adhesion (mJ)', fontsize=12, fontweight='bold')
-            axes[1].set_title('Work of Adhesion by Layer', fontsize=14, fontweight='bold')
-            axes[1].grid(True, alpha=0.3)
+            print(f"    [INFO] Found {unique_radii} unique radii, range: {radius_range:.3f} mm")
             
-            # Add mean line
-            mean_woa = np.mean(work_of_adhesion)
-            axes[1].axhline(y=mean_woa, color='red', linestyle='--', linewidth=2, alpha=0.7,
-                           label=f'Mean: {mean_woa:.4f} mJ')
-            axes[1].legend(fontsize=10)
+            if unique_radii < 3 or radius_range < 0.1:
+                print(f"    [!] Insufficient radius variation for master plot (need expanding cone data)")
+                print(f"    [!] Skipping master plot generation")
+                return
             
-            # Plot 3: Pre-initiation and Propagation Duration (if available)
-            if 'Pre_Initiation_Time_s' in df.columns and 'Propagation_Duration_s' in df.columns:
-                pre_init = df['Pre_Initiation_Time_s'].values
-                prop_duration = df['Propagation_Duration_s'].values
-                
-                x = np.arange(len(layers))
-                width = 0.35
-                
-                axes[2].bar(x - width/2, pre_init, width, label='Pre-Initiation', 
-                           color='#5BC0EB', edgecolor='white', linewidth=1.5)
-                axes[2].bar(x + width/2, prop_duration, width, label='Propagation',
-                           color='#FDE74C', edgecolor='white', linewidth=1.5)
-                
-                axes[2].set_xlabel('Layer Number', fontsize=12, fontweight='bold')
-                axes[2].set_ylabel('Time (s)', fontsize=12, fontweight='bold')
-                axes[2].set_title('Peeling Phase Durations by Layer', fontsize=14, fontweight='bold')
-                axes[2].set_xticks(x)
-                axes[2].set_xticklabels(layers)
-                axes[2].legend(fontsize=10)
-                axes[2].grid(True, alpha=0.3, axis='y')
+            # Prepare metrics for plotting
+            metrics = [
+                ('Peak_Force_N', 'Peak Force (N, baseline-corrected)'),
+                ('Work_of_Adhesion_mJ', 'Work of Adhesion (mJ)')
+            ]
+            
+            # Add optional metrics if available
+            if 'Total_Peel_Distance_mm' in df.columns:
+                metrics.append(('Total_Peel_Distance_mm', 'Peel Distance (mm)'))
+            if 'Peak_Retraction_Force_N' in df.columns:
+                metrics.append(('Peak_Retraction_Force_N', 'Peak Retraction Force (N)'))
+            
+            # Determine subplot layout based on number of metrics
+            n_metrics = len(metrics)
+            if n_metrics == 1:
+                nrows, ncols = 1, 1
+            elif n_metrics == 2:
+                nrows, ncols = 1, 2
+            elif n_metrics <= 4:
+                nrows, ncols = 2, 2
             else:
-                # If duration data not available, show total duration or a message
-                axes[2].text(0.5, 0.5, 'Duration data not available in work of adhesion file',
-                            ha='center', va='center', fontsize=12, transform=axes[2].transAxes)
-                axes[2].set_xlim(0, 1)
-                axes[2].set_ylim(0, 1)
-                axes[2].axis('off')
+                nrows, ncols = 2, 3
             
-            # Overall title
-            fig.suptitle(f'{session["date"]} / {session["print_number"]} - Master Analysis\nWork of Adhesion Summary',
-                        fontsize=16, fontweight='bold', y=0.995)
+            # Create figure
+            fig, axes = plt.subplots(nrows, ncols, figsize=(16, 12))
+            if n_metrics == 1:
+                axes = np.array([axes])
+            else:
+                axes = axes.flatten()
+            
+            # Color scheme - single condition (this print session)
+            color = '#2E86AB'  # Primary blue
+            
+            # Plot each metric vs radius
+            for idx, (metric_col, ylabel) in enumerate(metrics):
+                print(f"    [DEBUG] Plotting metric {idx+1}/{n_metrics}: {ylabel}")
+                ax = axes[idx]
+                
+                # Group by radius and calculate mean ± SEM using pandas built-in
+                print(f"    [DEBUG] Grouping by radius...")
+                grouped = df.groupby('radius_mm')[metric_col].agg(['mean', 'sem'])
+                grouped_radii = grouped.index.values
+                means = grouped['mean'].values
+                sems = grouped['sem'].values
+                print(f"    [DEBUG] Grouped into {len(grouped_radii)} radius bins")
+                
+                # Add SEM shaded region
+                print(f"    [DEBUG] Adding SEM shaded region...")
+                ax.fill_between(grouped_radii, means - sems, means + sems, 
+                               color=color, alpha=0.2)
+                
+                # Plot mean with markers on TOP of shaded region
+                print(f"    [DEBUG] Plotting mean markers...")
+                ax.plot(grouped_radii, means, 'o', color=color, markersize=5, alpha=0.8, zorder=3)
+                
+                # Add power-law trendline (y = a * x^b)
+                r_squared = 0
+                fit_equation = ""
+                if len(grouped_radii) > 2:
+                    try:
+                        print(f"    [DEBUG] Fitting power-law trendline (y = a * x^b)...")
+                        # Fit power law: log(y) = log(a) + b*log(x)
+                        log_radii = np.log(grouped_radii)
+                        log_means = np.log(means)
+                        coeffs = np.polyfit(log_radii, log_means, 1)
+                        b = coeffs[0]  # power
+                        log_a = coeffs[1]  # log of coefficient
+                        a = np.exp(log_a)
+                        
+                        # Generate smooth curve
+                        radius_smooth = np.linspace(grouped_radii.min(), grouped_radii.max(), 100)
+                        fit_smooth = a * (radius_smooth ** b)
+                        ax.plot(radius_smooth, fit_smooth, '-', color=color, 
+                               linewidth=2, alpha=0.9, zorder=2)
+                        
+                        # Calculate R-squared
+                        predicted = a * (grouped_radii ** b)
+                        ss_res = np.sum((means - predicted) ** 2)
+                        ss_tot = np.sum((means - np.mean(means)) ** 2)
+                        r_squared = 1 - (ss_res / ss_tot)
+                        
+                        fit_equation = f"y = {a:.4f} × x$^{{{b:.3f}}}$\nR² = {r_squared:.4f}"
+                        print(f"    [DEBUG] Power-law fit: y = {a:.4f} * x^{b:.4f}, R² = {r_squared:.4f}")
+                    except Exception as e:
+                        print(f"    [!] Could not fit power-law trendline: {e}")
+                
+                # Add text box with equation and R²
+                if fit_equation:
+                    # Determine placement based on data distribution
+                    # If data is higher on left, place text on right; otherwise on left
+                    left_mean = np.mean(means[:len(means)//3])
+                    right_mean = np.mean(means[-len(means)//3:])
+                    
+                    if left_mean > right_mean:
+                        # Data higher on left, place text on right
+                        text_x = 0.95
+                        ha = 'right'
+                    else:
+                        # Data higher on right or equal, place text on left
+                        text_x = 0.05
+                        ha = 'left'
+                    
+                    ax.text(text_x, 0.95, fit_equation, 
+                           transform=ax.transAxes, fontsize=11,
+                           verticalalignment='top', horizontalalignment=ha,
+                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                
+                # Format subplot
+                print(f"    [DEBUG] Formatting subplot...")
+                ax.set_xlabel('Contact Radius (mm)', fontsize=13, fontweight='bold')
+                ax.set_ylabel(ylabel, fontsize=13, fontweight='bold')
+                ax.set_title(ylabel, fontsize=14, fontweight='bold')
+                ax.tick_params(labelsize=11)
+                ax.grid(True, alpha=0.3)
+                
+                # Set y-axis to start at 0 for positive metrics
+                if np.all(means >= 0):
+                    ax.set_ylim(bottom=0)
+                print(f"    [DEBUG] Metric {ylabel} complete")
+            
+            # Hide unused subplots
+            print(f"    [DEBUG] Hiding unused subplots...")
+            for idx in range(n_metrics, len(axes)):
+                axes[idx].axis('off')
+            
+            # Overall title (matching batch processing style)
+            print(f"    [DEBUG] Adding title and adjusting layout...")
+            fig.suptitle(f'{session["date"]} / {session["print_number"]}\nMaster Radius Analysis - Work of Adhesion',
+                        fontsize=16, fontweight='bold')
             
             # Adjust layout
             plt.tight_layout()
-            plt.subplots_adjust(top=0.96, hspace=0.3)
+            plt.subplots_adjust(top=0.94)
             
             # Save plot
+            print(f"    [DEBUG] Saving plot...")
             master_plot_path = session_path / "MASTER_work_of_adhesion_analysis.png"
             plt.savefig(master_plot_path, dpi=300, bbox_inches='tight', facecolor='white')
             plt.close()
+            print(f"    [DEBUG] Plot closed")
             
-            print(f"    ✅ Master plot saved: {master_plot_path.name}")
+            print(f"    [OK] Master plot saved: {master_plot_path.name}")
             
         except Exception as e:
-            print(f"    ❌ Error generating master plot: {e}")
+            print(f"    [X] Error generating master plot: {e}")
             import traceback
             traceback.print_exc()
 

@@ -33,7 +33,7 @@ class PositionLogger(threading.Thread):
         # Phase detection attributes
         self._previous_position = None
         self._stationary_count = 0  # How many consecutive readings with no motion
-        self._current_phase = "Unknown"  # Current phase: Lift, Retract, Pause, Sandwich, Exposure
+        self._current_phase = "Pause"  # Start with Pause (stage stationary at beginning)
         self._POSITION_CHANGE_THRESHOLD = 0.002  # mm - below this is considered stationary
         self._STATIONARY_THRESHOLD_COUNT = 3  # How many stationary readings before declaring Pause
         self._SANDWICH_DISTANCE_THRESHOLD = 1.0  # mm - small motions < 1mm might be sandwich
@@ -47,7 +47,8 @@ class PositionLogger(threading.Thread):
         This overrides movement-based phase detection.
         
         Args:
-            phase_name: One of "Exposure", "Lift", "Retract", "Pause", "Sandwich"
+            phase_name: One of "Exposure", "Lift", "Lift-Stage1", "Lift-Stage2", 
+                        "Retract", "Retract-Stage1", "Retract-Stage2", "Pause", "Sandwich"
         """
         self._current_phase = phase_name
 
@@ -101,7 +102,7 @@ class PositionLogger(threading.Thread):
         # Reset phase tracking when closing file
         self._previous_position = None
         self._stationary_count = 0
-        self._current_phase = "Unknown"
+        self._current_phase = "Pause"  # Reset to Pause (not Unknown)
         self._position_at_motion_start = None
 
     def _determine_phase(self, current_position):
@@ -110,7 +111,11 @@ class PositionLogger(threading.Thread):
         
         Phases:
         - Lift: Stage moving DOWN (position decreasing) by significant amount (>1mm total)
+        - Lift-Stage1: First 50µm of smooth lifting (100 µm/s gentle break)
+        - Lift-Stage2: Remaining lift at prescribed speed (normal peel)
         - Retract: Stage moving UP (position increasing) by significant amount (>1mm total)
+        - Retract-Stage1: Most of retraction at prescribed speed (fast approach)
+        - Retract-Stage2: Last 200µm of smooth retraction (100 µm/s gentle approach)
         - Pause: Stage stationary
         - Sandwich: Small downward motion (<1mm total)
         - Exposure: Stationary after retract (future enhancement - currently labeled as Pause)
@@ -270,3 +275,77 @@ class PositionLogger(threading.Thread):
             # This block executes whether the loop exits normally or due to an exception
             self._close_log_file() # Ensure the log file is closed properly
             print("PositionLogger: Thread stopped.")
+    
+    def save_failure_log(self, layer_num, error_message="Unknown error"):
+        """
+        Save all current live plot data to a failure log CSV file when a stall/fault occurs.
+        
+        Args:
+            layer_num: The layer number where the fault occurred
+            error_message: Description of the error
+            
+        Returns:
+            Path to the saved failure log file, or None if no data available
+        """
+        try:
+            # Get all data from the position plot queue (non-destructive read)
+            if not self.position_plot_queue:
+                print("PositionLogger: No position plot queue available for failure log")
+                return None
+            
+            # Collect all data points from the queue
+            data_points = []
+            temp_queue = queue.Queue()
+            
+            # Extract all items from the queue
+            while not self.position_plot_queue.empty():
+                try:
+                    data = self.position_plot_queue.get_nowait()
+                    data_points.append(data)
+                    temp_queue.put(data)  # Keep for re-adding
+                except queue.Empty:
+                    break
+            
+            # Put data back into original queue
+            while not temp_queue.empty():
+                try:
+                    self.position_plot_queue.put_nowait(temp_queue.get_nowait())
+                except queue.Full:
+                    break
+            
+            if not data_points:
+                print("PositionLogger: No data points available in position plot queue")
+                return None
+            
+            # Generate failure log filename
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            failure_log_dir = os.path.dirname(self.log_file_name) if self.log_file_name else "."
+            failure_log_filename = os.path.join(failure_log_dir, f"Failure_Log_L{layer_num}_{timestamp}.csv")
+            
+            # Write failure log
+            with open(failure_log_filename, 'w', newline='') as f:
+                writer = csv.writer(f)
+                
+                # Write header with metadata
+                writer.writerow(['# Failure Log'])
+                writer.writerow(['# Layer:', layer_num])
+                writer.writerow(['# Timestamp:', time.strftime("%Y-%m-%d %H:%M:%S")])
+                writer.writerow(['# Error:', error_message])
+                writer.writerow(['# Data Points:', len(data_points)])
+                writer.writerow([])  # Blank line
+                
+                # Write data header
+                writer.writerow(['Elapsed Time (s)', 'Position (mm)', 'Force (N)', 'Phase'])
+                
+                # Write all data points
+                for data in data_points:
+                    if len(data) >= 3:  # Ensure we have at least time, position, force
+                        writer.writerow(data)
+            
+            print(f"PositionLogger: Failure log saved with {len(data_points)} data points to {failure_log_filename}")
+            return failure_log_filename
+            
+        except Exception as e:
+            print(f"PositionLogger: Error saving failure log: {e}")
+            traceback.print_exc()
+            return None

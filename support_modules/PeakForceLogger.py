@@ -81,7 +81,7 @@ class PeakForceLogger:
                 writer = csv.writer(f)
                 header = [
                     'Layer_Number', 
-                    'Peak_Force_N', 
+                    'Peak_Force_N',  # Baseline-corrected peak force
                     'Work_of_Adhesion_mJ',
                     'Initiation_Time_s', 
                     'Propagation_Duration_s', 
@@ -206,7 +206,11 @@ class PeakForceLogger:
             return None
     
     def _update_phase_info(self):
-        """Check for phase events and update lifting start marker."""
+        """Check for phase events and update lifting start marker.
+        
+        For smooth lifting (2-stage), we track 'Lift-Stage2' as the real lifting start at prescribed speed.
+        Stage 1 is the gentle break phase and should not be used as the adhesion analysis start.
+        """
         if self.phase_event_queue_ref is None:
             return
         
@@ -215,9 +219,13 @@ class PeakForceLogger:
             try:
                 event = self.phase_event_queue_ref.get_nowait()
                 
-                # If we just started lifting, mark the data buffer index
-                if event['phase'] == 'Lift':
-                    # Mark the time when Lift phase was declared
+                # For smooth lifting: Track 'Lift-Stage2' as the true lifting start (prescribed speed)
+                # For standard lifting: Track 'Lift' as the lifting start
+                # This allows adhesion analysis to exclude the gentle break phase (Stage 1)
+                is_lifting_phase = event['phase'] in ['Lift', 'Lift-Stage2']
+                
+                if is_lifting_phase:
+                    # Mark the time when prescribed-speed lifting phase was declared
                     self._current_lifting_start_time = event['timestamp']
                     
                     # Find the first data point at or after the phase event

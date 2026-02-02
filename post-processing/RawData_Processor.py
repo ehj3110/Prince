@@ -286,9 +286,26 @@ class RawDataProcessor:
         i = 0
         
         while i < len(phase_data_clean):
-            # Look for start of Lift phase
-            if phase_data_clean[i] == 'Lift':
+            # Look for start of Lift phase (including 2-stage smooth lifting)
+            # Accept: 'Lift', 'Lift-Stage1', 'Lift-Stage2'
+            if phase_data_clean[i].startswith('Lift'):
                 lift_start = i
+                
+                # Check if this is an isolated old 'Lift' label (just 1-5 points)
+                # If so, skip it - we want the staged sequences
+                is_isolated_old_lift = True
+                check_range = min(i + 10, len(phase_data_clean))
+                for check_idx in range(i, check_range):
+                    if 'Stage' in phase_data_clean[check_idx]:
+                        is_isolated_old_lift = False
+                        break
+                    if check_idx > i and not phase_data_clean[check_idx].startswith('Lift'):
+                        break
+                
+                # If it's an isolated old label, skip it
+                if is_isolated_old_lift and (i + 1 < len(phase_data_clean)) and not phase_data_clean[i + 1].startswith('Lift'):
+                    i += 1
+                    continue
                 
                 # Search backwards to find the ACTUAL start of lifting (before mislabeled Sandwich)
                 # Stop when we hit a Pause phase or reach the beginning
@@ -309,21 +326,21 @@ class RawDataProcessor:
                     print(f"  Corrected lift start: moved back {corrected_count} samples from {lift_start} to {actual_lift_start}")
                     lift_start = actual_lift_start
                 
-                # Find end of Lift phase
+                # Find end of Lift phase (including all lift stages)
                 lift_end = lift_start
-                while lift_end < len(phase_data_clean) and phase_data_clean[lift_end] in ['Lift', 'Sandwich', 'Exposure']:
+                while lift_end < len(phase_data_clean) and (phase_data_clean[lift_end].startswith('Lift') or phase_data_clean[lift_end] in ['Sandwich', 'Exposure']):
                     lift_end += 1
                 lift_end -= 1  # Back to last Lift index
                 
-                # Look for subsequent Retract phase
+                # Look for subsequent Retract phase (including 2-stage smooth retraction)
                 retract_start = lift_end + 1
-                while retract_start < len(phase_data_clean) and phase_data_clean[retract_start] not in ['Retract', 'Lift']:
+                while retract_start < len(phase_data_clean) and not phase_data_clean[retract_start].startswith('Retract') and not phase_data_clean[retract_start].startswith('Lift'):
                     retract_start += 1
                 
-                if retract_start < len(phase_data_clean) and phase_data_clean[retract_start] == 'Retract':
-                    # Find end of Retract phase
+                if retract_start < len(phase_data_clean) and phase_data_clean[retract_start].startswith('Retract'):
+                    # Find end of Retract phase (including all retract stages)
                     retract_end = retract_start
-                    while retract_end < len(phase_data_clean) and phase_data_clean[retract_end] == 'Retract':
+                    while retract_end < len(phase_data_clean) and phase_data_clean[retract_end].startswith('Retract'):
                         retract_end += 1
                     retract_end -= 1  # Back to last Retract index
                     

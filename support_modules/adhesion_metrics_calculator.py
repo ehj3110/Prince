@@ -70,8 +70,10 @@ class AdhesionMetricsCalculator:
             force_data: Force values (N).
             layer_number: Layer identifier (optional).
             motion_end_idx: Index where stage motion ends (optional, uses full data if None).
-            lifting_start_idx: Index where lifting phase started (optional, prevents pre-initiation 
-                             from searching before this point).
+            lifting_start_idx: Index where lifting phase started at prescribed speed (optional). 
+                             For smooth lifting (2-stage), this should be the start of Stage 2 (prescribed speed),
+                             not Stage 1 (gentle break). Prevents pre-initiation search from going
+                             before this point, which is critical when earlier phases create pre-existing forces.
             
         Returns:
             Dictionary containing all calculated metrics.
@@ -210,27 +212,31 @@ class AdhesionMetricsCalculator:
             smoothed_force: Smoothed force data
             layer_number: Layer identifier
             motion_end_idx: Index where motion ends
-            lifting_start_idx: Index where lifting phase started (phase awareness)
+            lifting_start_idx: Index where lifting at prescribed speed started (phase awareness).
+                             For smooth lifting (2-stage), this is Stage 2 start, not Stage 1.
         """
         results = {'layer_number': layer_number}
         
         # Step 1: Find peak force
-        peak_idx, peak_force = self._find_peak_force(smoothed_force)
-        results['peak_force'] = peak_force
+        peak_idx, peak_force_absolute = self._find_peak_force(smoothed_force)
+        results['peak_force_absolute'] = peak_force_absolute
         results['peak_force_position'] = positions[peak_idx]
         results['peak_force_time'] = times[peak_idx] - times[0]  # Relative time
         
-        # Step 2: NEW METHOD - Find 80% lift point and use it for baseline
-        # Calculate 80% of lifting distance for baseline determination
-        lifting_80pct_idx = self._find_80_percent_lift_point(peak_idx, positions, motion_end_idx)
-        baseline = self._calculate_baseline(smoothed_force, lifting_80pct_idx)
+        # Step 2: NEW METHOD - Find 95% lift point and use it for baseline
+        # Calculate 95% of lifting distance for baseline determination (was 80%, changed for short peels)
+        lifting_95pct_idx = self._find_95_percent_lift_point(peak_idx, positions, motion_end_idx)
+        baseline = self._calculate_baseline(smoothed_force, lifting_95pct_idx)
         results['baseline_force'] = baseline
-        results['peak_force_corrected'] = peak_force - baseline
+        # Use baseline-corrected peak force as the primary metric
+        peak_force_corrected = peak_force_absolute - baseline
+        results['peak_force'] = peak_force_corrected
+        results['peak_force_corrected'] = peak_force_corrected
         
         # Step 3: Find propagation end using 5% force threshold method
         # Propagation ends when force drops to baseline + 5% of (peak - baseline)
         prop_end_idx = self._find_propagation_end_force_threshold(
-            smoothed_force, peak_idx, peak_force, baseline, motion_end_idx)
+            smoothed_force, peak_idx, peak_force_absolute, baseline, motion_end_idx)
         results['propagation_end_position'] = positions[prop_end_idx]
         results['propagation_end_time'] = times[prop_end_idx] - times[0]
         
@@ -276,7 +282,7 @@ class AdhesionMetricsCalculator:
         results.update(dynamic_metrics)
         
         # Step 10: Calculate data quality metrics
-        quality_metrics = self._calculate_quality_metrics(forces, smoothed_force, baseline, peak_force)
+        quality_metrics = self._calculate_quality_metrics(forces, smoothed_force, baseline, peak_force_corrected)
         results.update(quality_metrics)
         
         return results
@@ -312,11 +318,16 @@ class AdhesionMetricsCalculator:
         go before this point. This prevents searching past Exposure/Pause/Sandwich phases
         when those phases create pre-existing force above baseline.
         
+        For smooth lifting (2-stage), lifting_start_idx should point to Stage 2 start (prescribed speed),
+        not Stage 1. This ensures pre-initiation detection starts where the actual peel
+        at normal speed begins, excluding the gentle break phase.
+        
         Args:
-            smoothed_force: Smoothed force array
+            smoothed_force: Smoothed force data
             peak_idx: Index of peak force
             baseline: Baseline force level
-            lifting_start_idx: Optional index where lifting phase started (phase boundary)
+            lifting_start_idx: Optional index where prescribed-speed lifting phase started (phase boundary).
+                             For smooth lifting: Stage 2 start. For standard: motion start.
             
         Returns:
             Index where force crosses baseline before peak
@@ -325,7 +336,8 @@ class AdhesionMetricsCalculator:
         tolerance = max(abs(baseline) * 0.001, 0.001)
         
         # Search backwards from peak to find baseline crossing
-        search_start = max(0, peak_idx - 300)  # Limit search range (default)
+        # Reduced from 300 to 100 for short-distance, slow-speed printing
+        search_start = max(0, peak_idx - 100)  # Limit search range
         
         # If lifting start is provided, don't search before it (phase awareness)
         if lifting_start_idx is not None:
@@ -346,13 +358,14 @@ class AdhesionMetricsCalculator:
         # If no crossing found, return search start
         return search_start
 
-    def _find_80_percent_lift_point(self, 
+    def _find_95_percent_lift_point(self, 
                                      peak_idx: int,
                                      positions: np.ndarray,
                                      motion_end_idx: Optional[int]) -> int:
         """
-        Find the index corresponding to 80% of the lifting distance.
+        Find the index corresponding to 95% of the lifting distance.
         Used for baseline calculation in the new force threshold method.
+        Changed from 80% to 95% to ensure full separation on short peels (<1mm).
         
         Args:
             peak_idx: Index of peak force
@@ -360,7 +373,7 @@ class AdhesionMetricsCalculator:
             motion_end_idx: End of motion segment
             
         Returns:
-            Index at 80% lift point
+            Index at 95% lift point
         """
         search_end_abs = motion_end_idx if motion_end_idx is not None else len(positions) - 1
         
@@ -373,15 +386,15 @@ class AdhesionMetricsCalculator:
             min_pos = np.min(travel_positions)
             max_pos = positions[peak_idx]
             
-            # 80% of the lifting distance
-            target_position = max_pos - 0.8 * (max_pos - min_pos)
+            # 95% of the lifting distance (was 80%, increased for short-distance peels)
+            target_position = max_pos - 0.95 * (max_pos - min_pos)
             
-            # Find index where position first reaches or passes the 80% point
+            # Find index where position first reaches or passes the 95% point
             for i in range(peak_idx, search_end_abs):
                 if positions[i] <= target_position:
                     return i
             
-            # If never reached 80%, use the minimum position index
+            # If never reached 95%, use the minimum position index
             min_pos_relative_idx = np.argmin(travel_positions)
             return peak_idx + min_pos_relative_idx
             
@@ -542,8 +555,8 @@ class AdhesionMetricsCalculator:
             return propagation_end_idx
 
         except Exception as e:
-            warnings.warn(f"Second derivative 10% threshold search failed: {e}. Using 80% lifting point as fallback.")
-            return lifting_80pct_idx
+            warnings.warn(f"Second derivative 10% threshold search failed: {e}. Using 95% lifting point as fallback.")
+            return lifting_95pct_idx
     
     def _calculate_work_metrics(self, 
                               positions: np.ndarray, 

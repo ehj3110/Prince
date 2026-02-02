@@ -31,6 +31,9 @@ The application provides a graphical user interface (GUI) built with Tkinter tha
     - `adhesion_metrics_calculator.py`: The core scientific engine that performs the detailed calculations for adhesion metrics from raw data.
     - `two_step_baseline_analyzer.py`: A refined analysis module that implements a "2-step baseline" method for highly accurate adhesion data analysis.
 
+- **Session Management:**
+    - `SessionManager.py`: Centralizes session-related operations including session log initialization, print numbering, GUI state persistence (save/load), and post-print analysis triggering. Reduces code complexity in the main application by providing a clean delegation interface.
+
 - **Helper Libraries:**
     - `libs.py` & `Libs_Evan.py`: Contain helper classes and functions, primarily for parsing print instruction files (`.txt`) and generating image sequences.
 
@@ -47,12 +50,17 @@ Ensure all required libraries (Tkinter, OpenCV, Zaber-Motion, Phidget22, etc.) a
 ```
 Prince_Segmented_20250926/
 ├── Prince_Segmented.py          # Main printing application
+├── tests/                       # Test scripts (organized Jan 2026)
+│   ├── test_dlp_simple.py              # DLP hardware tests
+│   ├── test_sandwich_integration.py    # Integration tests
+│   └── README.md                       # Test documentation
 ├── batch_processors/            # Batch data processing scripts
 │   ├── batch_process_universal.py    # Universal processor (recommended)
 │   ├── batch_process_v4_data.py      # Legacy V4 processor
 │   ├── batch_process_v5_data.py      # Legacy V5 processor
 │   └── README.md                     # Batch processor guide
 ├── support_modules/             # Core libraries and utilities
+│   ├── SessionManager.py              # Session management (Jan 2026)
 │   ├── adhesion_metrics_calculator.py  # Unified adhesion analysis
 │   ├── ForceGaugeManager.py           # Force gauge control
 │   ├── AutoHomeRoutine.py             # Homing sequences
@@ -63,6 +71,9 @@ Prince_Segmented_20250926/
 │   ├── hybrid_adhesion_plotter.py     # Hybrid analysis system
 │   └── ...
 ├── ui_components/               # GUI components
+├── archive/                     # Archived and obsolete files
+│   ├── obsolete_modules_jan2026/      # Superseded modules
+│   └── ...
 └── documentation/               # All documentation and guides
     ├── UNIVERSAL_PROCESSOR_GUIDE.md   # Universal processor guide
     ├── TESTING_GUIDE.md               # Testing and validation
@@ -84,6 +95,17 @@ Prince_Segmented_20250926/
 - **Legacy Documentation**: See [archive/legacy_docs/](archive/legacy_docs/) (archived Dec 2025)
 
 ## Recent Changes
+
+### January 2026 - Code Cleanup & Modularization
+- **SessionManager Module**: Extracted session management logic from `Prince_Segmented.py` into new `SessionManager.py` module
+  - Handles session log initialization, print numbering, GUI state persistence, post-print analysis
+  - Reduced main script by 212 lines (-9.9%)
+  - Improved code organization and testability
+- **Project Cleanup**: Archived 8 obsolete modules to `archive/obsolete_modules_jan2026/`
+  - Removed old backup files, superseded implementations, legacy UI components
+  - Organized test scripts into `/tests` directory
+  - Cleaned up __pycache__ directories
+- **Documentation Updates**: Updated README to reflect new architecture and organization
 
 ### December 2025 - Documentation Consolidation
 - **Three Comprehensive Guides**: Consolidated 28+ fragmented documentation files into 3 workflow-based guides
