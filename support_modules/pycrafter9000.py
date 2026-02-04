@@ -42,9 +42,24 @@ def mergeimages(images):
     return mergedimage
 
 def encode(image): 
+    """Encode full 2560x1600 image for DLP9000"""
+    return encode_custom(image, 2560, 1600)
 
-
-## header creation
+def encode_custom(image, width, height):
+    """
+    Encode image with custom dimensions for dual-controller DLP9000.
+    Used for encoding half-width images (1280x1600) for PRIMARY/SECONDARY controllers.
+    
+    Args:
+        image: numpy array (height, width, 3)
+        width: image width (2560 for full, 1280 for half)
+        height: image height (typically 1600)
+    
+    Returns:
+        (bitstring, bytecount): encoded data and size
+    """
+    
+    ## header creation
     bytecount=48    
     bitstring=[]
 
@@ -53,15 +68,17 @@ def encode(image):
     bitstring.append(0x6c)
     bitstring.append(0x64)
     
-    width=convlen(2560,16)
-    width=bitstobytes(width)
-    for i in range(len(width)):
-        bitstring.append(width[i])
+    # Use custom width instead of hardcoded 2560
+    width_bytes=convlen(width,16)
+    width_bytes=bitstobytes(width_bytes)
+    for i in range(len(width_bytes)):
+        bitstring.append(width_bytes[i])
 
-    height=convlen(1600,16)
-    height=bitstobytes(height)
-    for i in range(len(height)):
-        bitstring.append(height[i])
+    # Use custom height instead of hardcoded 1600
+    height_bytes=convlen(height,16)
+    height_bytes=bitstobytes(height_bytes)
+    for i in range(len(height_bytes)):
+        bitstring.append(height_bytes[i])
 
 
     total=convlen(0,32)
@@ -90,10 +107,13 @@ def encode(image):
     i=0
     j=0
 
-    while i <1600:
-        while j <2560:
+    # RLE compression with dynamic width/height
+    max_lookahead = width - 641  # Keep same ratio as original (2560 - 641 = 1919)
+    
+    while i < height:
+        while j < width:
             if i>0 and numpy.all(image[i,j,:]==image[i-1,j,:]):
-                while j<2560 and numpy.all(image[i,j,:]==image[i-1,j,:]):
+                while j<width and numpy.all(image[i,j,:]==image[i-1,j,:]):
                     n=n+1
                     j=j+1
 
@@ -115,9 +135,9 @@ def encode(image):
 
             
             else:
-                if j<1919 and numpy.all(image[i,j,:]==image[i,j+1,:]):
+                if j<max_lookahead and numpy.all(image[i,j,:]==image[i,j+1,:]):
                     n=n+1
-                    while j<1919 and numpy.all(image[i,j,:]==image[i,j+1,:]):
+                    while j<max_lookahead and numpy.all(image[i,j,:]==image[i,j+1,:]):
                         n=n+1
                         j=j+1
                     if n>=128:
@@ -140,7 +160,7 @@ def encode(image):
                     n=0
 
                 else:
-                    if j>1917 or numpy.all(image[i,j+1,:]==image[i,j+2,:]) or numpy.all(image[i,j+1,:]==image[i-1,j+1,:]):
+                    if j>(max_lookahead-2) or numpy.all(image[i,j+1,:]==image[i,j+2,:]) or numpy.all(image[i,j+1,:]==image[i-1,j+1,:]):
                         bitstring.append(0x01)
                         bytecount+=1
                         bitstring.append(image[i,j,0])
@@ -158,7 +178,7 @@ def encode(image):
                         toappend=[]
 
                         
-                        while numpy.any(image[i,j,:]!=image[i,j+1,:]) and numpy.any(image[i,j,:]!=image[i-1,j,:]) and j<1919:
+                        while numpy.any(image[i,j,:]!=image[i,j+1,:]) and numpy.any(image[i,j,:]!=image[i-1,j,:]) and j<max_lookahead:
                             n=n+1
                             toappend.append(image[i,j,0])
                             toappend.append(image[i,j,1])
@@ -411,6 +431,7 @@ class dmd():
 
 
     def setbmp(self,index,size):
+        """Initialize Pattern BMP Load for PRIMARY controller (left half of DLP9000)"""
         payload=[]
 
         index=convlen(index,5)
@@ -428,12 +449,32 @@ class dmd():
         self.command('w',0x00,0x1a,0x2a,payload)
         self.checkforerrors()
 
+    def setbmp_secondary(self,index,size):
+        """Initialize Pattern BMP Load for SECONDARY controller (right half of DLP9000)"""
+        payload=[]
+
+        index=convlen(index,5)
+        index='0'*11+index
+        index=bitstobytes(index)
+        for i in range(len(index)):
+            payload.append(index[i]) 
+
+
+        total=convlen(size,32)
+        total=bitstobytes(total)
+        for i in range(len(total)):
+            payload.append(total[i])         
+        
+        # 0x2C is the Secondary controller command (vs 0x2A for Primary)
+        self.command('w',0x00,0x1a,0x2c,payload)
+        self.checkforerrors()
+
 ## bmp loading function, divided in 56 bytes packages
 ## max  hid package size=64, flag bytes=4, usb command bytes=2
 ## size of package description bytes=2. 64-4-2-2=56
 
     def bmpload(self,image,size):
-
+        """Upload pattern data to PRIMARY controller (left half of DLP9000)"""
         packnum=size//504+1
 
         counter=0
@@ -455,6 +496,34 @@ class dmd():
                 payload.append(image[counter])
                 counter+=1
             self.command('w',0x11,0x1a,0x2b,payload)
+
+
+            self.checkforerrors()
+
+    def bmpload_secondary(self,image,size):
+        """Upload pattern data to SECONDARY controller (right half of DLP9000)"""
+        packnum=size//504+1
+
+        counter=0
+
+        for i in range(packnum):
+            if i %100==0:
+                print (i,packnum)
+            payload=[]
+            if i<packnum-1:
+                leng=convlen(504,16)
+                bits=504
+            else:
+                leng=convlen(size%504,16)
+                bits=size%504
+            leng=bitstobytes(leng)
+            for j in range(2):
+                payload.append(leng[j])
+            for j in range(bits):
+                payload.append(image[counter])
+                counter+=1
+            # 0x2D is the Secondary controller command (vs 0x2B for Primary)
+            self.command('w',0x11,0x1a,0x2d,payload)
 
 
             self.checkforerrors()
