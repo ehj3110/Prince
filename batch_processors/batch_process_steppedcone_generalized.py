@@ -27,13 +27,14 @@ import matplotlib.pyplot as plt
 import sys
 import argparse
 
-# Add support_modules and post-processing to path
-sys.path.insert(0, str(Path(__file__).parent / 'support_modules'))
-sys.path.insert(0, str(Path(__file__).parent / 'post-processing'))
+# Add support_modules and post-processing to path (go up to parent directory)
+sys.path.insert(0, str(Path(__file__).parent.parent / 'support_modules'))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'post-processing'))
 from adhesion_metrics_calculator import AdhesionMetricsCalculator
 from RawData_Processor import RawDataProcessor
 from analysis_plotter import AnalysisPlotter
 from master_plotter import MasterPlotter
+from advanced_metrics import AdvancedMetricsCalculator
 
 
 class SteppedConeBatchProcessor:
@@ -265,7 +266,7 @@ class SteppedConeBatchProcessor:
                             'gap_mm': gap_mm,
                             'speed_um_s': speed_um_s,  # Will be None if not present
                             'area_mm2': area_mm2,
-                            'peak_force_N': layer_obj.get('peak_force', None),
+                            'peak_force_N': layer_obj.get('peak_force_corrected', None),
                             'work_of_adhesion_mJ': layer_obj.get('work_of_adhesion_mJ', None),
                             'peel_distance_mm': metrics_dict.get('total_peel_distance', None),
                             'peak_retraction_force_N': layer_obj.get('peak_retraction_force', None),
@@ -294,16 +295,24 @@ class SteppedConeBatchProcessor:
         print(f"{'='*60}")
         print(f"Data directory: {self.data_directory}")
         
-        # Find all SteppedCone folders
-        folders = [f for f in self.data_directory.iterdir() 
-                  if f.is_dir() and 'SteppedCone' in f.name]
+        # Find all folders containing test data (look for 'Cone' or 'SteppedCone' in name, or any folder with autolog files)
+        potential_folders = [f for f in self.data_directory.iterdir() if f.is_dir()]
+        
+        # Filter to folders that either have 'Cone' in name OR contain autolog files
+        folders = []
+        for f in potential_folders:
+            if 'Cone' in f.name or 'SteppedCone' in f.name:
+                folders.append(f)
+            elif any(f.glob('autolog_*.csv')):
+                # Folder has autolog files but doesn't have Cone in name
+                folders.append(f)
         
         if len(folders) == 0:
-            print("\nWARNING: No SteppedCone folders found!")
-            print("Please ensure folder names contain 'SteppedCone'")
+            print("\nWARNING: No test folders found!")
+            print("Please ensure folder names contain 'Cone' or have autolog_*.csv files")
             return []
         
-        print(f"Found {len(folders)} SteppedCone folders to process")
+        print(f"Found {len(folders)} test folders to process")
         
         for folder in sorted(folders):
             results = self.process_single_folder(folder)
@@ -325,11 +334,22 @@ class SteppedConeBatchProcessor:
         # Convert to DataFrame
         df = pd.DataFrame(self.all_results)
         
-        # Save to CSV
-        output_file = self.output_directory / "MASTER_steppedcone_metrics.csv"
-        df.to_csv(output_file, index=False)
+        # Save to both filenames for compatibility
+        # MASTER_all_metrics.csv - standard name used by other plotting scripts
+        standard_csv = self.output_directory / "MASTER_all_metrics.csv"
+        df.to_csv(standard_csv, index=False)
         
-        print(f"\nSaved master CSV to: {output_file}")
+        # MASTER_steppedcone_metrics.csv - descriptive name for clarity
+        steppedcone_csv = self.output_directory / "MASTER_steppedcone_metrics.csv"
+        df.to_csv(steppedcone_csv, index=False)
+        
+        print(f"\n{'='*60}")
+        print(f"Processing Complete")
+        print(f"Total layers processed: {len(df)}")
+        print(f"{'='*60}\n")
+        
+        print(f"Saved master CSV to: {standard_csv}")
+        print(f"Also saved as: {steppedcone_csv}")
         print(f"Total rows: {len(df)}")
         
         # Print summary by condition
@@ -359,8 +379,118 @@ class SteppedConeBatchProcessor:
         # Create MasterPlotter instance
         master_plotter = MasterPlotter(output_directory=self.output_directory, dpi=300)
         
-        # Generate standard plots
+        # Generate comprehensive plot set (like V7)
+        print("\n" + "="*60)
+        print("Generating Master Plots")
+        print("="*60)
+        
+        # 1. Area-based plots (area analysis, area ratio, distance)
         master_plotter.generate_standard_plots(df)
+        
+        # 2. Radius-based analysis plots
+        master_plotter.generate_standard_radius_plots(df)
+        
+        # 3. Stiffness analysis plot
+        master_plotter.generate_stiffness_analysis_plot(df)
+        
+        # 4. Absolute peak force plot (if baseline_force_N column exists)
+        if 'baseline_force_N' in df.columns and 'absolute_peak_force_N' not in df.columns:
+            df['absolute_peak_force_N'] = df['peak_force_N'] - df['baseline_force_N']
+        
+        if 'absolute_peak_force_N' in df.columns:
+            master_plotter.generate_absolute_force_plot(df)
+        else:
+            print("\nSkipping absolute force plot (baseline_force_N not available)")
+    
+    def perform_scaling_analysis(self):
+        """Perform power law scaling analysis on the data"""
+        if not self.all_results:
+            print("\nNo results for scaling analysis!")
+            return
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(self.all_results)
+        
+        # Calculate radius from area (radius = sqrt(area/π))
+        df['radius_mm'] = np.sqrt(df['area_mm2'] / np.pi)
+        
+        # Create AdvancedMetricsCalculator instance
+        advanced = AdvancedMetricsCalculator()
+        
+        print("\n" + "="*60)
+        print("Performing Scaling Analysis (Power Law)")
+        print("="*60)
+        print("\nThe power law fit: y = A * r^n")
+        print("  - A is the coefficient (proportionality constant)")
+        print("  - n is the scaling exponent")
+        print("  - For adhesion with uniform stress: Force ~ Area ~ r^2, so n ~= 2")
+        print("  - For line peeling or edge effects: n ~= 1 (force scales with perimeter)")
+        print("="*60)
+        
+        # Metrics to analyze (using radius instead of area)
+        metrics_to_analyze = [
+            ('peak_force_N', 'radius_mm', 'Peak Force'),
+            ('work_of_adhesion_mJ', 'radius_mm', 'Work of Adhesion'),
+            ('peel_distance_mm', 'radius_mm', 'Peel Distance'),
+            ('effective_stiffness_N_per_mm', 'radius_mm', 'Effective Stiffness')
+        ]
+        
+        all_scaling_results = []
+        
+        for y_metric, x_metric, metric_name in metrics_to_analyze:
+            if y_metric not in df.columns:
+                print(f"\nSkipping {metric_name} (column not found)")
+                continue
+            
+            print(f"\n{metric_name} vs Contact Area:")
+            print("-" * 60)
+            
+            # Fit scaling law for each condition
+            results_df = advanced.fit_scaling_laws_by_condition(
+                df, 
+                y_metric=y_metric,
+                x_metric=x_metric,
+                condition_column='condition_label'
+            )
+            
+            # Add metric name to results
+            results_df['metric_name'] = metric_name
+            results_df['y_metric'] = y_metric
+            results_df['x_metric'] = x_metric
+            
+            all_scaling_results.append(results_df)
+            
+            # Generate scaling plot
+            plot_path = self.output_directory / f"MASTER_scaling_{y_metric}.png"
+            advanced.plot_scaling_analysis(
+                df,
+                y_metric=y_metric,
+                x_metric=x_metric,
+                output_path=plot_path
+            )
+        
+        # Combine all results
+        if all_scaling_results:
+            combined_results = pd.concat(all_scaling_results, ignore_index=True)
+            
+            # Save to CSV
+            csv_path = self.output_directory / "MASTER_scaling_analysis.csv"
+            combined_results.to_csv(csv_path, index=False)
+            print(f"\n{'='*60}")
+            print(f"Scaling analysis results saved to:")
+            print(f"  {csv_path}")
+            print(f"{'='*60}\n")
+            
+            # Print summary
+            print("\nScaling Analysis Summary:")
+            print("="*60)
+            for metric_name in combined_results['metric_name'].unique():
+                metric_data = combined_results[combined_results['metric_name'] == metric_name]
+                print(f"\n{metric_name}:")
+                for _, row in metric_data.iterrows():
+                    if row['condition'] != 'All data':
+                        print(f"  {row['condition']:<25} n = {row['exponent']:.3f} ± {row['exponent_stderr']:.3f}, R² = {row['r_squared']:.4f}")
+            print("="*60)
 
 
 def parse_arguments():
@@ -473,6 +603,7 @@ def main():
     # Generate plots (unless CSV-only mode)
     if not args.csv_only and master_df is not None:
         processor.generate_master_plots()
+        processor.perform_scaling_analysis()
     
     print("\n" + "="*60)
     print("SteppedCone Batch Processing Complete!")
