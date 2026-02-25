@@ -46,6 +46,10 @@ class AnalysisPlotter:
         self.dpi = dpi
         self.layer_colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown']
         self._configure_matplotlib_backend()
+        
+        # Set Times New Roman as default font
+        plt.rcParams['font.family'] = 'Times New Roman'
+        plt.rcParams['font.size'] = 12
 
     def _configure_matplotlib_backend(self):
         """Configure matplotlib backend for thread-safe operation."""
@@ -84,7 +88,7 @@ class AnalysisPlotter:
         total_plots = 1 + num_layers
         rows_needed = (total_plots + 1) // 2
 
-        base_title_size, base_label_size = (16, 10)
+        base_title_size, base_label_size = (24, 14)
         if rows_needed <= 2: title_size, label_size = base_title_size, base_label_size
         elif rows_needed <= 3: title_size, label_size = base_title_size - 2, base_label_size - 1
         else: title_size, label_size = base_title_size - 4, base_label_size - 2
@@ -113,7 +117,7 @@ class AnalysisPlotter:
         plt.tight_layout()
 
         # Add title and adjust subplots to make room
-        fig.suptitle(f'{title}\nPeeling Stages with Shaded Bands and Event Markers',
+        fig.suptitle(title,
                      fontsize=title_size, fontweight='bold', y=0.98)
 
         # Fine-tune subplot spacing
@@ -148,11 +152,13 @@ class AnalysisPlotter:
                         xytext=(0, 5), textcoords='offset points', ha='center', va='bottom',
                         fontsize=font_size + 2, fontweight='bold', color=color, zorder=6)
 
-        ax.set_xlabel('Time (s)', fontsize=font_size + 2, fontweight='bold')
-        ax.set_ylabel('Force (N)', fontsize=font_size + 2, fontweight='bold')
-        ax.set_title('Complete Force Profile', fontsize=font_size + 4, fontweight='bold')
+        ax.set_xlabel('Time (s)', fontsize=font_size + 4, fontweight='bold')
+        ax.set_ylabel('Force (N)', fontsize=font_size + 4, fontweight='bold')
+        ax.set_title('Complete Force Profile', fontsize=font_size + 6, fontweight='bold')
+        ax.tick_params(axis='both', which='major', labelsize=font_size + 4)
+        ax.locator_params(axis='both', nbins=6)  # Reduce number of tick marks
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=font_size, loc='upper right')
+        ax.legend(fontsize=font_size - 1, loc='lower right', framealpha=0.9)
         
         # Set axis limits to show all layers with margins
         if layers:
@@ -177,6 +183,7 @@ class AnalysisPlotter:
         print(f"  Start/End Idx: {layer['start_idx']}-{layer['end_idx']}")
         print(f"  Time Range: {time_data[layer['start_idx']]:.3f}s - {time_data[layer['end_idx']]:.3f}s")
         
+        # Use layer's assigned color for consistency with overview
         color = layer['color']
         
         # Define focused window around the peeling event with buffer
@@ -214,18 +221,24 @@ class AnalysisPlotter:
                    label=f'Baseline: {layer["baseline"]:.4f}N', zorder=2)
 
         # Add simple text annotations for key metrics (no arrows!)
-        # Peak force annotation
-        ax.text(layer['peak_time'], layer['peak_force'] * 1.05, 
-                f"{layer['peak_force']:.4f}N",
-                ha='center', va='bottom', fontsize=font_size, fontweight='bold', 
+        # Peak force annotation - use relative force with layer color, positioned to the right
+        relative_force = layer['peak_force'] - layer['baseline']
+        # Position annotation to the right of the peak
+        x_range = layer['prop_end_time'] - layer['pre_init_time']
+        annotation_x = layer['peak_time'] + x_range * 0.15
+        ax.text(annotation_x, layer['peak_force'], 
+                f"{relative_force:.4f}N",
+                ha='left', va='center', fontsize=font_size, fontweight='bold', 
                 color=color, bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor=color, alpha=0.9))
         
         # Duration annotations in title
         duration_text = f"Pre-init: {layer['pre_init_duration']:.2f}s | Prop: {layer['prop_duration']:.2f}s"
         
-        ax.set_xlabel('Time (s)', fontsize=font_size + 1, fontweight='bold')
-        ax.set_ylabel('Force (N)', fontsize=font_size + 1, fontweight='bold')
-        ax.set_title(f'Layer {layer["number"]} - {duration_text}', fontsize=font_size + 2, fontweight='bold', color=color)
+        ax.set_xlabel('Time (s)', fontsize=font_size + 4, fontweight='bold')
+        ax.set_ylabel('Force (N)', fontsize=font_size + 4, fontweight='bold')
+        ax.set_title(f'Layer {layer["number"]} - {duration_text}', fontsize=font_size + 2, fontweight='bold', color='black')
+        ax.tick_params(axis='both', which='major', labelsize=font_size + 4)
+        ax.locator_params(axis='both', nbins=6)  # Reduce number of tick marks
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=font_size - 2, loc='upper left', framealpha=0.9, ncol=2)
 

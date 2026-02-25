@@ -64,6 +64,13 @@ class RawDataProcessor:
             layer_boundaries = self._detect_boundaries_from_phases(
                 time_data, position_data, force_data, phase_data
             )
+            
+            # Fallback to adaptive detection if phase-aware found no layers
+            if len(layer_boundaries) == 0:
+                print("Phase-aware detection found 0 layers - falling back to adaptive detection")
+                layer_boundaries = self._detect_boundaries_adaptive(
+                    time_data, position_data, force_data
+                )
         else:
             print("Phase column not found - using adaptive detection")
             layer_boundaries = self._detect_boundaries_adaptive(
@@ -591,6 +598,7 @@ class RawDataProcessor:
             'color': colors[layer_idx % len(colors)],
             'number': metrics.get('layer_number', layer_idx + 1),
             'peak_force': metrics.get('peak_force', 0),
+            'peak_force_corrected': metrics.get('peak_force_corrected', 0),
             'baseline': metrics.get('baseline_force', 0),
             'work_of_adhesion_mJ': metrics.get('work_of_adhesion_corrected_mJ', 0),
             'pre_init_time': time_data[pre_init_idx],

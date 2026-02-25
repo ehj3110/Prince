@@ -111,7 +111,7 @@ class MasterPlotter:
             df: DataFrame with columns: membrane_type, tank_type, area_mm2, [metric columns]
             metrics: List of (column_name, ylabel) tuples to plot
                     Example: [('peak_force_N', 'Peak Force (N)'),
-                             ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)')]
+                             ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)')]
             plot_name: Filename for saved plot (e.g., 'MASTER_area_analysis.png')
             title: Main title for the figure
             apply_abs: List of metric column names to apply absolute value
@@ -124,9 +124,20 @@ class MasterPlotter:
         """
         print(f"  Creating {plot_name}...")
         
-        # Create detailed condition label: Membrane + Tank
+        # Create detailed condition label: Membrane + Tank (for PrintingLogs) or fluid_gap_speed (for SteppedCone)
         if 'detailed_condition' not in df.columns:
-            df['detailed_condition'] = df['membrane_type'] + ' + ' + df['tank_type']
+            if 'membrane_type' in df.columns and 'tank_type' in df.columns:
+                # PrintingLogs data
+                df['detailed_condition'] = df['membrane_type'] + ' + ' + df['tank_type']
+            elif 'condition_label' in df.columns:
+                # SteppedCone data - use condition_label as-is
+                df['detailed_condition'] = df['condition_label']
+            elif 'condition' in df.columns:
+                # SteppedCone data (legacy) - use condition as-is
+                df['detailed_condition'] = df['condition']
+            else:
+                # Fallback - use 'Condition' as label
+                df['detailed_condition'] = 'Condition'
         
         # Determine subplot layout based on number of metrics
         n_metrics = len(metrics)
@@ -147,7 +158,7 @@ class MasterPlotter:
         
         # Create figure
         fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
-        fig.suptitle(title, fontsize=16, fontweight='bold')
+        fig.suptitle(title, fontsize=16, fontweight='bold', y=0.995)
         
         # Handle single subplot case (axes is not an array)
         if n_metrics == 1:
@@ -217,6 +228,7 @@ class MasterPlotter:
             # Format subplot (V4 style)
             ax.set_xlabel('Contact Area (mm²)', fontsize=12, fontweight='bold')
             ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+            ax.set_title(ylabel, fontsize=14, fontweight='bold', pad=10)
             ax.legend(fontsize=10, loc='best')
             ax.grid(True, alpha=0.3)
             
@@ -318,9 +330,20 @@ class MasterPlotter:
         """
         print(f"  Creating {plot_name}...")
         
-        # Create detailed condition label: Membrane + Tank
+        # Create detailed condition label: Membrane + Tank (for PrintingLogs) or fluid_gap_speed (for SteppedCone)
         if 'detailed_condition' not in df.columns:
-            df['detailed_condition'] = df['membrane_type'] + ' + ' + df['tank_type']
+            if 'membrane_type' in df.columns and 'tank_type' in df.columns:
+                # PrintingLogs data
+                df['detailed_condition'] = df['membrane_type'] + ' + ' + df['tank_type']
+            elif 'condition_label' in df.columns:
+                # SteppedCone data - use condition_label as-is
+                df['detailed_condition'] = df['condition_label']
+            elif 'condition' in df.columns:
+                # SteppedCone data (legacy) - use condition as-is
+                df['detailed_condition'] = df['condition']
+            else:
+                # Fallback - use 'Condition' as label
+                df['detailed_condition'] = 'Condition'
         
         # Create figure with 2x2 subplots
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
@@ -335,7 +358,7 @@ class MasterPlotter:
         # Metrics to plot
         metrics = [
             ('peak_force_N', 'Peak Force (N)'),
-            ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)'),
+            ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)'),
             ('pre_initiation_distance_mm', 'Pre-Initiation Distance (mm)'),
             ('total_peel_time_s', 'Total Peel Time (s)')
         ]
@@ -428,11 +451,15 @@ class MasterPlotter:
         
         output_files = []
         
+        # Detect data type and choose appropriate column names
+        is_printing_logs = 'pre_initiation_distance_mm' in df.columns
+        distance_col = 'pre_initiation_distance_mm' if is_printing_logs else 'peel_distance_mm'
+        
         # 1. Modified area analysis plot (with peel time)
         metrics_modified = [
             ('peak_force_N', 'Peak Force (N)'),
-            ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)'),
-            ('pre_initiation_distance_mm', 'Pre-Initiation Distance (mm)'),
+            ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)'),
+            (distance_col, 'Pre-Initiation Distance (mm)' if is_printing_logs else 'Peel Distance (mm)'),
             ('total_peel_time_s', 'Total Peel Time (s)')
         ]
         
@@ -442,12 +469,15 @@ class MasterPlotter:
                 metrics=metrics_modified,
                 plot_name='MASTER_area_analysis.png',
                 title='Master Area Analysis',
-                apply_abs=['pre_initiation_distance_mm']
+                apply_abs=[distance_col]
             )
         )
         
-        # 2. Area ratio analysis plot
-        output_files.append(self.generate_area_ratio_analysis_plot(df))
+        # 2. Area ratio analysis plot (only for PrintingLogs data with membrane_area column)
+        if 'area_ratio' in df.columns:
+            output_files.append(self.generate_area_ratio_analysis_plot(df))
+        else:
+            print("  Skipping area_ratio plot (not applicable to this data type)")
         
         # 3. Distance analysis plot
         output_files.append(self.generate_distance_analysis_plot(df))
@@ -474,7 +504,7 @@ class MasterPlotter:
             df: DataFrame with columns: condition_label, area_mm2, [metric columns]
             metrics: List of (column_name, ylabel) tuples to plot
                     Example: [('peak_force_N', 'Peak Force (N)'),
-                             ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)')]
+                             ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)')]
             plot_name: Filename for saved plot (e.g., 'MASTER_radius_analysis.png')
             title: Main title for the figure
             apply_abs: List of metric column names to apply absolute value
@@ -495,9 +525,20 @@ class MasterPlotter:
         # Calculate radius from binned areas
         df_with_radius['radius_mm'] = np.sqrt(df_with_radius['area_mm2'] / np.pi)
         
-        # Create detailed condition label: Membrane + Tank
+        # Create detailed condition label: Membrane + Tank (for PrintingLogs) or fluid_gap_speed (for SteppedCone)
         if 'detailed_condition' not in df_with_radius.columns:
-            df_with_radius['detailed_condition'] = df_with_radius['membrane_type'] + ' + ' + df_with_radius['tank_type']
+            if 'membrane_type' in df_with_radius.columns and 'tank_type' in df_with_radius.columns:
+                # PrintingLogs data
+                df_with_radius['detailed_condition'] = df_with_radius['membrane_type'] + ' + ' + df_with_radius['tank_type']
+            elif 'condition_label' in df_with_radius.columns:
+                # SteppedCone data - use condition_label as-is
+                df_with_radius['detailed_condition'] = df_with_radius['condition_label']
+            elif 'condition' in df_with_radius.columns:
+                # SteppedCone data (legacy) - use condition as-is
+                df_with_radius['detailed_condition'] = df_with_radius['condition']
+            else:
+                # Fallback - use 'Condition' as label
+                df_with_radius['detailed_condition'] = 'Condition'
         
         # Determine subplot layout based on number of metrics
         n_metrics = len(metrics)
@@ -518,7 +559,7 @@ class MasterPlotter:
         
         # Create figure
         fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
-        fig.suptitle(title, fontsize=16, fontweight='bold')
+        fig.suptitle(title, fontsize=16, fontweight='bold', y=0.995)
         
         # Handle single subplot case (axes is not an array)
         if n_metrics == 1:
@@ -544,32 +585,219 @@ class MasterPlotter:
                     condition_data[metric_col] = condition_data[metric_col].abs()
                 
                 # Group by radius and calculate mean + SEM
-                grouped = condition_data.groupby('radius_mm')[metric_col].agg(['mean', 'sem'])
-                radii = grouped.index.values
+                grouped = condition_data.groupby('radius_mm')[metric_col].agg(['mean', 'std', 'count']).reset_index()
+                radii = grouped['radius_mm'].values
                 means = grouped['mean'].values
-                sems = grouped['sem'].values
+                stds = grouped['std'].values
+                counts = grouped['count'].values
                 
-                # Plot mean with markers
-                ax.plot(radii, means, 'o', color=color, markersize=3, alpha=0.7, label=condition)
+                # Calculate SEM (Standard Error of Mean)
+                sems = stds / np.sqrt(counts)
+                # Replace NaN (from single-sample groups) with 0
+                sems = np.nan_to_num(sems, nan=0.0)
                 
-                # Add shaded SEM region
-                ax.fill_between(radii, means - sems, means + sems, color=color, alpha=0.2)
+                # Debug: Print SEM stats for first metric, first condition
+                if idx == 0 and conditions.index(condition) == 0:
+                    print(f"    SEM range for {condition}: {sems[sems>0].min():.6f} to {sems[sems>0].max():.6f}" if any(sems>0) else f"    No SEM (all single samples) for {condition}")
                 
-                # Add polynomial trendline
+                # Add filled SEM error region (only where SEM > 0)
+                ax.fill_between(radii, means - sems, means + sems, color=color, alpha=0.2, zorder=1)
+                
+                # Plot means as markers only (no connecting line)
+                ax.plot(radii, means, 'o', color=color, markersize=4, 
+                       alpha=0.8, label=condition, zorder=3)
+                
+                # Add polynomial trendline through the means (dotted)
                 if add_trendlines and len(radii) > 2:
                     try:
                         z = np.polyfit(radii, means, 2)
                         p = np.poly1d(z)
                         radius_smooth = np.linspace(radii.min(), radii.max(), 100)
-                        ax.plot(radius_smooth, p(radius_smooth), '-', color=color, linewidth=1.5, alpha=0.8)
+                        ax.plot(radius_smooth, p(radius_smooth), ':', color=color, linewidth=1, alpha=0.7, zorder=2)
+                    except:
+                        pass  # Skip trendline if fitting fails
+            
+            # Format subplot (V5 style - consistent with area plots)
+            ax.set_xlabel('Contact Radius (mm)', fontsize=12, fontweight='bold')
+            ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+            ax.set_title(ylabel, fontsize=14, fontweight='bold', pad=10)
+            ax.legend(fontsize=10, loc='best')
+            ax.grid(True, alpha=0.3)
+            
+            # Set y-axis to start at 0 if all values are positive
+            if len(axes) > idx:  # Safety check
+                y_data = []
+                for cond in conditions:
+                    cond_data = df_with_radius[df_with_radius['detailed_condition'] == cond].copy()
+                    if apply_abs and metric_col in apply_abs:
+                        cond_data[metric_col] = cond_data[metric_col].abs()
+                    grouped_vals = cond_data.groupby('radius_mm')[metric_col].mean()
+                    y_data.extend(grouped_vals.values)
+                if len(y_data) > 0 and min(y_data) >= 0:
+                    ax.set_ylim(bottom=0)
+        
+        # Hide unused subplots
+        for idx in range(n_metrics, len(axes)):
+            axes[idx].axis('off')
+        
+        plt.tight_layout()
+        
+        # Save figure
+        output_file = self.output_directory / plot_name
+        plt.savefig(output_file, dpi=self.dpi, bbox_inches='tight')
+        print(f"    Saved: {output_file}")
+        
+        plt.close()
+        
+        return output_file
+    
+    def generate_radius_analysis_plot_median(self,
+                                            df: pd.DataFrame,
+                                            metrics: List[Tuple[str, str]],
+                                            plot_name: str,
+                                            title: str,
+                                            apply_abs: Optional[List[str]] = None,
+                                            add_trendlines: bool = True,
+                                            figsize: Tuple[int, int] = (16, 12)):
+        """
+        Generate a master radius analysis plot with MEDIAN aggregation.
+        Uses MAD-based errors instead of SEM.
+        
+        Args:
+            df: DataFrame with columns: condition_label, area_mm2, [metric columns]
+            metrics: List of (column_name, ylabel) tuples to plot
+            plot_name: Filename for saved plot
+            title: Main title for the figure
+            apply_abs: List of metric column names to apply absolute value
+            add_trendlines: Whether to add polynomial trendlines
+            figsize: Figure size in inches (width, height)
+        
+        Returns:
+            Path to saved plot file
+        """
+        print(f"  Creating {plot_name}...")
+        
+        # Add radius column to dataframe
+        df_with_radius = df.copy()
+        
+        # Bin areas first (to handle slight measurement variations)
+        df_with_radius = self._bin_areas(df_with_radius, area_col='area_mm2', tolerance=0.05)
+        
+        # Calculate radius from binned areas
+        df_with_radius['radius_mm'] = np.sqrt(df_with_radius['area_mm2'] / np.pi)
+        
+        # Create detailed condition label
+        if 'detailed_condition' not in df_with_radius.columns:
+            if 'membrane_type' in df_with_radius.columns and 'tank_type' in df_with_radius.columns:
+                df_with_radius['detailed_condition'] = df_with_radius['membrane_type'] + ' + ' + df_with_radius['tank_type']
+            elif 'condition_label' in df_with_radius.columns:
+                df_with_radius['detailed_condition'] = df_with_radius['condition_label']
+            elif 'condition' in df_with_radius.columns:
+                df_with_radius['detailed_condition'] = df_with_radius['condition']
+            else:
+                df_with_radius['detailed_condition'] = 'Condition'
+        
+        # Determine subplot layout based on number of metrics
+        n_metrics = len(metrics)
+        if n_metrics == 1:
+            nrows, ncols = 1, 1
+        elif n_metrics == 2:
+            nrows, ncols = 1, 2
+        elif n_metrics <= 4:
+            nrows, ncols = 2, 2
+        elif n_metrics <= 6:
+            nrows, ncols = 2, 3
+        elif n_metrics <= 9:
+            nrows, ncols = 3, 3
+        else:
+            ncols = 3
+            nrows = (n_metrics + ncols - 1) // ncols
+        
+        # Create figure
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+        fig.suptitle(title, fontsize=16, fontweight='bold', y=0.995)
+        
+        # Handle single subplot case
+        if n_metrics == 1:
+            axes = np.array([axes])
+        else:
+            axes = axes.flatten()
+        
+        # Define color map for conditions
+        conditions = sorted(df_with_radius['detailed_condition'].unique())
+        colors = plt.cm.tab10(np.linspace(0, 1, len(conditions)))
+        color_map = dict(zip(conditions, colors))
+        
+        # Plot each metric
+        for idx, (metric_col, ylabel) in enumerate(metrics):
+            ax = axes[idx]
+            
+            for condition in conditions:
+                condition_data = df_with_radius[df_with_radius['detailed_condition'] == condition].copy()
+                color = color_map[condition]
+                
+                # Apply absolute value if requested
+                if apply_abs and metric_col in apply_abs:
+                    condition_data[metric_col] = condition_data[metric_col].abs()
+                
+                # Group by radius and calculate MEDIAN + MAD
+                grouped = condition_data.groupby('radius_mm')[metric_col].agg(
+                    median='median',
+                    count='count',
+                    mad=lambda x: np.median(np.abs(x - np.median(x)))
+                ).reset_index()
+                
+                radii = grouped['radius_mm'].values
+                medians = grouped['median'].values
+                mads = grouped['mad'].values
+                counts = grouped['count'].values
+                
+                # Calculate MAD-based error (1.4826 * MAD / sqrt(n))
+                mad_errors = 1.4826 * mads / np.sqrt(counts)
+                # Replace NaN with 0
+                mad_errors = np.nan_to_num(mad_errors, nan=0.0)
+                
+                # Debug: Print MAD stats for first metric, first condition
+                if idx == 0 and conditions.index(condition) == 0:
+                    print(f"    MAD range for {condition}: {mad_errors[mad_errors>0].min():.6f} to {mad_errors[mad_errors>0].max():.6f}" if any(mad_errors>0) else f"    No MAD (all single samples) for {condition}")
+                
+                # Add filled MAD error region
+                ax.fill_between(radii, medians - mad_errors, medians + mad_errors, 
+                              color=color, alpha=0.2, zorder=1)
+                
+                # Plot medians as markers only
+                ax.plot(radii, medians, 'o', color=color, markersize=4, 
+                       alpha=0.8, label=condition, zorder=3)
+                
+                # Add polynomial trendline through the medians (dotted)
+                if add_trendlines and len(radii) > 2:
+                    try:
+                        z = np.polyfit(radii, medians, 2)
+                        p = np.poly1d(z)
+                        radius_smooth = np.linspace(radii.min(), radii.max(), 100)
+                        ax.plot(radius_smooth, p(radius_smooth), ':', color=color, 
+                               linewidth=1, alpha=0.7, zorder=2)
                     except:
                         pass  # Skip trendline if fitting fails
             
             # Format subplot
-            ax.set_xlabel('Contact Radius (mm)', fontsize=11)
-            ax.set_ylabel(ylabel, fontsize=11)
-            ax.legend(fontsize=8, loc='best')
+            ax.set_xlabel('Contact Radius (mm)', fontsize=12, fontweight='bold')
+            ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+            ax.set_title(ylabel, fontsize=14, fontweight='bold', pad=10)
+            ax.legend(fontsize=10, loc='best')
             ax.grid(True, alpha=0.3)
+            
+            # Set y-axis to start at 0 if all values are positive
+            if len(axes) > idx:
+                y_data = []
+                for cond in conditions:
+                    cond_data = df_with_radius[df_with_radius['detailed_condition'] == cond].copy()
+                    if apply_abs and metric_col in apply_abs:
+                        cond_data[metric_col] = cond_data[metric_col].abs()
+                    grouped_vals = cond_data.groupby('radius_mm')[metric_col].median()
+                    y_data.extend(grouped_vals.values)
+                if len(y_data) > 0 and min(y_data) >= 0:
+                    ax.set_ylim(bottom=0)
         
         # Hide unused subplots
         for idx in range(n_metrics, len(axes)):
@@ -609,7 +837,7 @@ class MasterPlotter:
         # 1. Standard radius analysis plot
         metrics_standard = [
             ('peak_force_N', 'Peak Force (N)'),
-            ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)'),
+            ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)'),
             ('peel_distance_mm', 'Peel Distance (mm)'),
             ('peak_retraction_force_N', 'Peak Retraction Force (N)')
         ]
@@ -627,7 +855,7 @@ class MasterPlotter:
         # 2. Modified radius analysis plot (with peel time instead of retraction force)
         metrics_modified = [
             ('peak_force_N', 'Peak Force (N)'),
-            ('work_of_adhesion_mJ', 'Work of Adhesion (mJ)'),
+            ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)'),
             ('peel_distance_mm', 'Peel Distance (mm)'),
             ('total_peel_time_s', 'Total Peel Time (s)')
         ]
@@ -643,6 +871,289 @@ class MasterPlotter:
         )
         
         print("\nAll radius-based plots generated successfully!")
+        
+        return output_files
+    
+    def generate_standard_radius_plots_median(self, df: pd.DataFrame):
+        """
+        Generate the standard set of master plots using RADIUS as X-axis with MEDIAN aggregation.
+        
+        Creates radius-based median versions of:
+        1. Area analysis (Force, Work, Distance, Retraction Force)
+        2. Modified area analysis (Force, Work, Distance, Peel Time)
+        
+        Args:
+            df: DataFrame with batch processing results
+        
+        Returns:
+            List of paths to generated plot files
+        """
+        print(f"\n{'='*60}")
+        print(f"Generating Master Radius-Based Plots (MEDIAN)")
+        print(f"{'='*60}\n")
+        
+        output_files = []
+        
+        # 1. Standard radius analysis plot (median)
+        metrics_standard = [
+            ('peak_force_N', 'Peak Force (N)'),
+            ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)'),
+            ('peel_distance_mm', 'Peel Distance (mm)'),
+            ('peak_retraction_force_N', 'Peak Retraction Force (N)')
+        ]
+        
+        output_files.append(
+            self.generate_radius_analysis_plot_median(
+                df=df,
+                metrics=metrics_standard,
+                plot_name='MASTER_radius_analysis_MEDIAN.png',
+                title='Master Radius Analysis (MEDIAN)',
+                apply_abs=['peel_distance_mm']
+            )
+        )
+        
+        # 2. Modified radius analysis plot (median, with peel time)
+        metrics_modified = [
+            ('peak_force_N', 'Peak Force (N)'),
+            ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)'),
+            ('peel_distance_mm', 'Peel Distance (mm)'),
+            ('total_peel_time_s', 'Total Peel Time (s)')
+        ]
+        
+        output_files.append(
+            self.generate_radius_analysis_plot_median(
+                df=df,
+                metrics=metrics_modified,
+                plot_name='MASTER_radius_analysis_modified_MEDIAN.png',
+                title='Master Radius Analysis - Modified (MEDIAN)',
+                apply_abs=['peel_distance_mm']
+            )
+        )
+        
+        print("\nAll radius-based MEDIAN plots generated successfully!")
+        
+        return output_files
+    
+    def generate_radius_analysis_plot_loglog(self,
+                                             df: pd.DataFrame,
+                                             metrics: List[Tuple[str, str]],
+                                             plot_name: str,
+                                             title: str,
+                                             apply_abs: Optional[List[str]] = None,
+                                             add_trendlines: bool = True,
+                                             figsize: Tuple[int, int] = (16, 12)):
+        """
+        Generate a master radius analysis plot with LOG-LOG axes using MEAN aggregation.
+        Uses log-log scale to visualize power-law relationships.
+        
+        Args:
+            df: DataFrame with columns: condition_label, area_mm2, [metric columns]
+            metrics: List of (column_name, ylabel) tuples to plot
+            plot_name: Filename for saved plot
+            title: Main title for the figure
+            apply_abs: List of metric column names to apply absolute value
+            add_trendlines: Whether to add power law trendlines
+            figsize: Figure size in inches (width, height)
+        
+        Returns:
+            Path to saved plot file
+        """
+        print(f"  Creating {plot_name}...")
+        
+        # Add radius column to dataframe
+        df_with_radius = df.copy()
+        
+        # Bin areas first
+        df_with_radius = self._bin_areas(df_with_radius, area_col='area_mm2', tolerance=0.05)
+        
+        # Calculate radius from binned areas
+        df_with_radius['radius_mm'] = np.sqrt(df_with_radius['area_mm2'] / np.pi)
+        
+        # Create detailed condition label
+        if 'detailed_condition' not in df_with_radius.columns:
+            if 'membrane_type' in df_with_radius.columns and 'tank_type' in df_with_radius.columns:
+                df_with_radius['detailed_condition'] = df_with_radius['membrane_type'] + ' + ' + df_with_radius['tank_type']
+            elif 'condition_label' in df_with_radius.columns:
+                df_with_radius['detailed_condition'] = df_with_radius['condition_label']
+            elif 'condition' in df_with_radius.columns:
+                df_with_radius['detailed_condition'] = df_with_radius['condition']
+            else:
+                df_with_radius['detailed_condition'] = 'Condition'
+        
+        # Determine subplot layout
+        n_metrics = len(metrics)
+        if n_metrics == 1:
+            nrows, ncols = 1, 1
+        elif n_metrics == 2:
+            nrows, ncols = 1, 2
+        elif n_metrics <= 4:
+            nrows, ncols = 2, 2
+        elif n_metrics <= 6:
+            nrows, ncols = 2, 3
+        elif n_metrics <= 9:
+            nrows, ncols = 3, 3
+        else:
+            ncols = 3
+            nrows = (n_metrics + ncols - 1) // ncols
+        
+        # Create figure
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+        fig.suptitle(title, fontsize=16, fontweight='bold', y=0.995)
+        
+        # Handle single subplot case
+        if n_metrics == 1:
+            axes = np.array([axes])
+        else:
+            axes = axes.flatten()
+        
+        # Define color map for conditions
+        conditions = sorted(df_with_radius['detailed_condition'].unique())
+        colors = plt.cm.tab10(np.linspace(0, 1, len(conditions)))
+        color_map = dict(zip(conditions, colors))
+        
+        # Plot each metric
+        for idx, (metric_col, ylabel) in enumerate(metrics):
+            ax = axes[idx]
+            
+            for condition in conditions:
+                condition_data = df_with_radius[df_with_radius['detailed_condition'] == condition].copy()
+                color = color_map[condition]
+                
+                # Apply absolute value if requested
+                if apply_abs and metric_col in apply_abs:
+                    condition_data[metric_col] = condition_data[metric_col].abs()
+                
+                # Group by radius and calculate mean + SEM
+                grouped = condition_data.groupby('radius_mm')[metric_col].agg(['mean', 'std', 'count']).reset_index()
+                radii = grouped['radius_mm'].values
+                means = grouped['mean'].values
+                stds = grouped['std'].values
+                counts = grouped['count'].values
+                
+                # Calculate SEM
+                sems = stds / np.sqrt(counts)
+                sems = np.nan_to_num(sems, nan=0.0)
+                
+                # Filter out zeros and negative values for log scale
+                valid_mask = (radii > 0) & (means > 0)
+                radii_valid = radii[valid_mask]
+                means_valid = means[valid_mask]
+                sems_valid = sems[valid_mask]
+                
+                if len(radii_valid) == 0:
+                    continue
+                
+                # Add filled SEM error region (log scale compatible)
+                lower_bound = np.maximum(means_valid - sems_valid, 1e-10)  # Prevent negative values
+                upper_bound = means_valid + sems_valid
+                ax.fill_between(radii_valid, lower_bound, upper_bound,
+                              color=color, alpha=0.2, zorder=1)
+                
+                # Plot means as markers only
+                ax.plot(radii_valid, means_valid, 'o', color=color, markersize=4,
+                       alpha=0.8, label=condition, zorder=3)
+                
+                # Add power law trendline (linear in log-log space)
+                if add_trendlines and len(radii_valid) > 2:
+                    try:
+                        # Fit in log space
+                        from scipy import stats as scipy_stats
+                        log_r = np.log(radii_valid)
+                        log_m = np.log(means_valid)
+                        slope, intercept, r_value, p_value, std_err = scipy_stats.linregress(log_r, log_m)
+                        
+                        # Create smooth curve for plotting
+                        r_smooth = np.logspace(np.log10(radii_valid.min()), 
+                                             np.log10(radii_valid.max()), 100)
+                        m_smooth = np.exp(intercept) * r_smooth ** slope
+                        
+                        # Plot power law trendline
+                        ax.plot(r_smooth, m_smooth, '--', color=color, linewidth=1.5,
+                               alpha=0.7, zorder=2)
+                    except:
+                        pass  # Skip trendline if fitting fails
+            
+            # Format subplot with LOG-LOG scale
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+            ax.set_xlabel('Contact Radius (mm)', fontsize=12, fontweight='bold')
+            ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+            ax.set_title(ylabel, fontsize=14, fontweight='bold', pad=10)
+            ax.legend(fontsize=10, loc='best')
+            ax.grid(True, alpha=0.3, which='both')
+        
+        # Hide unused subplots
+        for idx in range(n_metrics, len(axes)):
+            axes[idx].axis('off')
+        
+        plt.tight_layout()
+        
+        # Save figure
+        output_file = self.output_directory / plot_name
+        plt.savefig(output_file, dpi=self.dpi, bbox_inches='tight')
+        print(f"    Saved: {output_file}")
+        
+        plt.close()
+        
+        return output_file
+    
+    def generate_standard_radius_plots_loglog(self, df: pd.DataFrame):
+        """
+        Generate the standard set of master plots using RADIUS as X-axis with LOG-LOG scale.
+        
+        Creates radius-based log-log versions of:
+        1. Area analysis (Force, Work, Distance, Retraction Force)
+        2. Modified area analysis (Force, Work, Distance, Peel Time)
+        
+        Args:
+            df: DataFrame with batch processing results
+        
+        Returns:
+            List of paths to generated plot files
+        """
+        print(f"\n{'='*60}")
+        print(f"Generating Master Radius-Based Plots (LOG-LOG)")
+        print(f"{'='*60}\n")
+        
+        output_files = []
+        
+        # 1. Standard radius analysis plot (log-log)
+        metrics_standard = [
+            ('peak_force_N', 'Peak Force (N)'),
+            ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)'),
+            ('peel_distance_mm', 'Peel Distance (mm)'),
+            ('peak_retraction_force_N', 'Peak Retraction Force (N)')
+        ]
+        
+        output_files.append(
+            self.generate_radius_analysis_plot_loglog(
+                df=df,
+                metrics=metrics_standard,
+                plot_name='MASTER_radius_analysis_LOGLOG.png',
+                title='Master Radius Analysis (LOG-LOG)',
+                apply_abs=['peel_distance_mm']
+            )
+        )
+        
+        # 2. Modified radius analysis plot (log-log, with peel time)
+        metrics_modified = [
+            ('peak_force_N', 'Peak Force (N)'),
+            ('work_of_adhesion_corrected_mJ', 'Work of Adhesion (mJ)'),
+            ('peel_distance_mm', 'Peel Distance (mm)'),
+            ('total_peel_time_s', 'Total Peel Time (s)')
+        ]
+        
+        output_files.append(
+            self.generate_radius_analysis_plot_loglog(
+                df=df,
+                metrics=metrics_modified,
+                plot_name='MASTER_radius_analysis_modified_LOGLOG.png',
+                title='Master Radius Analysis - Modified (LOG-LOG)',
+                apply_abs=['peel_distance_mm']
+            )
+        )
+        
+        print("\nAll radius-based LOG-LOG plots generated successfully!")
         
         return output_files
     
