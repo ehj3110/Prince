@@ -2,14 +2,14 @@
 
 ## Overview
 
-This document describes the organization of the Prince_Segmented project workspace.
+This document describes the organization of the Prince_Segmented project workspace (**Prince_CurrentWorkingVersion**). Use it to find where code, scripts, and documentation live.
 
 ## Directory Structure
 
-### Root Directory
-**Contains only essential files:**
+### Root Directory (`Prince_CurrentWorkingVersion/`)
+**Essential files at project root:**
 - `Prince_Segmented.py` - Main printing application
-- `README.md` - Project overview
+- `README.md` - Project overview (start here)
 - `.gitignore` - Git configuration
 - `force_gauge_calibration_20251106_144013.txt` - Calibration data
 
@@ -66,11 +66,28 @@ python batch_processors\batch_process_universal.py "path\to\data"
 **Purpose**: GUI components for the main application
 
 **Components:**
-- Tkinter UI widgets
-- Custom dialogs and windows
-- Interface utilities
+- `automated_logging_frame.py` - Automated layer logging controls (Sensor Panel)
+- Tkinter UI widgets, custom dialogs and windows
 
-### `/documentation/` (17 files)
+### `/calibration_modules/`
+**Purpose**: Camera-based calibration and alignment (resin tank focus and tilt)
+
+**Key Components:**
+- `AlliedVisionCameraManager.py` - Allied Vision camera interface (Vimba SDK)
+- `CameraViewWindow.py` - Live camera view and ChArUco calibration GUI
+- `ChArucoCalibrator.py` - ChArUco pattern focus/tilt detection
+- `README.md` - Calibration setup and usage
+
+### `/tests/`
+**Purpose**: Unit tests and integration test scripts
+
+**Key Files:**
+- `run_all_tests.py` - Run all unit tests
+- `test_session_manager.py`, `test_adhesion_metrics.py`, `test_peak_force_logger.py` - Unit test suites
+- `test_dlp_simple.py`, `test_sandwich_integration.py` - Integration/hardware tests
+- `README.md`, `TESTING_GUIDE.md` - Test documentation
+
+### `/documentation/` (guides and references)
 **Purpose**: All project documentation, guides, and status updates
 
 **User Guides:**
@@ -118,7 +135,8 @@ See: `documentation/QUICK_REFERENCE_CARD.md`
 
 ### 2. Processing Test Data (New)
 ```bash
-python batch_processors\batch_process_universal.py "C:\path\to\test\data"
+# From project root
+python batch_processors\batch_process_universal.py "path\to\test\data"
 ```
 See: `documentation/UNIVERSAL_PROCESSOR_GUIDE.md`
 
@@ -215,10 +233,15 @@ python post-processing\process_single_v4_folder.py "folder_path"
   ```
 
 **If you have bookmarks or shortcuts:**
-- Update paths to reflect new locations
+- Update paths to reflect new locations (project root: **Prince_CurrentWorkingVersion**)
 - Main application still at root: `Prince_Segmented.py`
+
+### Other directories
+- **`archive/`** - Obsolete modules (`obsolete_modules_jan2026/`), unused modules, and `legacy_docs/`
+- **`PatternMode_Archive/`** - Archived pattern-mode and DLP sequence code (e.g. `Prince_PatternMode.py`)
+- **`RED_PotentialUpgradeScript/`** - RED lab force-sensing upgrade scripts and demos (separate from main app)
 
 ---
 
-**Last Updated**: November 28, 2025  
+**Last Updated**: February 2026  
 **Organization**: Cheng Sun Lab

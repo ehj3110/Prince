@@ -159,6 +159,12 @@ class PeakForceLogger:
         
         # Format area message (conditional must be outside format specifier)
         area_msg = f"{self.current_cross_sectional_area_mm2:.4f}mm²" if self.current_cross_sectional_area_mm2 is not None else "N/A"
+        
+        # Detect continuous motion mode (overstep=0)
+        if z_peel_peak is not None and z_return_pos is not None:
+            if abs(z_peel_peak - z_return_pos) < 0.001:  # Within 1 micron
+                print(f"PFL: Continuous motion mode detected (overstep=0) - no position filtering for layer {layer_number}")
+        
         print(f"PFL: Started monitoring layer {layer_number} (peel: {z_peel_peak}mm, return: {z_return_pos}mm, area: {area_msg})")
     
     def _calculate_cross_sectional_area(self, image_path):
@@ -273,8 +279,19 @@ class PeakForceLogger:
             self._data_buffer.append((timestamp, position, force))
 
             # For plot shading - only store data within peel range
+            # Skip position filtering if z_peel_peak == z_return_pos (continuous motion mode with overstep=0)
             if position is not None and force is not None:
-                if self.z_peel_peak_mm is not None and self.z_return_pos_mm is not None:
+                # Check if this is continuous motion mode (peel peak == return pos)
+                is_continuous_mode = (self.z_peel_peak_mm is not None and 
+                                     self.z_return_pos_mm is not None and 
+                                     abs(self.z_peel_peak_mm - self.z_return_pos_mm) < 0.001)  # Within 1 micron
+                
+                if is_continuous_mode:
+                    # Continuous motion mode: Include ALL data (no position filtering)
+                    self.plot_time_data.append(timestamp)
+                    self.plot_force_data.append(force)
+                elif self.z_peel_peak_mm is not None and self.z_return_pos_mm is not None:
+                    # Standard mode: Filter by position range
                     # Check if position is within peel range
                     in_peel_range_up = (self.z_peel_peak_mm <= self.z_return_pos_mm and 
                                        self.z_peel_peak_mm <= position <= self.z_return_pos_mm)

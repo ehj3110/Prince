@@ -48,12 +48,14 @@ Ensure all required libraries (Tkinter, OpenCV, Zaber-Motion, Phidget22, etc.) a
 
 ### Directory Structure
 ```
-Prince_Segmented_20250926/
+Prince_CurrentWorkingVersion/
 ├── Prince_Segmented.py          # Main printing application
+├── README.md                    # This file - project overview
 ├── tests/                       # Test scripts (organized Jan 2026)
-│   ├── test_dlp_simple.py              # DLP hardware tests
-│   ├── test_sandwich_integration.py    # Integration tests
-│   └── README.md                       # Test documentation
+│   ├── run_all_tests.py               # Unit test runner
+│   ├── test_dlp_simple.py             # DLP hardware tests
+│   ├── test_sandwich_integration.py   # Integration tests
+│   └── README.md                      # Test documentation
 ├── batch_processors/            # Batch data processing scripts
 │   ├── batch_process_universal.py    # Universal processor (recommended)
 │   ├── batch_process_v4_data.py      # Legacy V4 processor
@@ -61,20 +63,32 @@ Prince_Segmented_20250926/
 │   └── README.md                     # Batch processor guide
 ├── support_modules/             # Core libraries and utilities
 │   ├── SessionManager.py              # Session management (Jan 2026)
-│   ├── adhesion_metrics_calculator.py  # Unified adhesion analysis
-│   ├── ForceGaugeManager.py           # Force gauge control
+│   ├── adhesion_metrics_calculator.py # Unified adhesion analysis
+│   ├── ForceGaugeManager.py          # Force gauge control
 │   ├── AutoHomeRoutine.py             # Homing sequences
+│   ├── ImageModificationWindow.py    # SLA image pre-processing GUI
+│   ├── DefinitionsWindow.py          # In-app parameter reference
+│   ├── image_modification/           # Image processing pipeline modules
 │   └── ...
+├── ImageModificationGUI_export/  # Standalone image processing tool (printer computer)
+│   ├── ImageModificationGUI.exe       # Self-contained executable (no Python needed)
+│   ├── README.md                      # Usage guide
+│   └── support_modules/               # Bundled processing modules (no feature_depth)
 ├── post-processing/             # Analysis and plotting tools
 │   ├── master_plotter.py              # Master comparison plots
 │   ├── analysis_plotter.py            # Individual analysis plots
-│   ├── hybrid_adhesion_plotter.py     # Hybrid analysis system
+│   ├── hybrid_adhesion_plotter.py      # Hybrid analysis system
 │   └── ...
 ├── ui_components/               # GUI components
+├── calibration_modules/         # Camera and ChArUco calibration
 ├── archive/                     # Archived and obsolete files
 │   ├── obsolete_modules_jan2026/      # Superseded modules
-│   └── ...
+│   └── legacy_docs/                   # Archived documentation
+├── PatternMode_Archive/          # Archived pattern-mode / DLP sequence code
 └── documentation/               # All documentation and guides
+    ├── README.md                      # Documentation index
+    ├── README_COMPREHENSIVE.md        # Full project overview
+    ├── PROJECT_ORGANIZATION.md        # Layout and where to find things
     ├── UNIVERSAL_PROCESSOR_GUIDE.md   # Universal processor guide
     ├── TESTING_GUIDE.md               # Testing and validation
     ├── DEPLOYMENT_GUIDE.md            # Setup instructions
@@ -89,12 +103,37 @@ Prince_Segmented_20250926/
 - **Post-Processing**: [documentation/POST_PROCESSING_GUIDE.md](documentation/POST_PROCESSING_GUIDE.md) - Batch processing, analysis tools, master plots, statistical analysis
 
 **Additional Resources:**
-- **Troubleshooting**: See [TroubleshootingIdeas.md](TroubleshootingIdeas.md)
-- **GitHub Setup**: See [GITHUB_SETUP_GUIDE.md](GITHUB_SETUP_GUIDE.md)
-- **Deployment**: See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+- **Full project overview**: [documentation/README_COMPREHENSIVE.md](documentation/README_COMPREHENSIVE.md) - Architecture, data pipeline, and detailed reference
+- **Project layout**: [documentation/PROJECT_ORGANIZATION.md](documentation/PROJECT_ORGANIZATION.md) - Directory structure and where to find things
+- **Troubleshooting**: See [documentation/TroubleshootingIdeas.md](documentation/TroubleshootingIdeas.md)
+- **GitHub Setup**: See [documentation/GITHUB_SETUP_GUIDE.md](documentation/GITHUB_SETUP_GUIDE.md)
+- **Deployment**: See [documentation/DEPLOYMENT_GUIDE.md](documentation/DEPLOYMENT_GUIDE.md)
 - **Legacy Documentation**: See [archive/legacy_docs/](archive/legacy_docs/) (archived Dec 2025)
 
 ## Recent Changes
+
+### March 2026 - Image Modification GUI Overhaul
+
+**Scattering Compensation (SC) — full rewrite:**
+- Fixed the core algorithm: changed from `blurred − original` to `original − blurred` with inverted normalisation, matching the Edge Enhancement signal direction. This produces a correct boundary→dim interior→bright gradient.
+- Unified the SC parameter API with Edge Enhancement: replaced the single `strength` parameter with explicit `min_val` / `max_val` intensity controls.
+
+**Falloff parameter added to Edge Enhancement and Scattering Compensation:**
+- New `Falloff` field in the GUI for both EE and SC controls the Gaussian kernel size independently of `Blur` (sigma).
+- `Falloff = 0` auto-computes as `4×Blur+1` (preserves old default behaviour).
+- Setting a smaller Falloff with a large Blur prevents the kernel from spanning across multiple struts in dense lattice geometries, eliminating cross-strut interference artifacts.
+- Propagated through `scattering_compensation.py`, `processor.py`, and both `ImageModificationWindow.py` files (local + export).
+
+**Export packaging — `ImageModificationGUI_export/`:**
+- Feature Depth Correction removed from the export GUI (experimental, local only).
+- "Padding Normalization" section renamed to "Image Padding".
+- `DefinitionsWindow.py` added to export `support_modules/` so the Definitions tab appears on the printer computer.
+- Standalone `ImageModificationGUI.exe` built with PyInstaller — no Python installation required on the printer computer.
+- PIL/Pillow import made lazy (deferred until first image display) to fix a PyInstaller initialisation ordering bug that caused the "Install Pillow" message.
+- `build_temp/`, `__pycache__/`, and orphaned `feature_depth.py` removed from export folder.
+
+**DefinitionsWindow updates:**
+- Added `Falloff` parameter documentation in both the Edge Enhancement and Scattering Compensation tabs, with worked examples for lattice use cases.
 
 ### January 2026 - Code Cleanup & Modularization
 - **SessionManager Module**: Extracted session management logic from `Prince_Segmented.py` into new `SessionManager.py` module

@@ -2,8 +2,19 @@
 
 This directory contains the complete analysis pipeline for processing print data after (or during) printing. The tools here transform raw CSV data into adhesion metrics, visualizations, and statistical summaries.
 
+## Directory Organization
+
+**Current Status (February 26, 2026):** Streamlined to focus on core pipeline modules
+
+**Active Scripts (17):**
+- **Core Pipeline** (12): RawData_Processor, post_print_analyzer, analysis_plotter, master_plotter, statistical_analysis, run_complete_analysis, run_scaling_analysis, data_validator, generate_analysis_report, generate_summary_table, summary_plot_generator, advanced_metrics
+- **Specialized Tools** (5): material_stiffness_analyzer, stiffness_scaling_analyzer, critical_dimension_analysis, continuous_motion_analyzer, batch_continuous_motion_processor
+
+**Archived Scripts:** One-time analysis and experimental scripts moved to `../archive/post_processing_analysis_scripts/` to reduce context window size. See archive README for details on 12 archived scripts.
+
 ## Table of Contents
 
+- [Directory Organization](#directory-organization)
 - [Pipeline Overview](#pipeline-overview)
 - [Core Modules](#core-modules)
 - [Workflow](#workflow)
@@ -765,6 +776,7 @@ For questions about post-processing:
 
 ---
 
-**Last Updated:** February 2, 2026  
-**Module Count:** 12 active analysis modules  
+**Last Updated:** February 26, 2026  
+**Active Modules:** 17 (12 core + 5 specialized)  
+**Archived Modules:** 12 (see `../archive/post_processing_analysis_scripts/`)  
 **Python Version:** 3.8+

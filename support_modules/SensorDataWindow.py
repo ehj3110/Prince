@@ -1105,7 +1105,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # they would need to toggle it again to re-create the manual PFL.
             # This behavior is acceptable for now.
 
-    def update_auto_logger_current_layer(self, layer_number, z_position_mm, image_path=None):
+    def update_auto_logger_current_layer(self, layer_number, z_position_mm, image_path=None, z_peel_peak_mm=None, z_return_pos_mm=None):
         """
         Called by Prince_Segmented to update the AutomatedLayerLogger with the current layer and Z pos.
         
@@ -1113,6 +1113,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
             layer_number: Current layer number
             z_position_mm: Current Z position in mm
             image_path: Optional path to the PNG image for this layer (for cross-sectional area calculation)
+            z_peel_peak_mm: Peak peel position in mm (for PeakForceLogger)
+            z_return_pos_mm: Return position in mm (for PeakForceLogger)
         """
         if self.automated_layer_logger and self.auto_log_enabled_var.get():
             try:
@@ -1134,10 +1136,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     self.update_main_status(f"AutoPFL: Layer {layer_number-1} force data saved.")
                 
                 # Start monitoring for the new layer
-                # Note: For peeling operations, you may need to define peel start/end positions
-                # For now, using generic positions - you may need to adjust based on your setup
-                peel_start_z = z_position_mm + 1.0  # Example: 1mm above current position
-                peel_end_z = z_position_mm + 3.0    # Example: 3mm above current position
+                # Use actual peel positions if provided, otherwise fallback to generic positions
+                if z_peel_peak_mm is not None and z_return_pos_mm is not None:
+                    peel_start_z = z_peel_peak_mm
+                    peel_end_z = z_return_pos_mm
+                else:
+                    # Fallback to generic positions (backward compatibility)
+                    peel_start_z = z_position_mm + 1.0  # Example: 1mm above current position
+                    peel_end_z = z_position_mm + 3.0    # Example: 3mm above current position
                 
                 self.automated_peak_force_logger.start_monitoring_for_layer(
                     layer_number, 

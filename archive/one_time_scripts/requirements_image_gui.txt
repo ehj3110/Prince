@@ -1,0 +1,6 @@
+# Requirements for ImageModificationWindow standalone GUI
+# Install with: pip install -r requirements_image_gui.txt
+
+opencv-python>=4.5.3
+numpy>=1.21.0
+Pillow>=8.0.0

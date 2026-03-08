@@ -1,5 +1,28 @@
 # Changelog - Prince 3D Printer Control Software
 
+## [2026-03-07] - Image Modification GUI Overhaul
+
+### Scattering Compensation — algorithm rewrite
+- **Bug fix**: SC now computes `original − blurred` (same direction as EE) with *inverted* normalisation, so boundary pixels dim and interior stays bright. Previous `blurred − original` approach gave the wrong gradient direction.
+- **API unification**: Replaced single `strength` param with `min_val` / `max_val` matching the EE interface.
+
+### Falloff parameter — EE and SC
+- New `Falloff` GUI field for both Edge Enhancement and Scattering Compensation.
+- Controls Gaussian kernel size independently of `Blur` (sigma).
+- `Falloff = 0` auto-computes as `4×Blur+1` (unchanged default behaviour).
+- Smaller Falloff + large Blur avoids cross-strut blur overlap in dense lattice geometries.
+- Updated: `scattering_compensation.py` (×2), `processor.py` (×2), `ImageModificationWindow.py` (×2), `DefinitionsWindow.py`.
+
+### Export packaging (`ImageModificationGUI_export/`)
+- Feature Depth Correction removed (experimental, local only).
+- "Padding Normalization" → "Image Padding" label rename.
+- `DefinitionsWindow.py` copied into export so the Definitions tab is available on the printer computer.
+- `ImageModificationGUI.exe` built with PyInstaller — fully self-contained, no Python needed.
+- PIL/Pillow import made lazy to fix PyInstaller boot-time initialisation bug (caused false "Install Pillow" message).
+- Cleaned: `build_temp/`, `__pycache__/`, orphaned `feature_depth.py` removed from export folder.
+
+---
+
 ## [2025-10-05] - Hybrid Signal Filtering Integration
 
 ### 🎯 Signal Processing Enhancement

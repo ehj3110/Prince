@@ -1,0 +1,291 @@
+================================================================================
+DEFINITION INPUT FILE
+Edit this file to update the Feature Definitions window content.
+Each section maps directly to a tab in DefinitionsWindow.py.
+After editing, update the corresponding _para() / _param() strings in
+support_modules/DefinitionsWindow.py to match.
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+TAB: Gaussian σ
+────────────────────────────────────────────────────────────────────────────────
+
+SECTION: What is a Gaussian?
+  A Gaussian (bell curve) is a smooth, symmetric function centred at zero.
+  In image processing it describes how an operation's influence falls off with
+  distance — strong at the centre, tapering exponentially to zero at the tails.
+  It is the natural model for optical blur, LED scatter, and many other
+  physical spreading phenomena.
+
+SECTION: What does σ control?
+  σ (sigma) is the standard deviation of the Gaussian. It sets the WIDTH of
+  the bell:
+    • 68 % of the area falls within ±1σ of centre.
+    • 95 % falls within ±2σ.
+    • 99.7 % falls within ±3σ.
+
+  A small σ produces a narrow, sharp effect. A large σ produces a broad,
+  gradual effect. In all features, σ is given in pixels; multiply by 4 µm
+  to get the physical distance.
+
+
+────────────────────────────────────────────────────────────────────────────────
+TAB: Edge Enhancement
+────────────────────────────────────────────────────────────────────────────────
+
+SECTION: Purpose
+  The projection will naturally have a slight Gaussian
+  blur that softens part boundaries and makes the effective intensity lower. 
+  Edge Enhancement counteracts this by boosting intensity at the part 
+  boundary so that the final print is closer to the intended shape. 
+
+SECTION: How it works
+  A Gaussian-blurred copy of the slice image is subtracted from the original.
+  The result isolates the high-frequency edge signal. That signal is then
+  rescaled to the [Min, Max] intensity range. Black pixels are untouched.
+
+  Formula: Signal = Original − GaussianBlur(Original, σ = Blur)
+
+PARAMETERS:
+  Enable:
+    Toggles the feature on/off. Leave off if your optical system is well
+    characterised or if edge ringing is visible.
+
+  Blur (σ):
+    Gaussian sigma controlling the width of the enhanced edge band.
+    This is effectively how much of the edge should be "sharp". Smaller parts will require
+    a smaller sigma value so that the edges are still more pronounced. 
+    A larger part will need a higher sigma value, as well. 
+      • σ = 10 px → 40 µm band  (sharp optics)
+      • σ = 25 px → 100 µm band  (default)
+      • σ = 50 px → 200 µm band  (heavy optical blur)
+    Larger values produce a wider, more pronounced edge ring.
+    Too large → visible bright halo and the edges cure when the 
+    bulk part does not; too small → under-correction and it has no effect. 
+
+  Min (100):
+    Minimum output intensity for non-zero pixels after normalisation.
+    Keeps dark areas above the resin cure threshold.
+    Increase if thin features are disappearing.
+
+  Max (255):
+    Maximum output intensity. Normally 255 (full exposure).
+    Will almost never change this.
+
+SECTION: Interaction with other features
+  Edge Enhancement runs FIRST in the pipeline. Its output feeds directly
+  into Global Enhancement and Scattering Compensation. 
+
+
+────────────────────────────────────────────────────────────────────────────────
+TAB: Global Enhancement
+────────────────────────────────────────────────────────────────────────────────
+
+SECTION: Purpose
+  For continous printing, the resin that flows to the center of the part will 
+  partially cure as it passes under other sections of already curing part. 
+  Global Enhancement applies gaussian "mask" that compensates for this by 
+  lowering the grayscale of the image the closer it is to the center. That way, it tries to 
+  ensure dosage delivery is equivalent across the field. 
+
+SECTION: How it works
+  A 2D vignette (correction) map is built: it equals Globe ratio at the image
+  centre and ramps up to 1.0 at the part boundary. Every pixel is multiplied
+  by its map value. Centre pixels are dimmed; edge pixels are left unchanged.
+  Asymmetric mode adapts the map per quadrant to handle non-circular
+  non-uniformity.
+
+PARAMETERS:
+  Enable:
+    Toggles the feature on/off.
+
+  Globe ratio (0.8):
+    Multiplier applied at the very centre of the image (relative to 1.0 at
+    the part edge). 0.8 means the centre pixels receive 80 % of the edge
+    exposure. Lower values = stronger centre dimming.
+      • 0.7 → mild correction (Higher UV-absorber content or not very dense features)
+      • 0.25 → strong correction (Scattering resin, low UV-Abs concentration, very dense features)
+
+  Sigma (6.0):
+    Controls how gradually the map transitions from the centre value to 1.0.
+    This is NOT a pixel sigma — it is a divisor applied to the image diagonal.
+    Larger Sigma value → faster transition (steeper gradient, correction
+    concentrated near the centre).
+    Smaller Sigma value → gentler, broader gradient.
+      • Sigma = 4 → steep, correction only within the inner ~25 % of the field
+      • Sigma = 8 → gentle, correction spread across the whole field
+
+  Asymmetric:
+    Splits the image into four quadrants (N/E/S/W). Each quadrant's
+    furthest white pixel defines its own radial extent, allowing the map to
+    compensate for directionally non-symmetric UV distributions (e.g., from a
+    rectangular or off-axis lamp).
+
+  Blend (°):
+    Angular blending width between quadrant boundaries in asymmetric mode.
+    A larger angle (e.g., 30°) gives smoother quadrant transitions at the
+    cost of reducing the per-quadrant independence. 20° is a good default.
+
+SECTION: Calibration tip
+  Print a dense gyroid scaffold with a diameter about the size of the print window. 
+  Ensure the print parameters are set such that the edges of the scaffold are the 
+  approximate cure width and height that you want. 
+  Measure the ratio of the scaffold's diameter to the diameter of 
+  the overcured section in the center of the scaffold. This informs the Globe value to
+  use. 
+
+
+────────────────────────────────────────────────────────────────────────────────
+TAB: Image Padding
+────────────────────────────────────────────────────────────────────────────────
+
+SECTION: Purpose
+  Adds a black frame between each layer to ensure resin can reflow adequately.
+
+SECTION: How it works
+  For each source image (e.g., '5.png') a companion fully black image
+  ('5_1.png') is written alongside it in the output folder. The output folder
+  will therefore contain twice as many files as the input.
+
+
+────────────────────────────────────────────────────────────────────────────────
+TAB: Feature Depth Correction
+────────────────────────────────────────────────────────────────────────────────
+
+SECTION: Purpose
+  In lattice or micro-channel geometries, fresh resin must flow through narrow
+  black channels to reach the white pixels before each exposure. As it travels,
+  scattered UV from adjacent white pixels partially pre-cures the resin.
+  Pixels deep inside the lattice receive 'stale' (partially cured) resin,
+  leading to overcuring and closed channels. Feature Depth Correction dims
+  those interior pixels proportionally to how stale their resin supply is.
+
+  ⚠ This is an experimental feature — present on this machine but NOT
+  included in the export package. Results are geometry-dependent; always
+  validate on a test print before production use.
+
+SECTION: Distance mode (fast)
+  Estimates resin staleness from pure geometry:
+    1. Classify black pixels as open channels (connected to the outer resin
+       bath) or enclosed pores (sealed inside the part).
+    2. Find the 'outer resin pool' — the first ring of open-channel pixels
+       immediately outside the part perimeter. These have depth = 0.
+    3. Compute Euclidean distance from every open-channel pixel to the nearest
+       outer-pool pixel. Deeper channels accumulate more depth.
+    4. Spread channel depth into the adjacent white pixels via Gaussian blur.
+    5. Effective depth = (distance to nearest channel) + (channel depth).
+    6. Normalise and apply the dimming multiplier.
+
+SECTION: Pressure / PDE mode (physics model)
+  Solves the 2D Poisson equation  ∇·(K ∇P) = −Q  for resin pressure:
+    • K = Conductivity in open channels  (fast resin flow)
+    • K = 1 in solid pixels              (slow seepage)
+    • Q = Sink strength at white pixels  (resin consumption)
+    • P = 0 at the outer pool            (Dirichlet boundary condition)
+
+  High P = high vacuum = more effort to pull fresh resin to that point = more
+  pre-curing. Unlike distance mode, this captures channel WIDTH effects: a
+  narrow channel resists flow more than a wide one.
+
+PARAMETERS:
+  Enable:
+    Toggles Feature Depth Correction on/off.
+
+  Strength (0.4):
+    Fractional dimming applied at the deepest pixel. A pixel at normalised
+    depth 1.0 is multiplied by (1 − Strength). Strength = 0.4 → deepest
+    pixel retains 60 % intensity. Start low (0.2–0.4) and increase until
+    channels are open in the print.
+
+  Smooth (px):
+    Gaussian sigma for smoothing the final depth map. Removes sharp
+    ridges along the medial axis of struts. Default 10 px = 40 µm.
+
+  Mode:
+    Distance = fast, geometry-based.
+    Pressure/PDE = physics model; slower but captures channel width and
+    local resin density effects.
+
+  Channel decay (px) — distance mode:
+    Controls how far the 'fresh resin influence' spreads from the outer pool
+    into the channels before it is considered stale. Default 50 px = 200 µm.
+    Increase for coarser lattices; decrease for very fine channels.
+
+  Conductivity — pressure mode:
+    Ratio of channel conductivity to solid conductivity. Higher values
+    (100–500) make the gradient steeper: the interior starvation is more
+    pronounced relative to the outer edge.
+
+  Sink — pressure mode:
+    Resin consumption rate at white pixels per iteration. Higher values
+    increase the overall pressure magnitude. 0.05–0.2 is a useful range.
+
+
+────────────────────────────────────────────────────────────────────────────────
+TAB: Scattering Compensation
+────────────────────────────────────────────────────────────────────────────────
+
+SECTION: Purpose
+  Highly scattering resins (e.g., filled composites, pigmented materials)
+  laterally scatter UV photons beyond the intended part boundary. This causes
+  overcuring horizontally, and for dense lattices to become solid. 
+  Scattering Compensation pre-dims pixels near the part boundary so that after
+  lateral scatter the net deposited dose is confined to the intended region.
+
+SECTION: How it works
+  This is the mathematical INVERSE of Edge Enhancement:
+
+    Edge Enhancement:  Output = Original − Blur(Original)
+    Scattering Comp:   Output = Blur(Original) − Original
+
+  The result is a Gaussian-shaped DIP at each boundary: the edge pixels are
+  dimmed, the interior pixels are bright, and the transition follows the same
+  Gaussian profile that describes the physical scatter. The output is
+  rescaled so that interior pixels reach Max and boundary pixels fall to
+  (1 − Strength) × Max.
+
+PARAMETERS:
+  Enable:
+    Toggles Scattering Compensation on/off.
+
+  Blur:
+    Gaussian sigma controlling how far inward from the boundary the dimming
+    extends. Set this to the estimated lateral scatter radius of your resin.
+      • Blur = 5  → 20 µm   (low-scatter resin, fine features)
+      • Blur = 15 → 60 µm   (default)
+      • Blur = 25 → 100 µm  (high-scatter filled resin)
+      • Blur = 40 → 160 µm  (strongly scattering composite)
+    The Gaussian profile means the dimming tapers naturally: most
+    correction at the exact boundary, fading to zero approximately 3× Blur
+    (180 µm at default) inward.
+
+  Min (127):
+    Output intensity at the exact part boundary (the darkest output value).
+    Directly analogous to the Min parameter in Edge Enhancement.
+      • Min = 200 → boundary pixels dim to ~78 % (mild)
+      • Min = 127 → boundary pixels dim to ~50 % (default)
+      • Min =  51 → boundary pixels dim to ~20 % (aggressive)
+      • Min =   0 → boundary pixels go fully black
+    Note: if Min is too low, thin features may disappear.
+    Decrease cautiously while monitoring minimum feature width in preview.
+
+  Max (255):
+    Output intensity at the interior of the part (the brightest output value).
+    Normally 255. Matches the Max parameter in Edge Enhancement.
+    Will almost never change this.
+
+SECTION: Relationship to Edge Enhancement
+  Edge Enhancement and Scattering Compensation are conceptually opposite.
+  Using both simultaneously is possible but produces competing effects at the
+  boundary — the net result depends on the relative Blur and Min values.
+  In practice, choose one based on whether your optical system blurs
+  (→ EE) or your resin scatters (→ SC).
+
+SECTION: Tuning workflow
+  1. Print a calibration target with known 200 µm lines and spaces.
+  2. Measure the printed line width under a microscope.
+  3. If printed width > CAD width, decrease Min incrementally.
+  4. Adjust Sigma to match the scatter radius:
+       Sigma ≈ (printed_excess_width / 2) / pixel_pitch.
+     Example: 60 µm excess on each side → Sigma ≈ 60 / 4 = 15 px.

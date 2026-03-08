@@ -70,8 +70,7 @@ class Application():
         """
         Reads the instruction text file and extracts image file paths and printing parameters.
         
-        Pattern Mode format: 7 columns (Layer, File, Thickness, Time, Intensity, Speed, Overstep, Pause)
-        Acceleration is constant (not per-layer).
+        Segmented Mode format: 10 columns (Layer, File, Thickness, Time, Intensity, Speed, Overstep, Acceleration, Pause, Sandwich Speed)
 
         Returns:
             image_list (list): List of image file paths.
@@ -79,8 +78,10 @@ class Application():
             thickness_list (list): List of thickness values per layer.
             step_speed_list (list): List of step speeds per layer.
             overstep_distance_list (list): List of overstep distances per layer.
+            step_type_list (list): List of acceleration values per layer.
             pause_list (list): List of pause times per layer.
             intensity_list (list): List of intensity values per layer.
+            sandwich_speed_list (list): List of sandwich speeds per layer.
         """
 
         print(f"DEBUG: Application.set_image_directory called with path: '{path}'")  # Add this
@@ -106,16 +107,18 @@ class Application():
         thickness_list = []
         step_speed_list = []
         overstep_distance_list = []
+        step_type_list = []
         pause_list = []
         intensity_list = []
+        sandwich_speed_list = []
 
         # Process each line (excluding header)
         for line in lines_full[1:]:
             elements = line.split("\t")  # Use tab as the separator
 
-            # Pattern Mode format: 7 columns
-            if len(elements) < 7:
-                raise ValueError(f"Incorrect format in line: {line}. Expected 7 columns.")
+            # Segmented Mode format: 10 columns
+            if len(elements) < 10:
+                raise ValueError(f"Incorrect format in line: {line}. Expected 10 columns, got {len(elements)}.")
 
             # Extract parameters from columns
             count = elements[0]  # Layer number
@@ -125,7 +128,9 @@ class Application():
             intensity = elements[4]  # Intensity level
             step_speed = elements[5]  # Step speed
             overstep_distance = elements[6]  # Overstep distance
-            pause = elements[7] if len(elements) > 7 else '0'  # Pause time
+            step_type = elements[7]  # Acceleration
+            pause = elements[8]  # Pause time
+            sandwich_speed = elements[9]  # Sandwich speed
 
             # Append extracted values to respective lists
             image_list.append(Path(path) / image_path)
@@ -133,16 +138,19 @@ class Application():
             thickness_list.append(float(thickness))
             step_speed_list.append(float(step_speed))
             overstep_distance_list.append(float(overstep_distance))
+            step_type_list.append(float(step_type))
             pause_list.append(float(pause))
             intensity_list.append(float(intensity))
+            sandwich_speed_list.append(float(sandwich_speed))
 
         # Right before the final return statement in set_image_directory:
         print(f"DEBUG: Application.set_image_directory FINISHING. Image list length: {len(image_list)}")  # Add this
-        # Pattern Mode return: 7 values (no step_type, no sandwich)
+        # Segmented Mode return: 9 values (includes step_type and sandwich_speed)
         return (
             image_list, exposure_time_list, thickness_list,
             step_speed_list, overstep_distance_list,
-            pause_list, intensity_list
+            step_type_list, pause_list, intensity_list,
+            sandwich_speed_list
         )
 
     def generate_debug_txt(self, path='', thickness='5', pause='0', material='1', time='1', intensity='0', base='60'):
@@ -176,11 +184,12 @@ class Application():
             print("The directory does not exist for creating the text file.")
 
     def generate_instructions(self, path='', thickness='5', base='60', time='1', intensity='0',
-                              step_speed='100', overstep_distance='0.1', pause='0'):
+                              step_speed='100', overstep_distance='0.1', step_type='500', 
+                              pause='0', sandwich_speed='100'):
         """
-        Generates a simplified instruction text file for Pattern Mode.
-        Format: 7 columns (filename, exposure, thickness, speed, overstep, pause, intensity)
-        Acceleration is kept constant in GUI, not per-layer.
+        Generates a simplified instruction text file for Segmented Mode.
+        Format: 9 columns (filename, exposure, thickness, speed, overstep, acceleration, pause, intensity, sandwich_speed)
+        step_type parameter represents acceleration (µm/s²).
         """
 
         # Generate the text file name based on the folder name
@@ -196,8 +205,8 @@ class Application():
             print(f"Error: Provided path is not a directory or does not exist: {path}")
             try:
                 with open(txt_path, 'w') as f:
-                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tPause\n')
-                    f.write("0\tERROR_INVALID_PATH\t0\t0\t0\t0\t0\t0\n")  # Indicate error
+                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tAcceleration\tPause\tSandwich Speed\n')
+                    f.write("0\tERROR_INVALID_PATH\t0\t0\t0\t0\t0\t0\t0\t0\n")  # Indicate error
                 print(f"Generated empty/error instruction file: {txt_path}")
             except Exception as e_write:
                 print(f"Could not write to instruction file {txt_path}: {e_write}")
@@ -219,8 +228,8 @@ class Application():
             print(f"No suitable image files found in '{path}' (after excluding 'autologs' and non-image files).")
             try:
                 with open(txt_path, 'w') as f:
-                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tPause\n')
-                    f.write("0\tNO_IMAGES_FOUND\t0\t0\t0\t0\t0\t0\n")  # Indicate no images
+                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tAcceleration\tPause\tSandwich Speed\n')
+                    f.write("0\tNO_IMAGES_FOUND\t0\t0\t0\t0\t0\t0\t0\t0\n")  # Indicate no images
                 print(f"Generated instruction file with no images: {txt_path}")
             except Exception as e_write:
                 print(f"Could not write to instruction file {txt_path}: {e_write}")
@@ -244,7 +253,7 @@ class Application():
 
         try:
             with open(txt_path, 'w') as f:
-                f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tPause\n')
+                f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tAcceleration\tPause\tSandwich Speed\n')
                 layer = 1
 
                 for img_path_obj in image_paths_sorted:  # Iterate through sorted Path objects
@@ -252,7 +261,7 @@ class Application():
 
                     current_exposure_time = base if layer == 1 else time
 
-                    line = f"{str(layer)}\t{str(image_name)}\t{str(thickness)}\t{str(current_exposure_time)}\t{str(intensity)}\t{str(step_speed)}\t{str(overstep_distance)}\t{str(pause)}\n"
+                    line = f"{str(layer)}\t{str(image_name)}\t{str(thickness)}\t{str(current_exposure_time)}\t{str(intensity)}\t{str(step_speed)}\t{str(overstep_distance)}\t{str(step_type)}\t{str(pause)}\t{str(sandwich_speed)}\n"
                     f.write(line)
                     layer += 1
             print(f"Instruction file generated: {txt_path} with {layer - 1} layers.")

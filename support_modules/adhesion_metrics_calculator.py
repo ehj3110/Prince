@@ -30,9 +30,9 @@ class AdhesionMetricsCalculator:
     """
     
     def __init__(self, 
-                 median_kernel=5,
-                 savgol_window=9,
-                 savgol_order=2,
+                 median_kernel=31,
+                 savgol_window=51,
+                 savgol_order=3,
                  baseline_threshold_factor=0.002,
                  min_peak_height=0.01,
                  min_peak_distance=50):
@@ -289,10 +289,21 @@ class AdhesionMetricsCalculator:
     
     def _calculate_baseline(self, smoothed_force: np.ndarray, prop_end_idx: int) -> float:
         """
-        Calculate baseline using force at propagation end point.
-        This is the force registered when crack propagation stops.
+        Calculate baseline using average of at least 10 values near propagation end.
+        Averages over last 20% of data after prop_end_idx (minimum 10 points).
+        This reduces noise in baseline measurement.
         """
-        return smoothed_force[prop_end_idx]
+        # Calculate how many points to average (at least 10, max 20% of remaining data)
+        remaining_points = len(smoothed_force) - prop_end_idx
+        num_points = max(10, min(remaining_points, int(remaining_points * 0.2)))
+        
+        # If not enough points after prop_end, average what we have (at least 1)
+        if remaining_points < num_points:
+            num_points = max(1, remaining_points)
+        
+        # Average the points
+        baseline_values = smoothed_force[prop_end_idx:prop_end_idx + num_points]
+        return np.mean(baseline_values)
     
     def _find_peak_force(self, smoothed_force: np.ndarray) -> Tuple[int, float]:
         """
@@ -367,19 +378,35 @@ class AdhesionMetricsCalculator:
         Used for baseline calculation in the new force threshold method.
         Changed from 80% to 95% to ensure full separation on short peels (<1mm).
         
+        For continuous motion (overstep=0): Position stops changing but force continues
+        to relax. In this case, use the end of the data array instead of motion end.
+        
         Args:
             peak_idx: Index of peak force
             positions: Position array
-            motion_end_idx: End of motion segment
+            motion_end_idx: End of motion segment (ignored for continuous motion)
             
         Returns:
-            Index at 95% lift point
+            Index at 95% lift point (or end of data for continuous motion)
         """
         search_end_abs = motion_end_idx if motion_end_idx is not None else len(positions) - 1
         
         try:
-            # Find the minimum position (maximum travel point)
-            travel_positions = positions[peak_idx:search_end_abs]
+            # Check if this is continuous motion (position stops changing)
+            # Sample last 20% of data to see if position is stable
+            sample_start = max(peak_idx, search_end_abs - max(100, int(search_end_abs * 0.2)))
+            sample_positions = positions[sample_start:search_end_abs + 1]
+            
+            if len(sample_positions) > 5:
+                position_range = np.max(sample_positions) - np.min(sample_positions)
+                # If position varies less than 0.05mm in last 20%, it's continuous motion (pause phase)
+                if position_range < 0.05:
+                    # Continuous motion detected - use end of data array as baseline point
+                    print(f"  Continuous motion detected (position stable: {position_range:.4f}mm range)")
+                    return search_end_abs
+            
+            # Standard motion: Find the minimum position (maximum travel point)
+            travel_positions = positions[peak_idx:search_end_abs + 1]
             if len(travel_positions) == 0:
                 return search_end_abs
             
@@ -390,7 +417,7 @@ class AdhesionMetricsCalculator:
             target_position = max_pos - 0.95 * (max_pos - min_pos)
             
             # Find index where position first reaches or passes the 95% point
-            for i in range(peak_idx, search_end_abs):
+            for i in range(peak_idx, search_end_abs + 1):
                 if positions[i] <= target_position:
                     return i
             
@@ -413,12 +440,15 @@ class AdhesionMetricsCalculator:
         Propagation ends when force drops to baseline + 5% of (peak - baseline).
         This is more reliable than derivative methods when force relaxation is very slow.
         
+        For continuous motion (overstep=0): The search continues through the pause phase
+        where the stage is stationary but force continues to relax.
+        
         Args:
             smoothed_force: Smoothed force array
             peak_idx: Index of peak force
             peak_force: Peak force value
-            baseline: Baseline force (calculated at 80% lift point)
-            motion_end_idx: End of motion segment
+            baseline: Baseline force (calculated at 95% lift point or end for continuous)
+            motion_end_idx: End of motion segment (but search continues for continuous motion)
             
         Returns:
             Index where propagation ends
@@ -429,7 +459,8 @@ class AdhesionMetricsCalculator:
             - 5% threshold = 0.95 * 0.05 = 0.0475 N
             - Propagation ends when force drops to 0.05 + 0.0475 = 0.0975 N
         """
-        search_end_abs = motion_end_idx if motion_end_idx is not None else len(smoothed_force) - 1
+        # Use full data array to include pause phase
+        search_end_abs = len(smoothed_force) - 1
         
         # Calculate the threshold: baseline + 5% of corrected peak
         corrected_peak = peak_force - baseline
@@ -440,7 +471,7 @@ class AdhesionMetricsCalculator:
             if smoothed_force[i] <= threshold_force:
                 return i
         
-        # If never drops below threshold, use end of motion
+        # If never drops below threshold, use end of data
         return search_end_abs
 
     def _find_propagation_end_reverse_search(self, 

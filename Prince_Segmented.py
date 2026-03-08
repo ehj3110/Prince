@@ -33,6 +33,7 @@ from tkinter import messagebox
 from SensorDataWindow import SensorDataWindow
 from AutoHomeRoutine import AutoHomer
 from support_modules.ExperimentalConditionsWindow import ExperimentalConditionsWindow
+from support_modules.ImageModificationWindow import ImageModificationWindow
 from support_modules.SandwichRoutines import SandwichRoutineManager
 from support_modules.SessionManager import SessionManager
 from support_modules.motion_controller import MotionController
@@ -117,6 +118,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         self.b_exp_conditions = Button(win, text="Exp. Conditions", command=self.open_exp_conditions_window)
         self.b_exp_conditions.place(x=935, y=60) # Next to sensor panel button
+
+        self.b_image_modification = Button(win, text="Image Modification", command=self.open_image_modification_window)
+        self.b_image_modification.place(x=1070, y=60) # Next to Exp. Conditions
         
         self.b_reload_script = Button(win, text="Reload Script", command=self.reload_script_modules)
         self.b_reload_script.place(x=800, y=95) # Below sensor panel button
@@ -143,6 +147,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         self.sensor_data_window_instance = None
         self.exp_conditions_window = None
+        self.image_modification_window = None
         self.auto_home_thread = None
 
         self.cache_clear_layer = 100000
@@ -1628,11 +1633,19 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     if layer_logger_active or peak_logger_active:
                         # Get image path for cross-sectional area calculation
                         current_image_path = self.image_list[i] if i < len(self.image_list) else None
+                        
+                        # Pass actual peel positions for PeakForceLogger (convert from microns to mm)
+                        # These were calculated earlier in the loop
+                        peel_peak_mm = z_peel_peak / 1000.0 if 'z_peel_peak' in locals() else None
+                        return_pos_mm = z_return_pos / 1000.0 if 'z_return_pos' in locals() else None
+                        
                         # Corrected method name below
                         self.sensor_data_window_instance.update_auto_logger_current_layer(
                             current_layer_num_for_display,
                             z_at_previous_exposure_microns / 1000.0,
-                            image_path=current_image_path
+                            image_path=current_image_path,
+                            z_peel_peak_mm=peel_peak_mm,
+                            z_return_pos_mm=return_pos_mm
                         )
 
                 if actual_layer_pause_s > 0:
@@ -2049,6 +2062,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.update_status_message("Experimental conditions window opened")
         else:
             self.exp_conditions_window.show_window()
+
+    def open_image_modification_window(self):
+        """Open or show the Image Modification window."""
+        if (self.image_modification_window is None or
+                not (hasattr(self.image_modification_window, 'window') and
+                     self.image_modification_window.window.winfo_exists())):
+            self.image_modification_window = ImageModificationWindow(
+                self.win, self.update_status_message, self)
+            self.update_status_message("Image Modification window opened")
+        else:
+            self.image_modification_window.window.lift()
 
     def start_auto_home_sequence(self):
         if self.auto_home_thread and self.auto_home_thread.is_alive():

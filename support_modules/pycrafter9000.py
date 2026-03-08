@@ -48,7 +48,7 @@ def encode(image):
 def encode_custom(image, width, height):
     """
     Encode image with custom dimensions for dual-controller DLP9000.
-    Used for encoding half-width images (1280x1600) for PRIMARY/SECONDARY controllers.
+    Uses Standard RLE (Type 1) for robust, safe encoding.
     
     Args:
         image: numpy array (height, width, 3)
@@ -59,168 +59,107 @@ def encode_custom(image, width, height):
         (bitstring, bytecount): encoded data and size
     """
     
-    ## header creation
-    bytecount=48    
-    bitstring=[]
+    ## Header creation (48 bytes)
+    bytecount = 48    
+    bitstring = []
 
+    # Signature: "Spld"
     bitstring.append(0x53)
     bitstring.append(0x70)
     bitstring.append(0x6c)
     bitstring.append(0x64)
     
-    # Use custom width instead of hardcoded 2560
-    width_bytes=convlen(width,16)
-    width_bytes=bitstobytes(width_bytes)
+    # Width (uint16 little endian)
+    width_bytes = convlen(width, 16)
+    width_bytes = bitstobytes(width_bytes)
     for i in range(len(width_bytes)):
         bitstring.append(width_bytes[i])
 
-    # Use custom height instead of hardcoded 1600
-    height_bytes=convlen(height,16)
-    height_bytes=bitstobytes(height_bytes)
+    # Height (uint16 little endian)
+    height_bytes = convlen(height, 16)
+    height_bytes = bitstobytes(height_bytes)
     for i in range(len(height_bytes)):
         bitstring.append(height_bytes[i])
 
-
-    total=convlen(0,32)
-    total=bitstobytes(total)
+    # Total size (placeholder, filled later)
+    total = convlen(0, 32)
+    total = bitstobytes(total)
     for i in range(len(total)):
         bitstring.append(total[i])        
 
+    # Padding (0xFF * 8)
     for i in range(8):
         bitstring.append(0xff)
 
-    for i in range(4):    ## black curtain
+    # Black curtain (0x00 * 4)
+    for i in range(4):
         bitstring.append(0x00)
 
-    bitstring.append(0x00)
+    bitstring.append(0x00)  # Reserved
 
-    bitstring.append(0x02) ## enhanced rle
+    bitstring.append(0x01)  ## STANDARD RLE (Type 1) - Safer than Enhanced RLE
 
-    bitstring.append(0x01)
+    bitstring.append(0x01)  # Encoding type
 
+    # Padding (0x00 * 21)
     for i in range(21):
         bitstring.append(0x00)
 
-
-
-    n=0
-    i=0
-    j=0
-
-    # RLE compression with dynamic width/height
-    max_lookahead = width - 641  # Keep same ratio as original (2560 - 641 = 1919)
+    ## Standard RLE (Type 1) Encoding Logic
+    # Pack RGB into uint32 for atomic pixel comparison
+    # This prevents the numpy.all() bug and is faster
+    packed_pixels = (image[:,:,0].astype(numpy.uint32) << 16) | \
+                    (image[:,:,1].astype(numpy.uint32) << 8) | \
+                    (image[:,:,2].astype(numpy.uint32))
     
-    while i < height:
-        while j < width:
-            if i>0 and numpy.all(image[i,j,:]==image[i-1,j,:]):
-                while j<width and numpy.all(image[i,j,:]==image[i-1,j,:]):
-                    n=n+1
-                    j=j+1
-
-                bitstring.append(0x00)
-                bitstring.append(0x01)
-                bytecount+=2
-                
-                if n>=128:
-                    byte1=(n & 0x7f)|0x80
-                    byte2=(n >> 7)
-                    bitstring.append(byte1)
-                    bitstring.append(byte2)
-                    bytecount+=2
-                    
-                else:
-                    bitstring.append(n)
-                    bytecount+=1
-                n=0
-
+    for row in range(height):
+        col = 0
+        while col < width:
+            pixel_val = packed_pixels[row, col]
+            run_len = 1
             
-            else:
-                if j<max_lookahead and numpy.all(image[i,j,:]==image[i,j+1,:]):
-                    n=n+1
-                    while j<max_lookahead and numpy.all(image[i,j,:]==image[i,j+1,:]):
-                        n=n+1
-                        j=j+1
-                    if n>=128:
-                        byte1=(n & 0x7f)|0x80
-                        byte2=(n >> 7)
-                        bitstring.append(byte1)
-                        bitstring.append(byte2)
-                        bytecount+=2
-                        
-                    else:
-                        bitstring.append(n)
-                        bytecount+=1
-
-                    bitstring.append(image[i,j-1,0])
-                    bitstring.append(image[i,j-1,1])
-                    bitstring.append(image[i,j-1,2])
-                    bytecount+=3
-                    
-                    j=j+1
-                    n=0
-
-                else:
-                    if j>(max_lookahead-2) or numpy.all(image[i,j+1,:]==image[i,j+2,:]) or numpy.all(image[i,j+1,:]==image[i-1,j+1,:]):
-                        bitstring.append(0x01)
-                        bytecount+=1
-                        bitstring.append(image[i,j,0])
-                        bitstring.append(image[i,j,1])
-                        bitstring.append(image[i,j,2])
-                        bytecount+=3
-                        
-                        j=j+1
-                        n=0
-
-                    else:
-                        bitstring.append(0x00)
-                        bytecount+=1
-
-                        toappend=[]
-
-                        
-                        while numpy.any(image[i,j,:]!=image[i,j+1,:]) and numpy.any(image[i,j,:]!=image[i-1,j,:]) and j<max_lookahead:
-                            n=n+1
-                            toappend.append(image[i,j,0])
-                            toappend.append(image[i,j,1])
-                            toappend.append(image[i,j,2])
-                            j=j+1
-
-                        if n>=128:
-                            byte1=(n & 0x7f)|0x80
-                            byte2=(n >> 7)
-                            bitstring.append(byte1)
-                            bitstring.append(byte2)
-                            bytecount+=2
-                                
-                        else:
-                            bitstring.append(n)
-                            bytecount+=1
-
-                        for k in toappend:
-                            bitstring.append(k)
-                            bytecount+=1
-                        n=0
-        j=0
-        i=i+1
+            # Calculate run length (max 127 for safety)
+            while (col + run_len < width) and \
+                  (packed_pixels[row, col + run_len] == pixel_val) and \
+                  (run_len < 127):
+                run_len += 1
+            
+            # Extract RGB channels (maintain R-G-B order to match existing bit-packer)
+            r = (pixel_val >> 16) & 0xFF
+            g = (pixel_val >> 8) & 0xFF
+            b = pixel_val & 0xFF
+            
+            # Write packet: [Length, R, G, B]
+            bitstring.append(run_len)
+            bitstring.append(r)
+            bitstring.append(g)
+            bitstring.append(b)
+            bytecount += 4
+            
+            col += run_len
+        
+        # End of line marker
         bitstring.append(0x00)
         bitstring.append(0x00)
-        bytecount+=2
+        bytecount += 2
+    
+    # End of image marker
     bitstring.append(0x00)
     bitstring.append(0x01)
-    bitstring.append(0x00)
-    bytecount+=3
+    bytecount += 2
 
-
-    while (bytecount)%4!=0:
+    # Pad to 4-byte boundary
+    while (bytecount) % 4 != 0:
         bitstring.append(0x00)
-        bytecount+=1        
+        bytecount += 1        
 
-    size=bytecount
+    size = bytecount
 
-    total=convlen(size,32)
-    total=bitstobytes(total)
+    # Update total size in header (bytes 8-11)
+    total = convlen(size, 32)
+    total = bitstobytes(total)
     for i in range(len(total)):
-        bitstring[i+8]=total[i]    
+        bitstring[i+8] = total[i]    
 
     return bitstring, bytecount
 

@@ -93,3 +93,7 @@ archive/old_plots/
 
 # Project-specific
 Printing_Logs/
+
+# PyInstaller build output
+ImageModificationGUI_export/*.exe
+ImageModificationGUI_export/build_temp/
