@@ -671,10 +671,91 @@ class AdhesionMetricsCalculator:
         motion_end_idx: Optional[int],
     ) -> int:
         """
-        Legacy two-step Step 1: locate maximum second derivative in a local
-        post-peak window and map its timestamp to global index.
+        Two-step propagation-end detection with threshold guard.
+
+        1) Legacy local-window max second-derivative index (for comparison/fallback).
+        2) Guarded search:
+           a) Find first post-peak index where force drops below
+                T = 0.1 N for typical peaks, and T = 0.1 * peak_force
+                  when peak_force < 0.5 N.
+           b) From that crossing onward, select index of max second derivative.
         """
         search_end_abs = motion_end_idx if motion_end_idx is not None else len(smoothed_force) - 1
+        if search_end_abs <= peak_idx + 3:
+            return search_end_abs
+
+        # Legacy reference index retained for diagnostics and robust fallback behavior.
+        old_prop_end_idx = self._find_propagation_end_two_step_legacy_local_max_second_derivative(
+            times, smoothed_force, peak_idx, search_end_abs
+        )
+
+        peak_force = float(smoothed_force[peak_idx])
+        if peak_force < 0.5:
+            trigger_threshold = 0.1 * peak_force
+        else:
+            trigger_threshold = 0.1
+
+        # Guard step: do not run detector until force has dropped below threshold.
+        crossing_idx = None
+        for idx in range(peak_idx, search_end_abs + 1):
+            if float(smoothed_force[idx]) < trigger_threshold:
+                crossing_idx = idx
+                break
+
+        if crossing_idx is None:
+            new_prop_end_idx = int(np.clip(old_prop_end_idx, peak_idx, search_end_abs))
+            print(
+                f"Old Prop End vs. New Guarded Prop End: "
+                f"{old_prop_end_idx} -> {new_prop_end_idx} "
+                f"(no threshold crossing below T={trigger_threshold:.4f} N)"
+            )
+            return new_prop_end_idx
+
+        detector_force = smoothed_force[crossing_idx:search_end_abs + 1]
+        if len(detector_force) < 3:
+            new_prop_end_idx = int(np.clip(old_prop_end_idx, peak_idx, search_end_abs))
+            print(
+                f"Old Prop End vs. New Guarded Prop End: "
+                f"{old_prop_end_idx} -> {new_prop_end_idx} "
+                f"(insufficient post-threshold detector points)"
+            )
+            return new_prop_end_idx
+
+        second_derivative = np.gradient(np.gradient(detector_force))
+
+        # Smooth derivative trace before peak/crossing search to reduce jitter-driven sign flips.
+        deriv_smooth_window = int(getattr(self, 'prop_end_derivative_smooth_window', 11))
+        if deriv_smooth_window % 2 == 0:
+            deriv_smooth_window += 1
+        deriv_smooth_window = max(5, min(deriv_smooth_window, len(second_derivative)))
+        if deriv_smooth_window % 2 == 0:
+            deriv_smooth_window = max(5, deriv_smooth_window - 1)
+
+        if deriv_smooth_window >= 5 and len(second_derivative) >= deriv_smooth_window:
+            kernel = np.ones(deriv_smooth_window, dtype=float) / float(deriv_smooth_window)
+            second_derivative_smooth = np.convolve(second_derivative, kernel, mode='same')
+        else:
+            second_derivative_smooth = second_derivative
+
+        local_max_idx = int(np.argmax(second_derivative_smooth))
+        new_prop_end_idx = int(np.clip(crossing_idx + local_max_idx, peak_idx, search_end_abs))
+
+        print(
+            f"Old Prop End vs. New Guarded Prop End: "
+            f"{old_prop_end_idx} -> {new_prop_end_idx} "
+            f"(T={trigger_threshold:.4f} N, crossing_idx={crossing_idx})"
+        )
+
+        return new_prop_end_idx
+
+    def _find_propagation_end_two_step_legacy_local_max_second_derivative(
+        self,
+        times: np.ndarray,
+        smoothed_force: np.ndarray,
+        peak_idx: int,
+        search_end_abs: int,
+    ) -> int:
+        """Legacy local-window max second-derivative detector."""
         if search_end_abs <= peak_idx + 3:
             return search_end_abs
 
