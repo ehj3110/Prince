@@ -1,0 +1,123 @@
+# Analysis Configuration File
+# ============================
+# Configure batch processing and advanced analysis settings
+
+# Data paths
+data:
+  folder: V3  # Folder name (V3, V4, etc.) or full path
+  base_directory: "C:/Users/ehunt/OneDrive - Northwestern University/Lab Work/Nissan/Adhesion Tests/SteppedConeTests"
+  output_directory: null  # null = same as data folder
+
+# Processing options
+processing:
+  skip_individual_plots: false
+  csv_only: false
+  parallel_processing: false  # Use multiprocessing (experimental)
+  num_processes: 4  # Number of parallel processes
+
+# Quality control
+quality_control:
+  enabled: true
+  checks:
+    negative_force: true
+    outlier_detection: true  # Flag values >3 std from mean
+    missing_data: true
+    physical_limits:
+      max_force_N: 5.0  # Flag if peak force exceeds this
+      max_work_mJ: 10.0
+      min_stiffness_N_per_mm: 0.0
+  
+# Master plots configuration
+plots:
+  dpi: 300
+  figure_size: [16, 12]
+  
+  # Define which master plots to generate
+  master_plots:
+    - name: "MASTER_area_analysis.png"
+      title: "Master Area Analysis"
+      metrics:
+        - [peak_force_N, "Peak Force (N)"]
+        - [work_of_adhesion_mJ, "Work of Adhesion (mJ)"]
+        - [peel_distance_mm, "Peel Distance (mm)"]
+        - [peak_retraction_force_N, "Peak Retraction Force (N)"]
+      apply_abs: [peel_distance_mm]
+    
+    - name: "MASTER_Modified_area_analysis.png"
+      title: "Master Area Analysis - Modified"
+      metrics:
+        - [peak_force_N, "Peak Force (N)"]
+        - [work_of_adhesion_mJ, "Work of Adhesion (mJ)"]
+        - [peel_distance_mm, "Peel Distance (mm)"]
+        - [total_peel_time_s, "Total Peel Time (s)"]
+      apply_abs: [peel_distance_mm]
+    
+    - name: "MASTER_distance_analysis.png"
+      title: "Master Distance Analysis"
+      metrics:
+        - [distance_to_peak_mm, "Pre-Initiation Distance (mm)"]
+        - [propagation_distance_mm, "Propagation Distance (mm)"]
+      apply_abs: [distance_to_peak_mm, propagation_distance_mm]
+    
+    - name: "MASTER_stiffness_analysis.png"
+      title: "Master Stiffness Analysis"
+      metrics:
+        - [effective_stiffness_N_per_mm, "Effective Stiffness (N/mm)"]
+      apply_abs: []
+
+# Advanced analysis options
+advanced_analysis:
+  normalized_metrics:
+    enabled: true
+    metrics:
+      - name: adhesion_strength_kPa
+        formula: "peak_force_N / area_mm2 * 1000"
+        label: "Adhesion Strength (kPa)"
+      
+      - name: work_per_area_mJ_per_mm2
+        formula: "work_of_adhesion_mJ / area_mm2"
+        label: "Work per Area (mJ/mm²)"
+      
+      - name: stiffness_per_area_MPa
+        formula: "effective_stiffness_N_per_mm / area_mm2"
+        label: "Stiffness per Area (MPa)"
+  
+  scaling_analysis:
+    enabled: true
+    reference_metric: peak_force_N
+    independent_var: area_mm2
+    fit_power_law: true  # Fit Force = k * Area^n
+  
+  statistical_tests:
+    enabled: true
+    alpha: 0.05  # Significance level
+    tests:
+      - anova  # Compare all conditions
+      - pairwise_ttest  # Pairwise comparisons
+    metrics_to_test:
+      - peak_force_N
+      - work_of_adhesion_mJ
+      - adhesion_strength_kPa
+  
+  phase_diagram:
+    enabled: false  # Enable when you have parameter sweeps
+    x_axis: gap_mm
+    y_axis: speed_um_s
+    color_by: work_of_adhesion_mJ
+    size_by: area_mm2
+  
+  feature_extraction:
+    enabled: false  # Requires raw force curves (not just metrics)
+    features:
+      - rise_time
+      - fall_time
+      - asymmetry
+      - peak_sharpness
+
+# Reporting
+report:
+  generate_pdf: true
+  include_plots: true
+  include_statistics: true
+  include_qc_summary: true
+  output_name: "Analysis_Report.pdf"
