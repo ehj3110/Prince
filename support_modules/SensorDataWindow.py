@@ -26,6 +26,7 @@ from AutomatedLayerLogger import LayerLogger # Import LayerLogger
 from PeakForceLogger import PeakForceLogger # Import the logger
 from datetime import datetime # Add this import
 import datetime # Ensure datetime is imported
+import shutil
 import os # Ensure os is imported
 import tkinter as tk # Ensure tkinter is imported as tk for tk.DISABLED
 
@@ -514,17 +515,27 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # Path for logging_windows.csv
             logging_windows_csv_path = os.path.join(self.date_specific_log_dir_for_windows_file, "logging_windows.csv")
 
-            # Create logging_windows.csv with header if it doesn't exist
+            # If no file exists for today, check for a master template in the
+            # main Printing_Logs folder and copy it; otherwise create an empty one.
             if not os.path.exists(logging_windows_csv_path):
+                master_path = os.path.join(printing_logs_base_dir, "logging_windows.csv")
                 try:
-                    with open(logging_windows_csv_path, 'w', newline='') as f:
-                        writer = csv.writer(f)
-                        writer.writerow(["StartLayer", "EndLayer"])
-                    self.update_main_status(f"Created: {os.path.basename(logging_windows_csv_path)} in {os.path.basename(self.date_specific_log_dir_for_windows_file)}")
-                except IOError as e:
+                    if os.path.exists(master_path):
+                        shutil.copy2(master_path, logging_windows_csv_path)
+                        self.update_main_status(
+                            f"Copied master logging_windows.csv to {os.path.basename(self.date_specific_log_dir_for_windows_file)}"
+                        )
+                    else:
+                        with open(logging_windows_csv_path, 'w', newline='') as f:
+                            writer = csv.writer(f)
+                            writer.writerow(["StartLayer", "EndLayer"])
+                        self.update_main_status(
+                            f"Created: {os.path.basename(logging_windows_csv_path)} in {os.path.basename(self.date_specific_log_dir_for_windows_file)}"
+                        )
+                except (IOError, OSError) as e:
                     self.update_main_status(f"ERROR creating {os.path.basename(logging_windows_csv_path)}: {e}", error=True)
                     self.current_logging_windows_file = None
-                    self.date_specific_log_dir_for_windows_file = None # Invalidate path if crucial file fails
+                    self.date_specific_log_dir_for_windows_file = None
                     self.active_logging_windows_filepath_var.set("Error creating windows file.")
                     if hasattr(self, 'btn_add_window_to_file'):
                         self.btn_add_window_to_file.config(state=tk.DISABLED)
@@ -841,6 +852,23 @@ Evan Jones, evanjones2026@u.northwestern.edu
         else:
             self.start_live_readout()
 
+    def _get_sampling_rate_ms(self, normalize_entry=False):
+        sampling_rate_raw = self.sampling_rate_entry.get()
+        sampling_rate_str = sampling_rate_raw.strip()
+
+        if not sampling_rate_str:
+            raise ValueError("Sampling rate is empty")
+
+        sampling_rate = int(sampling_rate_str)
+        if sampling_rate <= 0:
+            raise ValueError("Sampling rate must be positive")
+
+        if normalize_entry and sampling_rate_raw != sampling_rate_str:
+            self.sampling_rate_entry.delete(0, tk.END)
+            self.sampling_rate_entry.insert(0, sampling_rate_str)
+
+        return sampling_rate
+
     def start_live_readout(self):
         try:
             self.last_y_rescale_time = time.time() # Set/reset last rescale time
@@ -850,11 +878,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.plot_data_y_force.clear()
             self.plot_start_time = time.time() # Set/reset plot start time
 
-            sampling_rate_str = self.sampling_rate_entry.get()
-            if not sampling_rate_str.isdigit() or int(sampling_rate_str) <= 0:
+            try:
+                sampling_rate = self._get_sampling_rate_ms(normalize_entry=True)
+            except ValueError:
                 messagebox.showerror("Error", "Sampling rate must be a positive integer.", parent=self.sensor_window)
                 return
-            sampling_rate = int(sampling_rate_str)
 
             # Synchronize force gauge data interval with sampling rate
             if self.force_gauge_manager:
@@ -883,8 +911,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.is_live_readout_enabled = True
             self.b_live_readout.config(text="Stop Live Readout")
             self.update_plot() # Start the plot update loop
-        except ValueError: # Should be caught by isdigit check now
-            messagebox.showerror("Error", "Invalid sampling rate. Please enter a number.", parent=self.sensor_window)
         except Exception as e:
             print(f"Error starting live readout: {e}")
             traceback.print_exc()
@@ -996,7 +1022,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # Optionally, update a status bar or show a non-modal error
         finally:
             if self.is_live_readout_enabled and self.sensor_window.winfo_exists(): # Check if window still exists
-                self.sensor_window.after(max(50, int(self.sampling_rate_entry.get()) // 2), self.update_plot) # Dynamic update rate, min 50ms for GUI
+                try:
+                    sampling_rate = self._get_sampling_rate_ms()
+                except ValueError:
+                    sampling_rate = 10
+                self.sensor_window.after(max(50, sampling_rate // 2), self.update_plot) # Dynamic update rate, min 50ms for GUI
     
     def on_record_work_checkbox(self):
         """Handles the 'Record Work of Adhesion' checkbox state change."""
