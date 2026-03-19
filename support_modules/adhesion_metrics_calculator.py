@@ -1,4 +1,4 @@
-"""
+﻿"""
 Adhesion Metrics Calculator
 ===========================
 
@@ -34,6 +34,10 @@ class AdhesionMetricsCalculator:
                  savgol_window=51,
                  savgol_order=3,
                  baseline_threshold_factor=0.002,
+                 baseline_mode='prop_end_point',
+                 baseline_window_points=25,
+                 prop_end_mode='second_derivative_zero_crossing',
+                 prop_end_local_window_seconds=1.0,
                  min_peak_height=0.01,
                  min_peak_distance=50):
         """
@@ -44,6 +48,15 @@ class AdhesionMetricsCalculator:
             savgol_window (int): Window length for Savitzky-Golay filter (must be odd).
             savgol_order (int): Polynomial order for Savitzky-Golay filter.
             baseline_threshold_factor (float): Threshold above baseline for initiation detection (N).
+            baseline_mode (str): Baseline strategy.
+                - 'prop_end_point': force at propagation end index.
+                - 'two_step': mean force in forward stabilization window.
+            baseline_window_points (int): Forward averaging window size for two_step baseline.
+            prop_end_mode (str): Propagation-end mode.
+                Supported: 'second_derivative_zero_crossing',
+                'two_step_max_second_derivative'.
+            prop_end_local_window_seconds (float): Local post-peak window duration
+                used by two_step_max_second_derivative mode.
             min_peak_height (float): Minimum peak height for detection (N).
             min_peak_distance (int): Minimum distance between peaks (data points).
         """
@@ -51,6 +64,10 @@ class AdhesionMetricsCalculator:
         self.savgol_window = savgol_window if savgol_window % 2 == 1 else savgol_window + 1
         self.savgol_order = savgol_order
         self.baseline_threshold_factor = baseline_threshold_factor
+        self.baseline_mode = baseline_mode
+        self.baseline_window_points = baseline_window_points
+        self.prop_end_mode = prop_end_mode
+        self.prop_end_local_window_seconds = prop_end_local_window_seconds
         self.min_peak_height = min_peak_height
         self.min_peak_distance = min_peak_distance
         
@@ -60,7 +77,10 @@ class AdhesionMetricsCalculator:
                             force_data: np.ndarray,
                             layer_number: Optional[int] = None,
                             motion_end_idx: Optional[int] = None,
-                            lifting_start_idx: Optional[int] = None) -> Dict:
+                            lifting_start_idx: Optional[int] = None,
+                            retraction_force_data: Optional[np.ndarray] = None,
+                            retraction_start_idx: Optional[int] = None,
+                            contact_area: float = 1.0) -> Dict:
         """
         Calculate adhesion metrics from numpy arrays (live data or pre-loaded).
         
@@ -74,6 +94,9 @@ class AdhesionMetricsCalculator:
                              For smooth lifting (2-stage), this should be the start of Stage 2 (prescribed speed),
                              not Stage 1 (gentle break). Prevents pre-initiation search from going
                              before this point, which is critical when earlier phases create pre-existing forces.
+            retraction_force_data: Optional force array from the retraction phase.
+            retraction_start_idx: Global index of the first retraction sample.
+            contact_area: Contact area in m^2 used for energy release rate G.
             
         Returns:
             Dictionary containing all calculated metrics.
@@ -87,7 +110,7 @@ class AdhesionMetricsCalculator:
             raise ValueError("Time, position, and force arrays must have the same length")
             
         if len(times) < 10:
-            return self._empty_results(layer_number)
+            return self._empty_results(layer_number, contact_area)
             
         # Remove any NaN or infinite values
         valid_mask = np.isfinite(times) & np.isfinite(positions) & np.isfinite(forces)
@@ -96,14 +119,16 @@ class AdhesionMetricsCalculator:
         forces = forces[valid_mask]
         
         if len(times) < 10:
-            return self._empty_results(layer_number)
+            return self._empty_results(layer_number, contact_area)
             
         # Apply smoothing using Gaussian filter
         smoothed_force = self._apply_smoothing(forces)
         
         # Calculate metrics using the new methodology with phase awareness
         return self._calculate_metrics(times, positions, forces, smoothed_force, 
-                                     layer_number, motion_end_idx, lifting_start_idx)
+                                     layer_number, motion_end_idx, lifting_start_idx,
+                                     retraction_force_data, retraction_start_idx,
+                                     contact_area)
     
     def calculate_from_csv(self, 
                           csv_filepath: Union[str, Path],
@@ -201,7 +226,10 @@ class AdhesionMetricsCalculator:
                          smoothed_force: np.ndarray,
                          layer_number: Optional[int],
                          motion_end_idx: Optional[int],
-                         lifting_start_idx: Optional[int] = None) -> Dict:
+                         lifting_start_idx: Optional[int] = None,
+                         retraction_force_data: Optional[np.ndarray] = None,
+                         retraction_start_idx: Optional[int] = None,
+                         contact_area: float = 1.0) -> Dict:
         """
         Calculate all adhesion metrics using the new methodology.
         
@@ -215,7 +243,11 @@ class AdhesionMetricsCalculator:
             lifting_start_idx: Index where lifting at prescribed speed started (phase awareness).
                              For smooth lifting (2-stage), this is Stage 2 start, not Stage 1.
         """
-        results = {'layer_number': layer_number}
+        area_m2 = float(contact_area)
+        results = {
+            'layer_number': layer_number,
+            'contact_area_m2': area_m2,
+        }
         
         # Step 1: Find peak force
         peak_idx, peak_force_absolute = self._find_peak_force(smoothed_force)
@@ -223,20 +255,31 @@ class AdhesionMetricsCalculator:
         results['peak_force_position'] = positions[peak_idx]
         results['peak_force_time'] = times[peak_idx] - times[0]  # Relative time
         
-        # Step 2: NEW METHOD - Find 95% lift point and use it for baseline
-        # Calculate 95% of lifting distance for baseline determination (was 80%, changed for short peels)
-        lifting_95pct_idx = self._find_95_percent_lift_point(peak_idx, positions, motion_end_idx)
-        baseline = self._calculate_baseline(smoothed_force, lifting_95pct_idx)
+        # Step 2: Find propagation end using configured mode.
+        mode = str(getattr(self, 'prop_end_mode', 'second_derivative_zero_crossing')).lower()
+
+        if mode == 'second_derivative_zero_crossing':
+            prop_end_idx = self._find_propagation_end_second_derivative_zero_crossing(
+                smoothed_force, peak_idx, motion_end_idx
+            )
+        elif mode == 'two_step_max_second_derivative':
+            prop_end_idx = self._find_propagation_end_two_step_max_second_derivative(
+                times, smoothed_force, peak_idx, motion_end_idx
+            )
+        else:
+            raise ValueError(
+                f"Unsupported prop_end_mode '{self.prop_end_mode}'. "
+                "Supported modes: second_derivative_zero_crossing, two_step_max_second_derivative"
+            )
+
+        # Step 3: Calculate baseline at propagation end and corrected peak force.
+        baseline = self._calculate_baseline(smoothed_force, prop_end_idx)
         results['baseline_force'] = baseline
-        # Use baseline-corrected peak force as the primary metric
         peak_force_corrected = peak_force_absolute - baseline
         results['peak_force'] = peak_force_corrected
         results['peak_force_corrected'] = peak_force_corrected
-        
-        # Step 3: Find propagation end using 5% force threshold method
-        # Propagation ends when force drops to baseline + 5% of (peak - baseline)
-        prop_end_idx = self._find_propagation_end_force_threshold(
-            smoothed_force, peak_idx, peak_force_absolute, baseline, motion_end_idx)
+        results['force_range'] = peak_force_absolute - baseline
+
         results['propagation_end_position'] = positions[prop_end_idx]
         results['propagation_end_time'] = times[prop_end_idx] - times[0]
         
@@ -284,26 +327,127 @@ class AdhesionMetricsCalculator:
         # Step 10: Calculate data quality metrics
         quality_metrics = self._calculate_quality_metrics(forces, smoothed_force, baseline, peak_force_corrected)
         results.update(quality_metrics)
+
+        # Step 11: Partitioned baseline-corrected energies from lift-start(0) to peak/prop-end.
+        partitioned_energy_metrics = self._calculate_partitioned_energy_metrics(
+            positions, forces, baseline, peak_idx, prop_end_idx, area_m2
+        )
+        results.update(partitioned_energy_metrics)
+
+        # Step 12: Optional retraction metrics from paired retraction phase data.
+        retraction_metrics = self._calculate_retraction_metrics(
+            retraction_force_data, retraction_start_idx
+        )
+        results.update(retraction_metrics)
         
         return results
+
+    def _calculate_partitioned_energy_metrics(
+        self,
+        positions: np.ndarray,
+        forces: np.ndarray,
+        baseline: float,
+        peak_idx: int,
+        prop_end_idx: int,
+        contact_area_m2: float,
+    ) -> Dict:
+        """
+        Calculate partitioned baseline-corrected energies in Joules.
+
+        Partitions:
+        - Total work: lift start (index 0) to propagation end
+        - Propagation energy: peak index to propagation end
+        - Initiation (dissipated) energy: lift start (index 0) to peak index
+        """
+        results = {
+            'work_of_adhesion_total_J': 0.0,
+            'energy_release_rate_G_J_per_m2': 0.0,
+            'dissipated_energy_initiation_J': 0.0,
+        }
+
+        if len(positions) < 2 or len(forces) < 2:
+            return results
+
+        end_idx = int(np.clip(prop_end_idx, 0, len(positions) - 1))
+        peak_idx = int(np.clip(peak_idx, 0, end_idx))
+
+        pos_total_m = positions[0:end_idx + 1] / 1000.0
+        force_total_corr = forces[0:end_idx + 1] - baseline
+
+        pos_prop_m = positions[peak_idx:end_idx + 1] / 1000.0
+        force_prop_corr = forces[peak_idx:end_idx + 1] - baseline
+
+        pos_init_m = positions[0:peak_idx + 1] / 1000.0
+        force_init_corr = forces[0:peak_idx + 1] - baseline
+
+        try:
+            if len(pos_total_m) >= 2:
+                results['work_of_adhesion_total_J'] = float(np.trapezoid(force_total_corr, pos_total_m))
+
+            propagation_energy_J = 0.0
+            if len(pos_prop_m) >= 2:
+                propagation_energy_J = float(np.trapezoid(force_prop_corr, pos_prop_m))
+
+            if len(pos_init_m) >= 2:
+                results['dissipated_energy_initiation_J'] = float(np.trapezoid(force_init_corr, pos_init_m))
+
+            if contact_area_m2 > 0:
+                results['energy_release_rate_G_J_per_m2'] = propagation_energy_J / contact_area_m2
+            else:
+                warnings.warn("contact_area must be > 0 for energy release rate. Returning G=0.")
+        except Exception as e:
+            warnings.warn(f"Partitioned energy metric calculation failed: {e}")
+
+        return results
+
+    def _calculate_retraction_metrics(
+        self,
+        retraction_force_data: Optional[np.ndarray],
+        retraction_start_idx: Optional[int],
+    ) -> Dict:
+        """
+        Calculate peak retraction force and global index from retraction phase data.
+        """
+        results = {
+            'peak_retraction_force_N': 0.0,
+            'peak_retraction_idx': -1,
+        }
+
+        if retraction_force_data is None:
+            return results
+
+        retraction_force = np.asarray(retraction_force_data)
+        if len(retraction_force) == 0:
+            return results
+
+        try:
+            peak_rel_idx = int(np.argmax(np.abs(retraction_force)))
+            results['peak_retraction_force_N'] = float(np.abs(retraction_force[peak_rel_idx]))
+            if retraction_start_idx is not None:
+                results['peak_retraction_idx'] = int(retraction_start_idx) + peak_rel_idx
+            else:
+                results['peak_retraction_idx'] = peak_rel_idx
+        except Exception as e:
+            warnings.warn(f"Retraction metric calculation failed: {e}")
+
+        return results
     
-    def _calculate_baseline(self, smoothed_force: np.ndarray, prop_end_idx: int) -> float:
+    def _calculate_baseline(self, smoothed_force: np.ndarray, prop_end_idx: Optional[int] = None) -> float:
         """
-        Calculate baseline using average of at least 10 values near propagation end.
-        Averages over last 20% of data after prop_end_idx (minimum 10 points).
-        This reduces noise in baseline measurement.
+        Calculate baseline using configured strategy.
         """
-        # Calculate how many points to average (at least 10, max 20% of remaining data)
-        remaining_points = len(smoothed_force) - prop_end_idx
-        num_points = max(10, min(remaining_points, int(remaining_points * 0.2)))
-        
-        # If not enough points after prop_end, average what we have (at least 1)
-        if remaining_points < num_points:
-            num_points = max(1, remaining_points)
-        
-        # Average the points
-        baseline_values = smoothed_force[prop_end_idx:prop_end_idx + num_points]
-        return np.mean(baseline_values)
+        if prop_end_idx is None:
+            prop_end_idx = len(smoothed_force) - 1
+
+        prop_end_idx = int(np.clip(prop_end_idx, 0, len(smoothed_force) - 1))
+        mode = str(getattr(self, 'baseline_mode', 'prop_end_point')).lower()
+
+        if mode == 'two_step':
+            n_points = max(1, int(getattr(self, 'baseline_window_points', 25)))
+            end_idx = min(prop_end_idx + n_points, len(smoothed_force))
+            return float(np.mean(smoothed_force[prop_end_idx:end_idx]))
+
+        return float(smoothed_force[prop_end_idx])
     
     def _find_peak_force(self, smoothed_force: np.ndarray) -> Tuple[int, float]:
         """
@@ -346,14 +490,14 @@ class AdhesionMetricsCalculator:
         # Small tolerance for numerical comparison (0.1% of baseline or minimum 0.001 N)
         tolerance = max(abs(baseline) * 0.001, 0.001)
         
-        # Search backwards from peak to find baseline crossing
-        # Reduced from 300 to 100 for short-distance, slow-speed printing
-        search_start = max(0, peak_idx - 100)  # Limit search range
-        
-        # If lifting start is provided, don't search before it (phase awareness)
+        # Search backwards from peak to find baseline crossing.
+        # Priority 1: if a phase boundary is provided, search the full lift phase.
+        # Priority 2: fallback to a wide look-back window for compliant materials.
         if lifting_start_idx is not None:
-            search_start = max(search_start, lifting_start_idx)
-            print(f"Pre-initiation search limited to indices {search_start}-{peak_idx} (lifting started at {lifting_start_idx})")
+            search_start = int(np.clip(lifting_start_idx, 0, peak_idx))
+            print(f"Pre-initiation search uses full lift phase indices {search_start}-{peak_idx} (lifting started at {lifting_start_idx})")
+        else:
+            search_start = max(0, peak_idx - 1000)
         
         # Special case: Check if the force at the beginning is already above baseline
         # This happens with sandwich data where adhesion exists before lifting starts
@@ -368,111 +512,6 @@ class AdhesionMetricsCalculator:
                 
         # If no crossing found, return search start
         return search_start
-
-    def _find_95_percent_lift_point(self, 
-                                     peak_idx: int,
-                                     positions: np.ndarray,
-                                     motion_end_idx: Optional[int]) -> int:
-        """
-        Find the index corresponding to 95% of the lifting distance.
-        Used for baseline calculation in the new force threshold method.
-        Changed from 80% to 95% to ensure full separation on short peels (<1mm).
-        
-        For continuous motion (overstep=0): Position stops changing but force continues
-        to relax. In this case, use the end of the data array instead of motion end.
-        
-        Args:
-            peak_idx: Index of peak force
-            positions: Position array
-            motion_end_idx: End of motion segment (ignored for continuous motion)
-            
-        Returns:
-            Index at 95% lift point (or end of data for continuous motion)
-        """
-        search_end_abs = motion_end_idx if motion_end_idx is not None else len(positions) - 1
-        
-        try:
-            # Check if this is continuous motion (position stops changing)
-            # Sample last 20% of data to see if position is stable
-            sample_start = max(peak_idx, search_end_abs - max(100, int(search_end_abs * 0.2)))
-            sample_positions = positions[sample_start:search_end_abs + 1]
-            
-            if len(sample_positions) > 5:
-                position_range = np.max(sample_positions) - np.min(sample_positions)
-                # If position varies less than 0.05mm in last 20%, it's continuous motion (pause phase)
-                if position_range < 0.05:
-                    # Continuous motion detected - use end of data array as baseline point
-                    print(f"  Continuous motion detected (position stable: {position_range:.4f}mm range)")
-                    return search_end_abs
-            
-            # Standard motion: Find the minimum position (maximum travel point)
-            travel_positions = positions[peak_idx:search_end_abs + 1]
-            if len(travel_positions) == 0:
-                return search_end_abs
-            
-            min_pos = np.min(travel_positions)
-            max_pos = positions[peak_idx]
-            
-            # 95% of the lifting distance (was 80%, increased for short-distance peels)
-            target_position = max_pos - 0.95 * (max_pos - min_pos)
-            
-            # Find index where position first reaches or passes the 95% point
-            for i in range(peak_idx, search_end_abs + 1):
-                if positions[i] <= target_position:
-                    return i
-            
-            # If never reached 95%, use the minimum position index
-            min_pos_relative_idx = np.argmin(travel_positions)
-            return peak_idx + min_pos_relative_idx
-            
-        except Exception:
-            return search_end_abs
-
-    def _find_propagation_end_force_threshold(self,
-                                              smoothed_force: np.ndarray,
-                                              peak_idx: int,
-                                              peak_force: float,
-                                              baseline: float,
-                                              motion_end_idx: Optional[int]) -> int:
-        """
-        Find propagation end using force threshold method.
-        
-        Propagation ends when force drops to baseline + 5% of (peak - baseline).
-        This is more reliable than derivative methods when force relaxation is very slow.
-        
-        For continuous motion (overstep=0): The search continues through the pause phase
-        where the stage is stationary but force continues to relax.
-        
-        Args:
-            smoothed_force: Smoothed force array
-            peak_idx: Index of peak force
-            peak_force: Peak force value
-            baseline: Baseline force (calculated at 95% lift point or end for continuous)
-            motion_end_idx: End of motion segment (but search continues for continuous motion)
-            
-        Returns:
-            Index where propagation ends
-            
-        Example:
-            If baseline = 0.05 N and peak = 1.0 N:
-            - Corrected peak = 1.0 - 0.05 = 0.95 N
-            - 5% threshold = 0.95 * 0.05 = 0.0475 N
-            - Propagation ends when force drops to 0.05 + 0.0475 = 0.0975 N
-        """
-        # Use full data array to include pause phase
-        search_end_abs = len(smoothed_force) - 1
-        
-        # Calculate the threshold: baseline + 5% of corrected peak
-        corrected_peak = peak_force - baseline
-        threshold_force = baseline + (corrected_peak * 0.05)
-        
-        # Search forward from peak to find where force drops below threshold
-        for i in range(peak_idx + 1, search_end_abs + 1):
-            if smoothed_force[i] <= threshold_force:
-                return i
-        
-        # If never drops below threshold, use end of data
-        return search_end_abs
 
     def _find_propagation_end_reverse_search(self, 
                                            smoothed_force: np.ndarray, 
@@ -587,7 +626,89 @@ class AdhesionMetricsCalculator:
 
         except Exception as e:
             warnings.warn(f"Second derivative 10% threshold search failed: {e}. Using 95% lifting point as fallback.")
-            return lifting_95pct_idx
+            return search_end_abs
+
+    def _find_propagation_end_second_derivative_zero_crossing(
+        self,
+        smoothed_force: np.ndarray,
+        peak_idx: int,
+        motion_end_idx: Optional[int],
+    ) -> int:
+        """
+        Modern mode: highest second-derivative peak after force peak,
+        then first zero-crossing after that peak.
+        """
+        search_end_abs = motion_end_idx if motion_end_idx is not None else len(smoothed_force) - 1
+        if search_end_abs <= peak_idx + 2:
+            return search_end_abs
+
+        region = smoothed_force[peak_idx:search_end_abs + 1]
+        if len(region) < 5:
+            return search_end_abs
+
+        second_derivative = np.gradient(np.gradient(region))
+
+        peak_candidates = [
+            i for i in range(1, len(second_derivative) - 1)
+            if second_derivative[i] > second_derivative[i - 1]
+            and second_derivative[i] >= second_derivative[i + 1]
+        ]
+        if not peak_candidates:
+            return search_end_abs
+
+        best_peak_rel = max(peak_candidates, key=lambda i: second_derivative[i])
+        for j in range(best_peak_rel + 1, len(second_derivative)):
+            if float(second_derivative[j - 1]) > 0 and float(second_derivative[j]) <= 0:
+                return peak_idx + j
+
+        return search_end_abs
+
+    def _find_propagation_end_two_step_max_second_derivative(
+        self,
+        times: np.ndarray,
+        smoothed_force: np.ndarray,
+        peak_idx: int,
+        motion_end_idx: Optional[int],
+    ) -> int:
+        """
+        Legacy two-step Step 1: locate maximum second derivative in a local
+        post-peak window and map its timestamp to global index.
+        """
+        search_end_abs = motion_end_idx if motion_end_idx is not None else len(smoothed_force) - 1
+        if search_end_abs <= peak_idx + 3:
+            return search_end_abs
+
+        sample_rate_hz = 50.0
+        if len(times) > 1:
+            dt = np.diff(times)
+            dt = dt[np.isfinite(dt) & (dt > 0)]
+            if len(dt) > 0:
+                sample_rate_hz = 1.0 / float(np.median(dt))
+
+        window_seconds = float(getattr(self, 'prop_end_local_window_seconds', 1.0))
+        window_points = max(10, int(round(window_seconds * sample_rate_hz)))
+        local_end = min(search_end_abs, peak_idx + window_points)
+
+        window_force = smoothed_force[peak_idx:local_end + 1]
+        window_time = times[peak_idx:local_end + 1]
+        if len(window_force) < 5:
+            return local_end
+
+        first_derivative = np.diff(window_force)
+        if len(first_derivative) < 3:
+            return local_end
+
+        first_deriv_time = (window_time[:-1] + window_time[1:]) / 2.0
+        second_derivative = np.diff(first_derivative)
+        if len(second_derivative) == 0:
+            return local_end
+
+        second_deriv_time = (first_deriv_time[:-1] + first_deriv_time[1:]) / 2.0
+        max_second_deriv_idx = int(np.argmax(second_derivative))
+        target_time = float(second_deriv_time[max_second_deriv_idx])
+        global_idx = int(np.argmin(np.abs(times - target_time)))
+
+        return int(np.clip(global_idx, peak_idx, search_end_abs))
     
     def _calculate_work_metrics(self, 
                               positions: np.ndarray, 
@@ -633,20 +754,20 @@ class AdhesionMetricsCalculator:
         
         try:
             # Work of adhesion (trapezoidal integration)
-            work_J = np.trapz(peel_forces, peel_positions_m)
+            work_J = np.trapezoid(peel_forces, peel_positions_m)
             results['work_of_adhesion_mJ'] = work_J * 1000
             
             # Baseline-corrected work
-            work_corrected_J = np.trapz(peel_forces_corrected, peel_positions_m)
+            work_corrected_J = np.trapezoid(peel_forces_corrected, peel_positions_m)
             results['work_of_adhesion_corrected_mJ'] = work_corrected_J * 1000
             
             # Energy dissipation (negative work regions)
             negative_forces = np.minimum(peel_forces_corrected, 0)
-            dissipation_J = np.trapz(np.abs(negative_forces), peel_positions_m)
+            dissipation_J = np.trapezoid(np.abs(negative_forces), peel_positions_m)
             results['energy_dissipation_mJ'] = dissipation_J * 1000
             
             # Total energy
-            total_energy_J = np.trapz(np.abs(peel_forces_corrected), peel_positions_m)
+            total_energy_J = np.trapezoid(np.abs(peel_forces_corrected), peel_positions_m)
             results['total_energy_mJ'] = total_energy_J * 1000
             
             # Energy density
@@ -797,15 +918,21 @@ class AdhesionMetricsCalculator:
         
         return results
     
-    def _empty_results(self, layer_number: Optional[int] = None) -> Dict:
+    def _empty_results(self, layer_number: Optional[int] = None, contact_area: float = 1.0) -> Dict:
         """
         Return empty results structure for invalid data.
         """
         return {
             'layer_number': layer_number,
+            'contact_area_m2': float(contact_area),
             'baseline_force': 0.0,
             'peak_force': 0.0,
             'peak_force_corrected': 0.0,
+            'peak_force_absolute': 0.0,
+            'force_range': 0.0,
+            'work_of_adhesion_total_J': 0.0,
+            'energy_release_rate_G_J_per_m2': 0.0,
+            'dissipated_energy_initiation_J': 0.0,
             'peak_force_position': 0.0,
             'peak_force_time': 0.0,
             'pre_initiation_position': 0.0,
@@ -827,7 +954,9 @@ class AdhesionMetricsCalculator:
             'max_loading_rate_N_per_s': 0.0,
             'max_unloading_rate_N_per_s': 0.0,
             'force_noise_std': 0.0,
-            'signal_to_noise_ratio': 0.0
+            'signal_to_noise_ratio': 0.0,
+            'peak_retraction_force_N': 0.0,
+            'peak_retraction_idx': -1,
         }
     
     def format_results_for_csv(self, results: Dict, precision: int = 4) -> Dict:
