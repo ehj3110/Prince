@@ -37,7 +37,11 @@ sys.path.insert(0, str(post_processing_dir))
 
 # Import our analysis tools using RawData_Processor workflow
 from support_modules.adhesion_metrics_calculator import AdhesionMetricsCalculator
-from support_modules.RawData_Processor import RawDataProcessor
+from support_modules.RawData_Processor import (
+    DEFAULT_LAYER_LEGIT_FORCE_THRESHOLD_N,
+    RawDataProcessor,
+    detect_bad_layers,
+)
 from analysis_plotter import AnalysisPlotter
 
 class PostPrintAnalyzer:
@@ -62,6 +66,7 @@ class PostPrintAnalyzer:
         
         # Initialize RawDataProcessor (handles all analysis and plotting)
         self.processor = RawDataProcessor(self.calculator)
+        self.bad_layer_force_threshold_n = DEFAULT_LAYER_LEGIT_FORCE_THRESHOLD_N
         
     def find_current_session_in_daily_dir(self, daily_dir):
         """
@@ -281,6 +286,17 @@ class PostPrintAnalyzer:
             if not layers or len(layers) == 0:
                 print(f"    [X] Analysis failed - no layers detected")
                 return None
+
+            # Flag incomplete/bad layers using shared legitimacy logic.
+            layers, flagged_layers = detect_bad_layers(
+                layers,
+                legitimacy_threshold_n=self.bad_layer_force_threshold_n,
+            )
+            if flagged_layers:
+                print(
+                    f"    [!] Flagged incomplete peeling layers: {flagged_layers} "
+                    f"(threshold={self.bad_layer_force_threshold_n:.3f} N)"
+                )
             
             # Get smoothed force from calculator
             smoothed_force = self.calculator._apply_smoothing(force_data)
@@ -308,6 +324,7 @@ class PostPrintAnalyzer:
                 'csv_file': csv_file,
                 'plot_path': plot_path if plot_path.exists() else None,
                 'layers': layers,
+                'flagged_layers': flagged_layers,
                 'data_points': len(layers),  # Number of layers
                 'time_range': f"Processed {len(layers)} layers"
             }
@@ -334,6 +351,9 @@ class PostPrintAnalyzer:
             for result in analysis_results:
                 f.write(f"- **{result['csv_file'].name}**\n")
                 f.write(f"  - {result['time_range']}\n")
+                flagged_layers = result.get('flagged_layers', [])
+                if flagged_layers:
+                    f.write(f"  - Flagged incomplete layers: {flagged_layers}\n")
                 if result['plot_path']:
                     f.write(f"  - Plot: {result['plot_path'].name}\n")
                 f.write(f"\n")
