@@ -37,7 +37,7 @@ sys.path.insert(0, str(post_processing_dir))
 
 # Import our analysis tools using RawData_Processor workflow
 from support_modules.adhesion_metrics_calculator import AdhesionMetricsCalculator
-from RawData_Processor import RawDataProcessor
+from support_modules.RawData_Processor import RawDataProcessor
 from analysis_plotter import AnalysisPlotter
 
 class PostPrintAnalyzer:
