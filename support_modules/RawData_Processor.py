@@ -2,7 +2,58 @@ import numpy as np
 from scipy.signal import find_peaks
 from pathlib import Path
 import pandas as pd
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
+
+
+DEFAULT_LAYER_LEGIT_FORCE_THRESHOLD_N = 0.1
+
+
+def detect_bad_layers(
+    layers: List[Dict[str, Any]],
+    legitimacy_threshold_n: float = DEFAULT_LAYER_LEGIT_FORCE_THRESHOLD_N,
+) -> Tuple[List[Dict[str, Any]], List[int]]:
+    """
+    Flag layers with incomplete peeling behavior using force legitimacy checks.
+
+    A layer is considered valid only if both absolute baseline force and absolute
+    pre-initiation force are below the threshold.
+
+    Args:
+        layers: Layer dictionaries output by RawDataProcessor.
+        legitimacy_threshold_n: Absolute-force threshold in Newtons.
+
+    Returns:
+        Tuple of (updated layers list, list of bad layer numbers).
+    """
+    flagged_layers: List[int] = []
+
+    for layer in layers:
+        baseline_force = float(layer.get("baseline", 0.0))
+        pre_init_force = float(layer.get("pre_initiation_force", 0.0))
+
+        is_legit_layer = (
+            abs(baseline_force) < legitimacy_threshold_n
+            and abs(pre_init_force) < legitimacy_threshold_n
+        )
+        is_incomplete_peeling = not is_legit_layer
+
+        layer["analysis_included"] = bool(is_legit_layer)
+        layer["incomplete_peeling"] = bool(is_incomplete_peeling)
+        layer["peeling_status"] = "complete" if is_legit_layer else "incomplete_peeling"
+
+        if is_incomplete_peeling:
+            layer["color"] = "dimgray"
+            layer_num = int(layer.get("number", -1))
+            flagged_layers.append(layer_num)
+            layer["bad_layer_reason"] = (
+                f"|baseline|={abs(baseline_force):.4f} N, "
+                f"|pre-init force|={abs(pre_init_force):.4f} N, "
+                f"threshold={legitimacy_threshold_n:.3f} N"
+            )
+        else:
+            layer["bad_layer_reason"] = ""
+
+    return layers, flagged_layers
 
 class RawDataProcessor:
     """
@@ -476,6 +527,7 @@ class RawDataProcessor:
             'peak_force': metrics.get('peak_force', 0),
             'peak_force_corrected': metrics.get('peak_force_corrected', 0),
             'baseline': metrics.get('baseline_force', 0),
+            'pre_initiation_force': metrics.get('pre_initiation_force', 0),
             'work_of_adhesion_mJ': metrics.get('work_of_adhesion_corrected_mJ', 0),
             'pre_init_time': time_data[pre_init_idx],
             'pre_init_duration': metrics.get('pre_initiation_duration', 0),
