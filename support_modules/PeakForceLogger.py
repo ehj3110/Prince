@@ -4,15 +4,13 @@ import time
 from datetime import datetime
 import threading
 import numpy as np
-import sys
-from pathlib import Path
 
-# Add parent directory to path for adhesion_metrics_calculator
-parent_dir = Path(__file__).parent.parent
-if str(parent_dir) not in sys.path:
-    sys.path.insert(0, str(parent_dir))
-
-from adhesion_metrics_calculator import AdhesionMetricsCalculator
+try:
+    # Preferred when imported as support_modules.PeakForceLogger
+    from .adhesion_metrics_calculator import AdhesionMetricsCalculator
+except ImportError:
+    # Fallback when run as a direct script from support_modules
+    from adhesion_metrics_calculator import AdhesionMetricsCalculator
 
 class PeakForceLogger:
     """

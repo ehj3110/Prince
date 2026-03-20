@@ -13,6 +13,7 @@ Date: September 18, 2025
 """
 
 import os
+import argparse
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,13 +22,13 @@ import re
 import warnings
 from pathlib import Path
 
-# Import the enhanced adhesion analyzer
+# Import the unified adhesion metrics calculator
 try:
-    from enhanced_adhesion_metrics import EnhancedAdhesionAnalyzer
-    print("Enhanced adhesion analyzer imported successfully")
-except ImportError:
-    print("Warning: Enhanced adhesion analyzer not found. Using basic analysis only.")
-    EnhancedAdhesionAnalyzer = None
+    from support_modules.adhesion_metrics_calculator import AdhesionMetricsCalculator
+except ImportError as exc:
+    raise ImportError(
+        "Could not import AdhesionMetricsCalculator from support_modules/adhesion_metrics_calculator.py"
+    ) from exc
 
 warnings.filterwarnings('ignore')
 
@@ -36,18 +37,78 @@ class BatchPrintingDataProcessor:
     Processes multiple printing data folders and generates analysis plots
     """
     
-    def __init__(self, master_folder_path):
+    def __init__(self, master_folder_path, mode='modern'):
         """
         Initialize the batch processor
         
         Args:
             master_folder_path (str): Path to master folder containing all print data folders
+            mode (str): Analysis mode: 'modern' or 'legacy'
         """
         self.master_folder = Path(master_folder_path)
-        self.analyzer = EnhancedAdhesionAnalyzer() if EnhancedAdhesionAnalyzer else None
+        self.mode = str(mode).strip().lower()
+        if self.mode not in {'modern', 'legacy'}:
+            raise ValueError(f"Invalid mode '{mode}'. Use 'modern' or 'legacy'.")
+        self.calculator = self._build_calculator(self.mode)
+        print(f"Using unified scientific analysis mode: {self.mode}")
         
         if not self.master_folder.exists():
             raise ValueError(f"Master folder does not exist: {master_folder_path}")
+
+    def _build_calculator(self, mode):
+        """
+        Build AdhesionMetricsCalculator configured for the requested mode.
+        """
+        if mode == 'legacy':
+            # Legacy mapping mirrors the historical two-step scientific behavior.
+            return AdhesionMetricsCalculator(
+                smoothing_window=3,
+                smoothing_polyorder=1,
+                baseline_threshold_factor=0.002,
+                baseline_mode='two_step',
+                baseline_window_points=25,
+                prop_end_mode='two_step_max_second_derivative',
+                prop_end_local_window_seconds=1.0,
+                min_peak_height=0.01,
+                min_peak_distance=50,
+            )
+
+        return AdhesionMetricsCalculator(
+            smoothing_window=3,
+            smoothing_polyorder=1,
+            baseline_threshold_factor=0.002,
+            baseline_mode='prop_end_point',
+            baseline_window_points=25,
+            prop_end_mode='second_derivative_zero_crossing',
+            prop_end_local_window_seconds=1.0,
+            min_peak_height=0.01,
+            min_peak_distance=50,
+        )
+
+    def _detect_propagation_end_with_calculator(self, time_data, smoothed_force, peak_idx, motion_end_idx):
+        """
+        Delegate propagation-end detection to the unified calculator using the selected mode.
+        """
+        mode = self.calculator.prop_end_mode
+
+        if mode == 'two_step_max_second_derivative':
+            return self.calculator._find_propagation_end_two_step_max_second_derivative(
+                time_data, smoothed_force, peak_idx, motion_end_idx
+            )
+        if mode == 'second_derivative_zero_crossing_unsmoothed':
+            return self.calculator._find_propagation_end_second_derivative_zero_crossing_unsmoothed(
+                smoothed_force, peak_idx, motion_end_idx
+            )
+        if mode in ('legacy_second_derivative', 'second_derivative'):
+            # Positions are not used in this path; provide a placeholder array.
+            placeholder_positions = np.zeros_like(smoothed_force)
+            return self.calculator._find_propagation_end_second_derivative(
+                time_data, placeholder_positions, smoothed_force, peak_idx, motion_end_idx
+            )
+
+        return self.calculator._find_propagation_end_second_derivative_zero_crossing(
+            smoothed_force, peak_idx, motion_end_idx
+        )
     
     def parse_folder_name(self, folder_name):
         """
@@ -167,74 +228,36 @@ class BatchPrintingDataProcessor:
         force_data = df['Force'].values
         position_data = df['Position'].values
         
-        # Minimal smoothing to preserve peak timing and magnitude (exact from final_layer_visualization.py)
-        # This prevents issues with underdamped oscillations after propagation
-        if len(df) < 3:
-            smoothed_force = force_data
-        else:
-            # Use minimal smoothing: window_length=3, polyorder=1 
-            smoothed_force = savgol_filter(force_data, window_length=3, polyorder=1)
-        
-        def detect_propagation_end(peak_idx):
-            """Simple propagation end detection"""
-            # Look for where force returns close to baseline after peak
-            peak_force = smoothed_force[peak_idx]
-            
-            # Search after peak for stabilization
-            search_start = peak_idx + 10  # Start 10 points after peak
-            search_end = min(len(smoothed_force), peak_idx + 500)  # Search up to 500 points after
-            
-            if search_start >= len(smoothed_force):
-                return len(smoothed_force) - 1
-            
-            # Find where force stabilizes (standard deviation becomes small)
-            window_size = 25
-            for i in range(search_start, search_end - window_size):
-                window = smoothed_force[i:i+window_size]
-                if np.std(window) < 0.005:  # Small variation indicates stabilization
-                    return i
-            
-            # Fallback: 70% of the way to next peak or end
-            if len(peak_indices) > 1:
-                next_peaks = [p for p in peak_indices if p > peak_idx]
-                if next_peaks:
-                    next_peak = next_peaks[0]
-                    return peak_idx + int(0.7 * (next_peak - peak_idx))
-            
-            return min(len(smoothed_force) - 1, peak_idx + 200)
-        
-        def calculate_baseline(prop_end_idx):
-            """Calculate baseline from propagation end region"""
-            window_size = min(25, len(smoothed_force) - prop_end_idx)
-            if window_size <= 0:
-                return 0.0
-            
-            end_idx = min(prop_end_idx + window_size, len(smoothed_force))
-            baseline_region = smoothed_force[prop_end_idx:end_idx]
-            return np.mean(baseline_region)
-        
-        def find_pre_initiation(peak_idx, baseline):
-            """Find when force starts rising above baseline"""
-            # Search backwards from peak
-            search_start = max(0, peak_idx - 300)  # Search up to 300 points before peak
-            
-            threshold = baseline + 0.002  # Small threshold above baseline
-            
-            for i in range(peak_idx - 1, search_start, -1):
-                if smoothed_force[i] <= threshold:
-                    return i + 1  # Return first point above threshold
-            
-            return search_start
+        # Use the unified smoothing configuration from AdhesionMetricsCalculator.
+        smoothed_force = self.calculator._apply_smoothing(force_data)
         
         # Process each peak to create layer timing data
         layers = []
         colors = ['red', 'blue', 'green', 'orange', 'purple']
         
         for i, peak_idx in enumerate(peak_indices):
-            # Detect timing phases
-            prop_end_idx = detect_propagation_end(peak_idx)
-            baseline = calculate_baseline(prop_end_idx)
-            pre_init_idx = find_pre_initiation(peak_idx, baseline)
+            # Constrain each layer analysis to the region before the next peak.
+            next_peak_idx = peak_indices[i + 1] - 1 if i + 1 < len(peak_indices) else len(smoothed_force) - 1
+            next_peak_idx = max(peak_idx + 1, min(next_peak_idx, len(smoothed_force) - 1))
+
+            # Detect timing phases via the unified analysis layer.
+            prop_end_idx = self._detect_propagation_end_with_calculator(
+                time_data, smoothed_force, peak_idx, next_peak_idx
+            )
+            prop_end_idx = int(np.clip(prop_end_idx, peak_idx, len(smoothed_force) - 1))
+
+            baseline = self.calculator._calculate_baseline(smoothed_force, prop_end_idx)
+            pre_init_idx = self.calculator._find_pre_initiation(smoothed_force, peak_idx, baseline)
+            pre_init_idx = int(np.clip(pre_init_idx, 0, peak_idx))
+
+            work_metrics = self.calculator._calculate_work_metrics(
+                position_data,
+                force_data,
+                smoothed_force,
+                baseline,
+                pre_init_idx,
+                prop_end_idx,
+            )
             
             # Calculate times
             peak_time = time_data[peak_idx]
@@ -250,6 +273,8 @@ class BatchPrintingDataProcessor:
                 'prop_end_time': prop_end_time,
                 'peak_force': force_data[peak_idx],
                 'baseline': baseline,
+                'work_of_adhesion_mJ': work_metrics.get('work_of_adhesion_mJ', 0.0),
+                'work_of_adhesion_corrected_mJ': work_metrics.get('work_of_adhesion_corrected_mJ', 0.0),
                 'color': colors[i % len(colors)],
                 'pre_init_duration': peak_time - pre_init_time,
                 'prop_duration': prop_end_time - peak_time
@@ -271,14 +296,8 @@ class BatchPrintingDataProcessor:
         Returns:
             tuple: (peak_indices, peak_info, smoothed_force)
         """
-        # Smooth the force data for peak detection
-        if len(df) < 11:
-            smoothed_force = df['Force'].values
-        else:
-            window_length = min(11, len(df) // 2)
-            if window_length % 2 == 0:
-                window_length -= 1  # Must be odd
-            smoothed_force = savgol_filter(df['Force'].values, window_length=window_length, polyorder=2)
+        # Smooth with the same unified scientific layer configuration.
+        smoothed_force = self.calculator._apply_smoothing(df['Force'].values)
         
         # Find peaks
         peak_indices, peak_properties = find_peaks(
@@ -665,15 +684,29 @@ def main():
     """
     Main function to run the batch processing
     """
-    # Master folder path (as specified by user)
-    master_folder_path = r"C:\Users\cheng sun\BoyuanSun\Slicing\Evan\5mmDiameterCylinder_SpeedTest_V3\Printing_Logs\DataToExport"
+    parser = argparse.ArgumentParser(
+        description="Batch process printing data with unified scientific analysis modes."
+    )
+    parser.add_argument(
+        "--master-folder",
+        default=r"C:\Users\cheng sun\BoyuanSun\Slicing\Evan\5mmDiameterCylinder_SpeedTest_V3\Printing_Logs\DataToExport",
+        help="Path to master folder containing print data folders.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["modern", "legacy"],
+        default="modern",
+        help="Scientific analysis mode for propagation/baseline calculations.",
+    )
+    args = parser.parse_args()
+    master_folder_path = args.master_folder
     
     print("=== Batch Printing Data Analysis ===")
     print(f"Target directory: {master_folder_path}")
     
     try:
         # Create processor and run
-        processor = BatchPrintingDataProcessor(master_folder_path)
+        processor = BatchPrintingDataProcessor(master_folder_path, mode=args.mode)
         processor.process_all_folders()
         
     except Exception as e:
