@@ -51,3 +51,16 @@ coverage.xml
 
 # Project-specific
 Printing_Logs/
+
+# Cleanup Phase 3: generated analysis artifacts
+# Ignore generated debug plot outputs
+debug/plots/**/*.csv
+debug/plots/**/*.png
+
+# Ignore generated post-processing outputs and plots
+post-processing/**/*.csv
+post-processing/**/*.png
+
+# Keep reproducible test fixtures tracked
+!tests/data/fixtures/
+!tests/data/fixtures/**
