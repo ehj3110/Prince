@@ -370,26 +370,27 @@ def process_autolog_file(
                 "Area_mm2": float(area_mm2),
                 "Baseline_Force_N": baseline_force,
                 "Pre_Initiation_Force_N": pre_init_force,
+                "Pre_Initiation_Time_s": float(metrics.get("pre_initiation_duration", 0.0)),
                 "Peak_Force_N": float(metrics.get("peak_force", 0.0)),
                 "Peak_Force_Absolute_N": float(metrics.get("peak_force_absolute", metrics.get("peak_force", 0.0))),
                 "Peak_Force_Corrected_N": float(metrics.get("peak_force", 0.0)),
                 "Propagation_Time_s": float(metrics.get("propagation_duration", 0.0)),
+                "Total_Peel_Time_s": float(metrics.get("pre_initiation_duration", 0.0))
+                + float(metrics.get("propagation_duration", 0.0)),
                 "Total_Peel_Distance_mm": abs(float(metrics.get("total_peel_distance", 0.0))),
-                "Work_Total_J": float(metrics.get("work_of_adhesion_total_J", 0.0)),
+                "Work_of_Adhesion_mJ": float(metrics.get("work_of_adhesion_mJ", 0.0)),
+                "Work_of_Adhesion_Corrected_mJ": float(metrics.get("work_of_adhesion_corrected_mJ", 0.0)),
                 "G_Energy_Release_Rate_Jm2": float(
                     metrics.get("energy_release_rate_G_J_per_m2", 0.0)
                 ),
-                "Dissipated_Energy_J": float(
-                    metrics.get("dissipated_energy_initiation_J", 0.0)
-                ),
+                "Brittleness_Factor": float(metrics.get("brittleness_factor", 0.0)),
             }
         )
 
     if plot_root_dir is not None and len(layer_plot_points) > 0:
         # Preserve source folder hierarchy under the timestamped run directory.
         relative_parent = csv_path.parent.relative_to(data_root)
-        run_stamp = plot_root_dir.name.replace("run_", "")
-        per_file_output_dir = plot_root_dir / relative_parent / "plots" / f"plots_{run_stamp}"
+        per_file_output_dir = plot_root_dir / relative_parent
         plot_path = save_autolog_plot(
             csv_path=csv_path,
             folder_label=folder_label,
@@ -433,7 +434,7 @@ def run_master_batch(data_root: Path, output_csv: Path, save_plots: bool = False
 
     plot_root_dir: Optional[Path] = None
     if save_plots:
-        run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_stamp = datetime.now().strftime("%m%d_%H%M")
         plot_root_dir = PLOT_RUNS_ROOT / f"run_{run_stamp}"
         plot_root_dir.mkdir(parents=True, exist_ok=True)
         logging.info("Per-file plots enabled. Output directory: %s", plot_root_dir)
@@ -465,14 +466,17 @@ def run_master_batch(data_root: Path, output_csv: Path, save_plots: bool = False
             "Area_mm2",
             "Baseline_Force_N",
             "Pre_Initiation_Force_N",
+            "Pre_Initiation_Time_s",
             "Peak_Force_N",
             "Peak_Force_Absolute_N",
             "Peak_Force_Corrected_N",
             "Propagation_Time_s",
+            "Total_Peel_Time_s",
             "Total_Peel_Distance_mm",
-            "Work_Total_J",
+            "Work_of_Adhesion_mJ",
+            "Work_of_Adhesion_Corrected_mJ",
             "G_Energy_Release_Rate_Jm2",
-            "Dissipated_Energy_J",
+            "Brittleness_Factor",
         ],
     )
 
