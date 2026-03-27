@@ -138,9 +138,21 @@ class AnalysisPlotter:
         ax.plot(time_data, smoothed_force, 'navy', linewidth=2.5, alpha=0.9, label='Smoothed Force')
 
         for layer in layers:
-            color = layer['color']
-            ax.axvspan(time_data[layer['start_idx']], time_data[layer['end_idx']],
-                       alpha=0.08, color=color)
+            is_incomplete = bool(layer.get('incomplete_peeling', False))
+            color = '#f2f2f2' if is_incomplete else layer['color']
+            if is_incomplete:
+                ax.axvspan(
+                    time_data[layer['start_idx']],
+                    time_data[layer['end_idx']],
+                    facecolor='#303030',
+                    edgecolor='#d9d9d9',
+                    hatch='xx',
+                    alpha=0.45,
+                    zorder=0,
+                )
+            else:
+                ax.axvspan(time_data[layer['start_idx']], time_data[layer['end_idx']],
+                           alpha=0.08, color=color)
             ax.plot(layer['peak_time'], layer['peak_force'], 'o', color=color,
                     markersize=12, zorder=5, markeredgecolor='black', markeredgewidth=2)
             ax.axvline(x=layer['peak_time'], color=color, linestyle='--', linewidth=3, alpha=0.8, zorder=3)
@@ -175,6 +187,8 @@ class AnalysisPlotter:
 
     def _plot_individual_layer(self, ax, time_data, force_data, smoothed_force, layer, font_size=10):
         """Plots a single detailed layer subplot."""
+        is_incomplete = bool(layer.get('incomplete_peeling', False))
+
         # Debug print
         print(f"\nPlotting Layer {layer['number']}:")
         print(f"  Peak Time: {layer['peak_time']:.3f}s")
@@ -183,8 +197,10 @@ class AnalysisPlotter:
         print(f"  Start/End Idx: {layer['start_idx']}-{layer['end_idx']}")
         print(f"  Time Range: {time_data[layer['start_idx']]:.3f}s - {time_data[layer['end_idx']]:.3f}s")
         
-        # Use layer's assigned color for consistency with overview
-        color = layer['color']
+        # Use dark-theme styling for incomplete peeling layers.
+        color = '#f2f2f2' if is_incomplete else layer['color']
+        if is_incomplete:
+            ax.set_facecolor('#2f2f2f')
         
         # Define focused window around the peeling event with buffer
         buffer_time = 1.0  # 1 second buffer
@@ -204,9 +220,41 @@ class AnalysisPlotter:
         ax.plot(window_time, window_smoothed, color=color, linewidth=3.5, alpha=0.95,
                 label='Smoothed Force', zorder=3)
 
-        # Shaded bands for peeling stages (NO ARROWS - cleaner visualization)
-        ax.axvspan(layer['pre_init_time'], layer['peak_time'], color='lightblue', alpha=0.3, label='Pre-Initiation', zorder=1)
-        ax.axvspan(layer['peak_time'], layer['prop_end_time'], color='lightcoral', alpha=0.3, label='Propagation', zorder=1)
+        # Shaded bands for peeling stages.
+        if is_incomplete:
+            ax.axvspan(
+                layer['pre_init_time'],
+                layer['peak_time'],
+                facecolor='#4a4a4a',
+                edgecolor='#d9d9d9',
+                hatch='///',
+                alpha=0.45,
+                label='Pre-Initiation',
+                zorder=1,
+            )
+            ax.axvspan(
+                layer['peak_time'],
+                layer['prop_end_time'],
+                facecolor='#5a5a5a',
+                edgecolor='#d9d9d9',
+                hatch='xx',
+                alpha=0.45,
+                label='Propagation',
+                zorder=1,
+            )
+            if layer['prop_end_time'] < window_time.max():
+                ax.axvspan(
+                    layer['prop_end_time'],
+                    window_time.max(),
+                    facecolor='#3f3f3f',
+                    edgecolor='#d9d9d9',
+                    hatch='..',
+                    alpha=0.40,
+                    zorder=1,
+                )
+        else:
+            ax.axvspan(layer['pre_init_time'], layer['peak_time'], color='lightblue', alpha=0.3, label='Pre-Initiation', zorder=1)
+            ax.axvspan(layer['peak_time'], layer['prop_end_time'], color='lightcoral', alpha=0.3, label='Propagation', zorder=1)
 
         # Vertical lines and markers
         ax.axvline(x=layer['peak_time'], color=color, linestyle='--', linewidth=3, alpha=0.8, zorder=4, label='Peak Force')
@@ -229,18 +277,31 @@ class AnalysisPlotter:
         ax.text(annotation_x, layer['peak_force'], 
                 f"{relative_force:.4f}N",
                 ha='left', va='center', fontsize=font_size, fontweight='bold', 
-                color=color, bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor=color, alpha=0.9))
+                color=color, bbox=dict(boxstyle='round,pad=0.3', facecolor='white' if not is_incomplete else '#2f2f2f', edgecolor=color, alpha=0.9))
         
         # Duration annotations in title
         duration_text = f"Pre-init: {layer['pre_init_duration']:.2f}s | Prop: {layer['prop_duration']:.2f}s"
+        status_text = " | INCOMPLETE PEELING" if is_incomplete else ""
         
         ax.set_xlabel('Time (s)', fontsize=font_size + 4, fontweight='bold')
         ax.set_ylabel('Force (N)', fontsize=font_size + 4, fontweight='bold')
-        ax.set_title(f'Layer {layer["number"]} - {duration_text}', fontsize=font_size + 2, fontweight='bold', color='black')
-        ax.tick_params(axis='both', which='major', labelsize=font_size + 4)
+        ax.set_title(f'Layer {layer["number"]} - {duration_text}{status_text}', fontsize=font_size + 2, fontweight='bold', color='#f2f2f2' if is_incomplete else 'black')
+        ax.tick_params(axis='both', which='major', labelsize=font_size + 4, colors='#f2f2f2' if is_incomplete else 'black')
         ax.locator_params(axis='both', nbins=6)  # Reduce number of tick marks
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=font_size - 2, loc='upper left', framealpha=0.9, ncol=2)
+        if is_incomplete:
+            ax.grid(True, alpha=0.3, color='#5a5a5a')
+        else:
+            ax.grid(True, alpha=0.3)
+        legend = ax.legend(fontsize=font_size - 2, loc='upper left', framealpha=0.9, ncol=2)
+        if is_incomplete and legend is not None:
+            legend.get_frame().set_facecolor('#2f2f2f')
+            legend.get_frame().set_edgecolor('#d9d9d9')
+            for txt in legend.get_texts():
+                txt.set_color('#f2f2f2')
+
+        if is_incomplete:
+            ax.xaxis.label.set_color('#f2f2f2')
+            ax.yaxis.label.set_color('#f2f2f2')
 
         # Calculate appropriate margins for y-axis
         force_range = layer['peak_force'] - layer['baseline']
