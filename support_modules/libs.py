@@ -5,6 +5,7 @@ import math  # Ensure math is imported
 from pathlib import Path  # Ensure Path is imported
 import traceback  # For more detailed error printing
 import os  # Ensure os is imported
+from support_modules.DebugSupport import debug_print
 
 
 class Ensemble:
@@ -64,7 +65,7 @@ class Application():
         self.step_type_list = []
         self.pause_list = []
         self.intensity_list = []
-        print("DEBUG: Application instance created.")  # Add this
+        debug_print("Application instance created.")
 
     def set_image_directory(self, path=''):
         """
@@ -84,7 +85,7 @@ class Application():
             sandwich_speed_list (list): List of sandwich speeds per layer.
         """
 
-        print(f"DEBUG: Application.set_image_directory called with path: '{path}'")  # Add this
+        debug_print(f"Application.set_image_directory called with path: '{path}'")
 
         # Generate the expected text file name based on the directory
         txt_name = path.split('\\')[-1] + '.txt'
@@ -144,7 +145,7 @@ class Application():
             sandwich_speed_list.append(float(sandwich_speed))
 
         # Right before the final return statement in set_image_directory:
-        print(f"DEBUG: Application.set_image_directory FINISHING. Image list length: {len(image_list)}")  # Add this
+        debug_print(f"Application.set_image_directory FINISHING. Image list length: {len(image_list)}")
         # Segmented Mode return: 9 values (includes step_type and sandwich_speed)
         return (
             image_list, exposure_time_list, thickness_list,
@@ -273,5 +274,5 @@ class Application():
         """
         Returns the total number of layers based on the loaded image list.
         """
-        print(f"DEBUG: Application.get_total_layers called. Image list length: {len(self.image_list)}")  # Add this
+        debug_print(f"Application.get_total_layers called. Image list length: {len(self.image_list)}")
         return len(self.image_list)

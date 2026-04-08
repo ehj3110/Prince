@@ -415,21 +415,23 @@ class MotionController:
 
 # Example usage and testing
 if __name__ == '__main__':
-    print("MotionController module loaded successfully.")
-    print("\nDefault configurations:")
+    from support_modules.DebugSupport import debug_print
+
+    debug_print("MotionController module loaded successfully.", force=True)
+    debug_print("\nDefault configurations:", force=True)
     
     controller = MotionController(axis=None)
     
-    print("\nSmooth Lift Config:")
+    debug_print("\nSmooth Lift Config:", force=True)
     for key, value in controller.smooth_lift_config.items():
-        print(f"  {key}: {value}")
+        debug_print(f"  {key}: {value}", force=True)
     
-    print("\nSmooth Retraction Config:")
+    debug_print("\nSmooth Retraction Config:", force=True)
     for key, value in controller.smooth_retraction_config.items():
-        print(f"  {key}: {value}")
+        debug_print(f"  {key}: {value}", force=True)
     
-    print("\nMotion profiles (2-stage symmetric):")
-    print("  Lift Stage 1: 0-50µm at 100µm/s (gentle hydrodynamic break)")
-    print("  Lift Stage 2: 50µm+ at base velocity (normal peel)")
-    print("  Retraction Stage 1: Most distance at base velocity (fast approach)")
-    print("  Retraction Stage 2: Last 200µm at 100µm/s (gentle approach to window)")
+    debug_print("\nMotion profiles (2-stage symmetric):", force=True)
+    debug_print("  Lift Stage 1: 0-50µm at 100µm/s (gentle hydrodynamic break)", force=True)
+    debug_print("  Lift Stage 2: 50µm+ at base velocity (normal peel)", force=True)
+    debug_print("  Retraction Stage 1: Most distance at base velocity (fast approach)", force=True)
+    debug_print("  Retraction Stage 2: Last 200µm at 100µm/s (gentle approach to window)", force=True)

@@ -1,6 +1,7 @@
 import time
 import threading
 from zaber_motion import Units
+from support_modules.DebugSupport import debug_print, is_debug_mode_enabled
 
 class AutoHomer(threading.Thread):
     def __init__(self, zaber_axis, force_gauge_manager, initial_guess,
@@ -24,13 +25,13 @@ class AutoHomer(threading.Thread):
         self.scan_speed = 1.0 # mm/s
 
         self._stop_event = threading.Event()
-        self.log_to_terminal = True
+        self.log_to_terminal = is_debug_mode_enabled()
         self.calculated_stiffness = None # Ensure it's initialized
 
     def _log(self, message):
         """Helper for conditional logging to terminal."""
         if self.log_to_terminal:
-            print(f"AutoHomer_DEBUG: {message}")
+            debug_print(f"AutoHomer_DEBUG: {message}", force=True)
         self.status_callback(message) # Also send to GUI status
 
     def stop(self):

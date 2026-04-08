@@ -245,6 +245,70 @@ class dmd():
         if self.ans[6]!=0:
             print (self.ans[6])    
 
+    def _safe_extract_payload(self):
+        """Best-effort payload extraction from the last USB reply packet."""
+        try:
+            if self.ans is None:
+                return []
+
+            response = list(self.ans)
+            if len(response) < 7:
+                return []
+
+            # Reply length includes command bytes, so subtract 2.
+            payload_len = int(response[2]) + (int(response[3]) << 8) - 2
+            if payload_len <= 0:
+                return []
+
+            payload_start = 4
+            payload_end = min(len(response), payload_start + payload_len)
+            if payload_end <= payload_start:
+                return []
+
+            return response[payload_start:payload_end]
+        except Exception:
+            return []
+
+    def _read_register_bytes(self, com1, com2):
+        """Read a DLPC900 register and return raw payload bytes, or [] on failure."""
+        try:
+            self.command('r', 0x00, com1, com2, [])
+            return self._safe_extract_payload()
+        except Exception:
+            return []
+
+    def get_display_mode(self):
+        """Return current display mode (e.g. 0x00/0x02/0x03) or None if unavailable."""
+        payload = self._read_register_bytes(0x1a, 0x1b)
+        return int(payload[0]) if payload else None
+
+    def get_input_source(self):
+        """Return current input source selector byte or None if unavailable."""
+        payload = self._read_register_bytes(0x1a, 0x01)
+        return int(payload[0]) if payload else None
+
+    def get_sequence_state(self):
+        """Return sequence state byte (0 stop / 1 pause / 2 run) or None if unavailable."""
+        payload = self._read_register_bytes(0x1a, 0x24)
+        return int(payload[0]) if payload else None
+
+    def get_led_current(self):
+        """Return LED current (0-255) or None if unavailable."""
+        payload = self._read_register_bytes(0x0b, 0x01)
+        if not payload:
+            return None
+        # LED payload is commonly [R, G, B/current], keep last byte as the practical current proxy.
+        return int(payload[-1])
+
+    def get_status_snapshot(self):
+        """Return a best-effort status snapshot for verification and logging."""
+        return {
+            'mode': self.get_display_mode(),
+            'input_source': self.get_input_source(),
+            'sequence_state': self.get_sequence_state(),
+            'led_current': self.get_led_current(),
+        }
+
 ## function printing all of the dlp answer
 
     def readreply(self):

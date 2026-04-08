@@ -9,6 +9,7 @@ import threading
 import time
 import queue
 from contextlib import contextmanager
+from support_modules.DebugSupport import debug_print, is_debug_mode_enabled
 
 class USBCoordinator:
     """
@@ -57,10 +58,10 @@ class USBCoordinator:
             
             with self._dlp_lock:
                 self.dlp_operations_count += 1
-                print(f"USB Coordinator: Starting DLP operation '{operation_name}'")
+                debug_print(f"USB Coordinator: Starting DLP operation '{operation_name}'", force=is_debug_mode_enabled())
                 yield
                 self.last_dlp_operation = time.time()
-                print(f"USB Coordinator: Completed DLP operation '{operation_name}' in {time.time() - start_time:.3f}s")
+                debug_print(f"USB Coordinator: Completed DLP operation '{operation_name}' in {time.time() - start_time:.3f}s", force=is_debug_mode_enabled())
                 
         finally:
             with self._priority_lock:
@@ -78,7 +79,7 @@ class USBCoordinator:
         with self._priority_lock:
             if self._dlp_active:
                 self.conflicts_prevented += 1
-                print(f"USB Coordinator: Deferring Phidget '{operation_name}' due to active DLP operation")
+                debug_print(f"USB Coordinator: Deferring Phidget '{operation_name}' due to active DLP operation", force=is_debug_mode_enabled())
                 # Brief yield to allow DLP to complete
                 time.sleep(0.001)
         
