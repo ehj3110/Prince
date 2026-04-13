@@ -1,0 +1,12 @@
+{
+  "directory": "C:\\Users\\cheng sun\\BoyuanSun\\Slicing\\Evan\\Pyramid_90Perc_5samples_50umLayers",
+  "led_current": "80",
+  "move_distance": "25",
+  "layer_thickness": "50",
+  "exposure_time": "2",
+  "base_curing_time": "30",
+  "step_speed": "500",
+  "overstep": "6000",
+  "pause": "3",
+  "acceleration": "1000"
+}
