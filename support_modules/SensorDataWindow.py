@@ -21,9 +21,19 @@ if str(current_dir) not in sys.path:
 
 from zaber_motion import Units
 from PositionLogger import PositionLogger
-from ForceGaugeManager import ForceGaugeManager
+try:
+    from ForceGaugeManager import ForceGaugeManager
+    FORCE_GAUGE_IMPORT_ERROR = None
+except Exception as _force_import_error:
+    ForceGaugeManager = None
+    FORCE_GAUGE_IMPORT_ERROR = _force_import_error
 from AutomatedLayerLogger import LayerLogger # Import LayerLogger
-from PeakForceLogger import PeakForceLogger # Import the logger
+try:
+    from PeakForceLogger import PeakForceLogger # Import the logger
+    PEAK_FORCE_IMPORT_ERROR = None
+except Exception as _peak_import_error:
+    PeakForceLogger = None
+    PEAK_FORCE_IMPORT_ERROR = _peak_import_error
 from datetime import datetime # Add this import
 import datetime # Ensure datetime is imported
 import shutil
@@ -177,20 +187,31 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.lbl_offset = Label(force_info_row2, text="Offset: N/A", font=control_box_font, anchor=W)
         self.lbl_offset.pack(side=LEFT, padx=10)
 
+        if ForceGaugeManager is None:
+            unavailable_reason = str(FORCE_GAUGE_IMPORT_ERROR) if FORCE_GAUGE_IMPORT_ERROR else "unknown error"
+            self.lbl_force_gauge_status.config(text=f"Force: unavailable ({unavailable_reason})")
+            self.b_quick_calibrate.config(state=tk.DISABLED)
+            self.b_calibrate_force_gauge.config(state=tk.DISABLED)
+            self.b_tare_force_gauge.config(state=tk.DISABLED)
+            self.b_save_calibration.config(state=tk.DISABLED)
+
         # Row 3: Record Work Checkbox
         force_controls_row3 = Frame(force_gauge_main_frame)
         force_controls_row3.pack(fill=X, padx=5, pady=2)
 
         # Instantiate ForceGaugeManager
-        self.force_gauge_manager = ForceGaugeManager(
-            gain_label=self.lbl_gain,
-            offset_label=self.lbl_offset,
-            force_status_label=self.lbl_force_gauge_status, # This is the small status label in the box
-            large_force_readout_label=self.lbl_current_force, # This is the large readout at the top
-            output_force_queue=self.force_data_queue_for_logger,
-            parent_window=self.sensor_window,
-            sensor_window_ref=self # Pass self to ForceGaugeManager
-        )
+        if ForceGaugeManager is not None:
+            self.force_gauge_manager = ForceGaugeManager(
+                gain_label=self.lbl_gain,
+                offset_label=self.lbl_offset,
+                force_status_label=self.lbl_force_gauge_status, # This is the small status label in the box
+                large_force_readout_label=self.lbl_current_force, # This is the large readout at the top
+                output_force_queue=self.force_data_queue_for_logger,
+                parent_window=self.sensor_window,
+                sensor_window_ref=self # Pass self to ForceGaugeManager
+            )
+        else:
+            self.force_gauge_manager = None
         
         # --- Automated Logging Control Box (GUI Elements) ---
         self.frame_auto_log = ttk.LabelFrame(self.sensor_window, text="Automated Layer Logging Control", padding=(10, 5))
@@ -333,16 +354,23 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 
                 # Create automated PeakForceLogger for this specific print session
                 automated_csv_path = os.path.join(log_directory, "automated_work_of_adhesion.csv")
-                
+
                 # Create the automated logger with unified corrected calculator
-                self.automated_peak_force_logger = PeakForceLogger(
-                    output_csv_filepath=automated_csv_path,
-                    is_manual_log=False,  # This is automated logging
-                    use_corrected_calculator=True,  # Use the unified corrected calculator
-                    main_window_ref=self.prince_main_app_ref  # Pass main window reference
-                )
-                
-                self.update_main_status(f"Automated work of adhesion logging configured. Output: {automated_csv_path}")
+                if PeakForceLogger is not None:
+                    self.automated_peak_force_logger = PeakForceLogger(
+                        output_csv_filepath=automated_csv_path,
+                        is_manual_log=False,  # This is automated logging
+                        use_corrected_calculator=True,  # Use the unified corrected calculator
+                        main_window_ref=self.prince_main_app_ref  # Pass main window reference
+                    )
+                    self.update_main_status(f"Automated work of adhesion logging configured. Output: {automated_csv_path}")
+                else:
+                    self.automated_peak_force_logger = None
+                    missing_reason = str(PEAK_FORCE_IMPORT_ERROR) if PEAK_FORCE_IMPORT_ERROR else "unknown error"
+                    self.update_main_status(
+                        f"Automated work of adhesion logging unavailable: {missing_reason}",
+                        warning=True
+                    )
                 
                 # Note: Monitoring will start automatically when the first layer begins in the print loop
                 # No need to pre-start monitoring here to avoid duplicate layer 1 entries
@@ -583,11 +611,27 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # --- Clean up PeakForceLogger instances ---
         if hasattr(self, 'peak_force_logger') and self.peak_force_logger:
             print("SensorDataWindow: Closing manual PeakForceLogger.")
-            self.peak_force_logger.close()
+            try:
+                if hasattr(self.peak_force_logger, 'close'):
+                    self.peak_force_logger.close()
+                elif hasattr(self.peak_force_logger, 'stop_monitoring_and_log_peak'):
+                    self.peak_force_logger.stop_monitoring_and_log_peak()
+            except Exception as e:
+                print(f"SensorDataWindow: Warning - manual PeakForceLogger cleanup failed: {e}")
+            finally:
+                self.peak_force_logger = None
 
         if hasattr(self, 'automated_peak_force_logger') and self.automated_peak_force_logger:
             print("SensorDataWindow: Closing automated PeakForceLogger.")
-            self.automated_peak_force_logger.close()
+            try:
+                if hasattr(self.automated_peak_force_logger, 'close'):
+                    self.automated_peak_force_logger.close()
+                elif hasattr(self.automated_peak_force_logger, 'stop_monitoring_and_log_peak'):
+                    self.automated_peak_force_logger.stop_monitoring_and_log_peak()
+            except Exception as e:
+                print(f"SensorDataWindow: Warning - automated PeakForceLogger cleanup failed: {e}")
+            finally:
+                self.automated_peak_force_logger = None
 
         # Clean up AutomatedLayerLogger if it exists and has a shutdown method
         if hasattr(self, 'automated_layer_logger') and self.automated_layer_logger:

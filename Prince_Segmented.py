@@ -758,6 +758,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # List of modules to reload (add more as needed)
             modules_to_reload = [
                 'support_modules.SensorDataWindow',
+                'support_modules.ImageModificationWindow',
                 'support_modules.PeakForceLogger',
                 'support_modules.adhesion_metrics_calculator',
                 'support_modules.enhanced_adhesion_metrics',
@@ -777,6 +778,28 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 if module_name in sys.modules:
                     importlib.reload(sys.modules[module_name])
                     reloaded_count += 1
+
+            # Ensure ImageModificationWindow module/class is re-imported and active
+            try:
+                if 'support_modules.ImageModificationWindow' in sys.modules:
+                    importlib.reload(sys.modules['support_modules.ImageModificationWindow'])
+                # Import the class into our namespace
+                from support_modules.ImageModificationWindow import ImageModificationWindow as _IMWClass
+                # If the window is currently open, destroy and recreate it to pick up changes
+                if hasattr(self, 'image_modification_window') and self.image_modification_window is not None:
+                    try:
+                        if hasattr(self.image_modification_window, 'window') and self.image_modification_window.window.winfo_exists():
+                            self.image_modification_window.window.destroy()
+                    except Exception:
+                        pass
+                    try:
+                        self.image_modification_window = _IMWClass(self.win, self.update_status_message, self)
+                        self.update_status_message('Image Modification window reloaded and refreshed')
+                    except Exception as e:
+                        self.update_status_message(f'Error recreating Image Modification window after reload: {e}', error=True)
+            except Exception as e:
+                # Non-fatal: continue, but report
+                self.update_status_message(f'Warning: could not hot-reload ImageModificationWindow: {e}', error=True)
             
             self.update_status_message(f"Script reload complete: {reloaded_count} modules reloaded")
             self.update_status_message("Note: Changes will take effect for new operations. Hardware connections preserved.")
@@ -1648,7 +1671,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             z_return_pos_mm=return_pos_mm
                         )
 
-                if actual_layer_pause_s > 0:
+                if print_mode == "stepped" and actual_layer_pause_s > 0:
                     # Set phase to Pause (layer pause period before next exposure)
                     self._set_phase_robust("Pause")
                     
@@ -1793,22 +1816,39 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.print_thread = None
 
     def set_home(self):
-        self.reference = float(self.t4.get())
-        # Update the Z-axis position display to show home position (0.0)
-        self.t4.delete(0, 'end')
-        self.t4.insert(END, "0.0")
-        self.update_status_message("Home Set") # Use update_status_message instead of direct t8 manipulation
+        """Set the position value in the Z axis position box as the new reference (home) for printing."""
+        try:
+            self.reference = float(self.t4.get())
+            self.update_status_message(f"Print Home Set to {self.reference} mm (Absolute)")
+        except Exception as e:
+            self.update_status_message(f"Error setting home: {e}", error=True)
 
     def get_position(self):
-        self.t4.delete(0, 'end')
-        # Get absolute position and subtract reference to show position relative to home
-        absolute_position = self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)
-        relative_position = absolute_position - self.reference
-        self.t4.insert(END, str(relative_position))
+        """Display current absolute Z-axis position from the hardware."""
+        try:
+            self.t4.delete(0, 'end')
+            absolute_position = self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)
+            self.t4.insert(END, str(absolute_position))
+        except Exception as e:
+            self.update_status_message(f"Error getting position: {e}", error=True)
 
     def goto_position(self):
-        self.axis.move_absolute(position=float(self.t4.get()), unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False)
+        """Move exactly to the absolute position specified in t4."""
+        try:
+            target_abs_pos = float(self.t4.get())
+            self.axis.move_absolute(position=target_abs_pos, unit=Units.LENGTH_MILLIMETRES,
+                                    wait_until_idle=False)
+        except MovementFailedException:
+            # Move went out of range - return to absolute hardware zero and stop
+            self.update_status_message("Position out of range! Returning to hardware physical zero...")
+            try:
+                self.axis.move_absolute(position=0, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                self.update_status_message("Returned to hardware physical zero")
+                self.get_position()
+            except Exception as e:
+                self.update_status_message(f"Error returning to zero: {e}", error=True)
+        except Exception as e:
+            self.update_status_message(f"Move error: {e}", error=True)
 
     def stop(self):
         self.update_status_message("Stop signal received...")
@@ -1902,14 +1942,50 @@ Evan Jones, evanjones2026@u.northwestern.edu
             traceback.print_exc()
 
     def moveup(self):
-        self.axis.move_relative(position=float(self.t9.get())*-1, unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False,velocity=10,
-                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        """Move stage upward by distance in t9. If out of range, move to zero and stop."""
+        try:
+            current_pos = self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)
+            move_distance = float(self.t9.get()) * -1  # Negative for up
+            target_pos = current_pos + move_distance
+            
+            # Attempt the move
+            self.axis.move_relative(position=move_distance, unit=Units.LENGTH_MILLIMETRES,
+                                    wait_until_idle=False, velocity=10,
+                                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        except MovementFailedException:
+            # Move went out of range - return to zero and stop
+            self.update_status_message("Move out of range! Returning to zero (home)...")
+            try:
+                self.axis.move_absolute(position=0, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                self.update_status_message("Returned to home position (zero)")
+                self.get_position()
+            except Exception as e:
+                self.update_status_message(f"Error returning to home: {e}", error=True)
+        except Exception as e:
+            self.update_status_message(f"Move error: {e}", error=True)
 
     def movedown(self):
-        self.axis.move_relative(position=float(self.t9.get()), unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False,velocity=5,
-                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        """Move stage downward by distance in t9. If out of range, move to zero and stop."""
+        try:
+            current_pos = self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)
+            move_distance = float(self.t9.get())  # Positive for down
+            target_pos = current_pos + move_distance
+            
+            # Attempt the move
+            self.axis.move_relative(position=move_distance, unit=Units.LENGTH_MILLIMETRES,
+                                    wait_until_idle=False, velocity=5,
+                                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        except MovementFailedException:
+            # Move went out of range - return to zero and stop
+            self.update_status_message("Move out of range! Returning to zero (home)...")
+            try:
+                self.axis.move_absolute(position=0, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                self.update_status_message("Returned to home position (zero)")
+                self.get_position()
+            except Exception as e:
+                self.update_status_message(f"Error returning to home: {e}", error=True)
+        except Exception as e:
+            self.update_status_message(f"Move error: {e}", error=True)
 
     def simple_txt(self):
         path = str(self.t1.get())

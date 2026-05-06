@@ -17,10 +17,18 @@ class PeakForceLogger:
     Unified PeakForceLogger that uses the corrected AdhesionMetricsCalculator
     for consistent analysis across all system components.
     """
-    def __init__(self, output_csv_filepath, is_manual_log=False, use_corrected_calculator=True):
+    def __init__(
+        self,
+        output_csv_filepath,
+        is_manual_log=False,
+        use_corrected_calculator=True,
+        main_window_ref=None,
+    ):
         self.output_csv_filepath = output_csv_filepath
         self.is_manual_log = is_manual_log
         self.use_corrected_calculator = use_corrected_calculator
+        # Keep for compatibility with existing UI callers that pass main_window_ref.
+        self.main_window_ref = main_window_ref
         self.current_layer_number = 0
         self._monitoring = False
         self._lock = threading.Lock()
@@ -45,6 +53,7 @@ class PeakForceLogger:
         
         self.z_peel_peak_mm = None 
         self.z_return_pos_mm = None 
+        self.image_path = None
 
         # Only create header for automated logging, not manual logging
         if not self.is_manual_log:
@@ -79,17 +88,26 @@ class PeakForceLogger:
                     writer.writerow(header)
             self.log_file_exists = True
 
-    def start_monitoring_for_layer(self, layer_number, z_peel_peak=None, z_return_pos=None):
+    def start_monitoring_for_layer(self, layer_number, z_peel_peak=None, z_return_pos=None, image_path=None):
         """Start monitoring for a new layer."""
         with self._lock:
             self.current_layer_number = layer_number
             self.z_peel_peak_mm = z_peel_peak
             self.z_return_pos_mm = z_return_pos
+            self.image_path = image_path
             self._monitoring = True
             self._data_buffer.clear()
             self.plot_time_data.clear()
             self.plot_force_data.clear()
         print(f"PFL: Started monitoring layer {layer_number} (peel: {z_peel_peak}mm, return: {z_return_pos}mm)")
+
+    def close(self):
+        """Release in-memory state for compatibility with UI cleanup calls."""
+        with self._lock:
+            self._monitoring = False
+            self._data_buffer.clear()
+            self.plot_time_data.clear()
+            self.plot_force_data.clear()
 
     def add_data_point(self, timestamp, position, force):
         """Add a data point during monitoring."""

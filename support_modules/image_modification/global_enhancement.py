@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Global Blur Enhancement Module
+"""Global Blur Enhancement Module.
 
 Symmetric: Gaussian vignette (center darker, edges brighter).
-Asymmetric: Per-quadrant gradients based on furthest white pixel from center,
-with smooth blending at quadrant boundaries.
+Asymmetric: Angular-sector gradients based on furthest white pixel from center,
+with continuous interpolation across sector boundaries.
 """
 
 import numpy as np
@@ -15,22 +15,100 @@ def _smoothstep(t: np.ndarray) -> np.ndarray:
     return 3 * t**2 - 2 * t**3
 
 
-def build_asymmetric_gaussian_map(image: np.ndarray,
-                                 globe: float,
-                                 blend_angle_deg: float = 20.0) -> np.ndarray:
-    """
-    Build an asymmetric vignette map using 4 quadrants. Each quadrant has a
-    gradient from center (min) to the furthest white pixel in that quadrant (max).
-    Values are blended smoothly at quadrant boundaries.
+def _fill_missing_sector_rmax(values: np.ndarray, fallback: float) -> np.ndarray:
+    """Fill NaN sectors via circular interpolation."""
+    if values.size == 0:
+        return values
+    valid = ~np.isnan(values)
+    if not np.any(valid):
+        return np.full_like(values, float(fallback), dtype=np.float64)
 
-    Args:
-        image: Grayscale image (uint8 or float) - used to find white (non-zero) pixels
-        globe: Minimum value at center (e.g., 0.8 = center is 80% of edge intensity)
-        blend_angle_deg: Angular width for blending at quadrant boundaries (degrees)
+    n = values.size
+    idx = np.arange(n, dtype=np.float64)
+    valid_idx = idx[valid]
+    valid_vals = values[valid]
 
-    Returns:
-        2D float array, same shape as image
+    ext_idx = np.concatenate((valid_idx - n, valid_idx, valid_idx + n))
+    ext_vals = np.concatenate((valid_vals, valid_vals, valid_vals))
+    return np.interp(idx, ext_idx, ext_vals)
+
+
+def _smooth_circular(values: np.ndarray, half_window: int) -> np.ndarray:
+    """Circular moving-average smoothing."""
+    half_window = max(0, int(half_window))
+    if half_window == 0 or values.size <= 1:
+        return values
+    kernel_size = 2 * half_window + 1
+    kernel = np.ones(kernel_size, dtype=np.float64) / float(kernel_size)
+    padded = np.pad(values, (half_window, half_window), mode="wrap")
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def _sample_blended_circular_profile(theta_deg: np.ndarray,
+                                     profile: np.ndarray,
+                                     sector_angle_deg: float,
+                                     blend_angle_deg: float) -> np.ndarray:
+    """Sample an evenly spaced circular profile with boundary-centered crossfades."""
+    sector_angle_deg = float(sector_angle_deg)
+    blend_angle_deg = max(0.0, float(blend_angle_deg))
+    sector_count = profile.size
+    if sector_count == 1:
+        return np.full_like(theta_deg, float(profile[0]), dtype=np.float64)
+
+    profile = np.asarray(profile, dtype=np.float64)
+    theta = np.asarray(theta_deg, dtype=np.float64) % 360.0
+    sector_pos = theta / sector_angle_deg
+    left_idx = np.floor(sector_pos).astype(np.int32) % sector_count
+    frac = sector_pos - np.floor(sector_pos)
+    right_idx = (left_idx + 1) % sector_count
+
+    if blend_angle_deg <= 0:
+        return profile[left_idx]
+
+    half_width_deg = 0.5 * blend_angle_deg
+    if half_width_deg <= 0:
+        return profile[left_idx]
+
+    result = profile[left_idx].astype(np.float64, copy=True)
+
+    # Find nearest sector boundary in degrees and blend only around that boundary.
+    boundary_idx = np.rint(theta / sector_angle_deg).astype(np.int32) % sector_count
+    boundary_angle = boundary_idx * sector_angle_deg
+    delta = ((theta - boundary_angle + 180.0) % 360.0) - 180.0
+
+    in_blend = np.abs(delta) <= half_width_deg
+    if np.any(in_blend):
+        # Boundary k separates sector k-1 (left) and sector k (right).
+        left_boundary_idx = (boundary_idx[in_blend] - 1) % sector_count
+        right_boundary_idx = boundary_idx[in_blend]
+        t = (delta[in_blend] + half_width_deg) / (2.0 * half_width_deg)
+        w = _smoothstep(t)
+        result[in_blend] = (1.0 - w) * profile[left_boundary_idx] + w * profile[right_boundary_idx]
+
+    return result
+
+
+def build_angular_asymmetric_map(
+    image: np.ndarray,
+    globe: float,
+    sector_angle_deg: float = 10.0,
+    blend_angle_deg: float = 10.0,
+    smooth_window_sectors: int = 1,
+) -> np.ndarray:
+    """Build an asymmetric vignette map using angular sectors.
+
+    Each sector gets its own furthest-white radius. Per-pixel radii are blended
+    with neighboring sectors near boundaries for smooth transitions.
     """
+    sector_angle_deg = float(sector_angle_deg)
+    if sector_angle_deg <= 0:
+        raise ValueError("sector_angle_deg must be > 0")
+    if sector_angle_deg > 180:
+        raise ValueError("sector_angle_deg must be <= 180")
+
+    blend_angle_deg = max(0.0, float(blend_angle_deg))
+    smooth_window_sectors = max(0, int(smooth_window_sectors))
+
     rows, cols = image.shape
     center_x = (cols - 1) / 2.0
     center_y = (rows - 1) / 2.0
@@ -47,68 +125,54 @@ def build_asymmetric_gaussian_map(image: np.ndarray,
     theta_deg = np.degrees(np.arctan2(dY, dX))  # -180 to 180
     theta_deg = (theta_deg + 360) % 360  # 0 to 360
 
-    # Quadrant boundaries at 0°, 90°, 180°, 270°
-    # Q0: [0, 90), Q1: [90, 180), Q2: [180, 270), Q3: [270, 360)
+    # Sector setup
+    sector_count = max(1, int(round(360.0 / sector_angle_deg)))
+    actual_sector_angle = 360.0 / float(sector_count)
+
     mask_nonzero = image > 0
     if not np.any(mask_nonzero):
         return np.ones_like(image, dtype=np.float64)
 
-    # Find r_max for each quadrant (furthest white pixel from center)
-    r_max_per_quad = np.zeros(4)
-    for q in range(4):
-        theta_lo = 90 * q
-        theta_hi = 90 * (q + 1)
-        in_q = mask_nonzero & (theta_deg >= theta_lo) & (theta_deg < theta_hi)
-        if np.any(in_q):
-            r_max_per_quad[q] = np.max(r[in_q])
-        else:
-            r_max_per_quad[q] = np.max(r)
+    sector_idx = np.floor(theta_deg / actual_sector_angle).astype(np.int32) % sector_count
 
-    # Avoid division by zero
-    r_max_per_quad = np.maximum(r_max_per_quad, 1e-6)
+    # Find r_max for each sector; fill sparse sectors from neighbors.
+    r_max_per_sector = np.full(sector_count, np.nan, dtype=np.float64)
+    for s in range(sector_count):
+        in_s = mask_nonzero & (sector_idx == s)
+        if np.any(in_s):
+            r_max_per_sector[s] = float(np.max(r[in_s]))
+    global_rmax = float(np.max(r[mask_nonzero]))
+    r_max_per_sector = _fill_missing_sector_rmax(r_max_per_sector, fallback=global_rmax)
+    r_max_per_sector = _smooth_circular(r_max_per_sector, smooth_window_sectors)
+    r_max_per_sector = np.maximum(r_max_per_sector, 1e-6)
 
     min_val = globe
     max_val = 1.0
 
-    # For each quadrant, compute gradient value: min + (max-min) * (r / r_max)
-    # r/r_max capped at 1 so we don't exceed max
-    map_q0 = min_val + (max_val - min_val) * np.minimum(r / r_max_per_quad[0], 1.0)
-    map_q1 = min_val + (max_val - min_val) * np.minimum(r / r_max_per_quad[1], 1.0)
-    map_q2 = min_val + (max_val - min_val) * np.minimum(r / r_max_per_quad[2], 1.0)
-    map_q3 = min_val + (max_val - min_val) * np.minimum(r / r_max_per_quad[3], 1.0)
+    rmax_eff = _sample_blended_circular_profile(
+        theta_deg,
+        r_max_per_sector,
+        actual_sector_angle,
+        blend_angle_deg,
+    )
 
-    # Build blended map: for each pixel, use its quadrant's gradient and blend at boundaries
-    maps = [map_q0, map_q1, map_q2, map_q3]
-    half_blend = blend_angle_deg / 2.0
-
-    result = np.zeros_like(r, dtype=np.float64)
-    for q in range(4):
-        theta_lo = 90 * q
-        theta_hi = 90 * (q + 1)
-        in_quadrant = (theta_deg >= theta_lo) & (theta_deg < theta_hi)
-
-        base_val = maps[q]
-        blended = base_val.copy()
-
-        # Near lower boundary: blend with previous quadrant
-        prev_q = (q - 1) % 4
-        dist_to_lo = theta_deg - theta_lo
-        in_blend_lo = in_quadrant & (dist_to_lo < half_blend)
-        t_lo = np.where(in_blend_lo, dist_to_lo / half_blend, 0)
-        w_prev = _smoothstep(t_lo)
-        blended = np.where(in_blend_lo, (1 - w_prev) * base_val + w_prev * maps[prev_q], blended)
-
-        # Near upper boundary: blend with next quadrant
-        next_q = (q + 1) % 4
-        dist_to_hi = theta_hi - theta_deg
-        in_blend_hi = in_quadrant & (dist_to_hi < half_blend)
-        t_hi = np.where(in_blend_hi, dist_to_hi / half_blend, 0)
-        w_next = _smoothstep(t_hi)
-        blended = np.where(in_blend_hi, (1 - w_next) * base_val + w_next * maps[next_q], blended)
-
-        result = np.where(in_quadrant, blended, result)
-
+    result = min_val + (max_val - min_val) * np.minimum(r / rmax_eff, 1.0)
     return result
+
+
+def build_asymmetric_gaussian_map(
+    image: np.ndarray,
+    globe: float,
+    blend_angle_deg: float = 20.0,
+) -> np.ndarray:
+    """Compatibility wrapper for the legacy 4-quadrant asymmetric map."""
+    return build_angular_asymmetric_map(
+        image=image,
+        globe=globe,
+        sector_angle_deg=90.0,
+        blend_angle_deg=blend_angle_deg,
+        smooth_window_sectors=0,
+    )
 
 
 def build_gaussian_map(rows: int, cols: int, globe: float, sig: float) -> np.ndarray:

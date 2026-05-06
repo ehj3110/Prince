@@ -14,7 +14,11 @@ import multiprocessing
 from functools import partial
 
 from .edge_enhancement import edge_enhance
-from .global_enhancement import build_gaussian_map, build_asymmetric_gaussian_map, apply_global_enhancement
+from .global_enhancement import (
+    build_gaussian_map,
+    build_angular_asymmetric_map,
+    apply_global_enhancement,
+)
 from .padding import create_black_padding_image, get_output_sequence
 try:
     from .feature_depth import (build_feature_depth_map, build_pressure_depth_map,
@@ -24,6 +28,7 @@ except ImportError:
     HAS_FEATURE_DEPTH = False
 
 from .scattering_compensation import apply_scattering_compensation
+from support_modules.z_compensation import compute_layer_factors
 
 MIN_INTENSITY = 100
 MAX_INTENSITY = 255
@@ -41,16 +46,24 @@ def _natural_sort(files: list) -> list:
 def _get_output_folder_name(input_folder: str, blur: float, padded: bool, globe: float,
                             edge_enabled: bool, global_enabled: bool,
                             global_asymmetric: bool = False,
+                            ge_sector_angle: float = 90.0,
+                            ge_sector_smoothing: int = 0,
+                            ge_blend_angle: float = 20.0,
                             depth_enabled: bool = False,
                             depth_strength: float = 0.0,
                             depth_mode: str = "distance",
                             scatter_enabled: bool = False) -> str:
-    """Format: EE_{blur}_{Padded|NoPad}_GE_{globe}[_Asym][_FD_{strength}[_Pres]][_SC]"""
+    """Format: EE_{blur}_{Padded|NoPad}_GE_{globe}[_AsymA{deg}_S{n}_B{deg}][_FD_{strength}[_Pres]][_SC]"""
     ee_val = int(blur) if edge_enabled else 0
     pad_str = "Padded" if padded else "NoPad"
     ge_val = globe if global_enabled else 0
     ge_str = str(ge_val).replace(".", "_") if ge_val != 0 else "0"
-    asym_str = "_Asym" if global_asymmetric else ""
+    if global_asymmetric:
+        angle_tag = str(round(float(ge_sector_angle), 2)).replace(".", "_")
+        blend_tag = str(round(float(ge_blend_angle), 2)).replace(".", "_")
+        asym_str = f"_AsymA{angle_tag}_S{int(ge_sector_smoothing)}_B{blend_tag}"
+    else:
+        asym_str = ""
     if depth_enabled:
         mode_tag = "_Pres" if depth_mode == "pressure" else ""
         fd_str = f"_FD_{str(round(depth_strength, 2)).replace('.', '_')}{mode_tag}"
@@ -84,6 +97,8 @@ def process_single_image(filename: str,
                          global_asymmetric: bool = False,
                          globe: float = 0.8,
                          blend_angle: float = 20.0,
+                         ge_sector_angle: float = 90.0,
+                         ge_sector_smoothing: int = 0,
                          depth_check: int = 0,
                          depth_strength: float = 0.5,
                          depth_decay_sigma: float = 50.0,
@@ -107,9 +122,11 @@ def process_single_image(filename: str,
         global_check: 1 to enable global enhancement
         gaussian_map: Pre-built map for symmetric mode (or None if asymmetric)
         guide_padding: 1 to enable padding normalization (when EE and GE off)
-        global_asymmetric: Use per-quadrant asymmetric map instead of symmetric
+        global_asymmetric: Use angular-sector asymmetric map instead of symmetric
         globe: Center min value for global enhancement
-        blend_angle: Angular blend width for asymmetric mode (degrees)
+        blend_angle: Angular blend width near sector boundaries (degrees)
+        ge_sector_angle: Sector width for asymmetric mode (degrees)
+        ge_sector_smoothing: Circular smoothing window in sector-count units
         depth_check: 1 to enable feature depth correction
         depth_strength: Correction strength [0, 1]
         depth_decay_sigma: Channel quality decay distance (pixels) — distance mode
@@ -135,7 +152,13 @@ def process_single_image(filename: str,
 
     if global_check == 1:
         if global_asymmetric:
-            ge_map = build_asymmetric_gaussian_map(img_float, globe, blend_angle)
+            ge_map = build_angular_asymmetric_map(
+                img_float,
+                globe,
+                sector_angle_deg=ge_sector_angle,
+                blend_angle_deg=blend_angle,
+                smooth_window_sectors=ge_sector_smoothing,
+            )
         else:
             ge_map = gaussian_map
         if ge_map is not None:
@@ -174,6 +197,8 @@ def process_single_for_preview(image_path: str,
                                sigma: float,
                                global_asymmetric: bool = False,
                                blend_angle: float = 20.0,
+                               ge_sector_angle: float = 90.0,
+                               ge_sector_smoothing: int = 0,
                                depth_enabled: bool = False,
                                depth_strength: float = 0.5,
                                depth_decay_sigma: float = 50.0,
@@ -185,6 +210,7 @@ def process_single_for_preview(image_path: str,
                                scatter_width: float = 15.0,
                                scatter_min_val: float = 127.0,
                                scatter_max_val: float = 255.0,
+                               axial_factor: float = 1.0,
                                ee_falloff: int = 0,
                                scatter_falloff: int = 0) -> np.ndarray:
     """
@@ -197,8 +223,10 @@ def process_single_for_preview(image_path: str,
         global_enabled: Enable global enhancement
         globe: Global map center ratio
         sigma: Global map sigma divisor (symmetric mode)
-        global_asymmetric: Use per-quadrant asymmetric map
-        blend_angle: Angular blend width for asymmetric mode (degrees)
+        global_asymmetric: Use angular-sector asymmetric map
+        blend_angle: Angular blend width near sector boundaries (degrees)
+        ge_sector_angle: Sector width for asymmetric mode (degrees)
+        ge_sector_smoothing: Circular smoothing window in sector-count units
         depth_mode: "distance" or "pressure"
         pressure_conductivity: Channel K ratio — pressure mode
         pressure_sink: Resin sink strength — pressure mode
@@ -221,7 +249,13 @@ def process_single_for_preview(image_path: str,
 
     if global_enabled:
         if global_asymmetric:
-            ge_map = build_asymmetric_gaussian_map(img_float, globe, blend_angle)
+            ge_map = build_angular_asymmetric_map(
+                img_float,
+                globe,
+                sector_angle_deg=ge_sector_angle,
+                blend_angle_deg=blend_angle,
+                smooth_window_sectors=ge_sector_smoothing,
+            )
         else:
             rows, cols = img.shape
             ge_map = build_gaussian_map(rows, cols, globe, sigma)
@@ -245,6 +279,9 @@ def process_single_for_preview(image_path: str,
             intermediate, scatter_width, scatter_min_val, scatter_max_val, scatter_falloff
         )
 
+    if abs(axial_factor - 1.0) > 1e-9:
+        intermediate = intermediate * float(axial_factor)
+
     return np.clip(intermediate, 0, 255).astype(np.uint8)
 
 
@@ -257,6 +294,8 @@ def process_folder(input_folder: str,
                    padding_enabled: bool,
                    global_asymmetric: bool = False,
                    blend_angle: float = 20.0,
+                   ge_sector_angle: float = 90.0,
+                   ge_sector_smoothing: int = 0,
                    depth_enabled: bool = False,
                    depth_strength: float = 0.5,
                    depth_decay_sigma: float = 50.0,
@@ -268,6 +307,11 @@ def process_folder(input_folder: str,
                    scatter_width: float = 15.0,
                    scatter_min_val: float = 127.0,
                    scatter_max_val: float = 255.0,
+                   axial_enabled: bool = False,
+                   layer_thickness_um: float = 50.0,
+                   penetration_depth_um: float = 120.0,
+                   axial_strength: float = 1.0,
+                   axial_min_factor: float = 0.25,
                    ee_falloff: int = 0,
                    scatter_falloff: int = 0,
                    progress_callback=None) -> str:
@@ -283,8 +327,10 @@ def process_folder(input_folder: str,
         globe: Global map center ratio
         sigma: Global map sigma divisor (symmetric mode)
         padding_enabled: Insert black {x}_1.png after each image
-        global_asymmetric: Use per-quadrant asymmetric map
-        blend_angle: Angular blend width for asymmetric mode (degrees)
+        global_asymmetric: Use angular-sector asymmetric map
+        blend_angle: Angular blend width near sector boundaries (degrees)
+        ge_sector_angle: Sector width for asymmetric mode (degrees)
+        ge_sector_smoothing: Circular smoothing window in sector-count units
         progress_callback: Optional fn(current, total, message)
 
     Returns:
@@ -329,6 +375,8 @@ def process_folder(input_folder: str,
         global_asymmetric=global_asymmetric,
         globe=globe,
         blend_angle=blend_angle,
+        ge_sector_angle=ge_sector_angle,
+        ge_sector_smoothing=ge_sector_smoothing,
         depth_check=1 if depth_enabled else 0,
         depth_strength=depth_strength,
         depth_decay_sigma=depth_decay_sigma,
@@ -351,13 +399,33 @@ def process_folder(input_folder: str,
 
     output_folder_name = _get_output_folder_name(
         input_folder, blurring, padding_enabled, globe, edge_enabled, global_enabled,
-        global_asymmetric, depth_enabled, depth_strength, depth_mode, scatter_enabled
+        global_asymmetric, ge_sector_angle, ge_sector_smoothing, blend_angle,
+        depth_enabled, depth_strength, depth_mode, scatter_enabled
     )
+
+    if axial_enabled:
+        axial_tag = str(round(float(layer_thickness_um), 2)).replace('.', '_')
+        dp_tag = str(round(float(penetration_depth_um), 2)).replace('.', '_')
+        output_folder_name = f"{output_folder_name}_ZA_LT{axial_tag}_DP{dp_tag}"
+
     output_folder = os.path.join(input_folder, output_folder_name)
     os.makedirs(output_folder, exist_ok=True)
 
     if progress_callback:
         progress_callback(len(image_files), len(image_files), "Saving images...")
+
+    if axial_enabled:
+        factors = compute_layer_factors(
+            num_layers=len(processed),
+            layer_thickness_um=layer_thickness_um,
+            penetration_depth_um=penetration_depth_um,
+            strength=axial_strength,
+            min_factor=axial_min_factor,
+        )
+        for i, img in enumerate(processed):
+            if img is None:
+                continue
+            processed[i] = np.clip(img.astype(np.float64) * factors[i], 0, 255).astype(np.uint8)
 
     output_sequence = get_output_sequence(processed, image_files, padding_enabled)
     for img, out_name in output_sequence:

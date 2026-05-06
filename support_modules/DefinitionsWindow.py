@@ -543,8 +543,8 @@ def _build_ge_tab(nb: ttk.Notebook) -> None:
         "A 2D vignette (correction) map is built: it equals Globe ratio at the image "
         "centre and ramps up to 1.0 at the part boundary.  Every pixel is multiplied "
         "by its map value.  Centre pixels are dimmed; edge pixels are left unchanged.  "
-        "Asymmetric mode adapts the map per quadrant to handle non-circular "
-        "non-uniformity."
+        "Asymmetric mode adapts the map per angular sector so non-circular and "
+        "irregular shapes can be corrected locally."
     ))
 
     _draw_global_profile(f)
@@ -567,14 +567,22 @@ def _build_ge_tab(nb: ttk.Notebook) -> None:
            "  •  Sigma = 4 → steep, correction only within the inner ~25 % of the field\n"
            "  •  Sigma = 8 → gentle, correction spread across the whole field")
     _param(f, "Asymmetric",
-           "Splits the image into four quadrants (N/E/S/W).  Each quadrant's "
-           "furthest white pixel defines its own radial extent, allowing the map to "
-           "compensate for directionally non-symmetric UV distributions (e.g., from a "
-           "rectangular or off-axis lamp).")
+            "Splits the image into angular sectors.  Each sector's furthest white pixel "
+            "defines its own radial extent, allowing the map to compensate for "
+            "directionally non-symmetric UV distributions (e.g., from a rectangular or "
+            "off-axis lamp).")
+    _param(f, "Slice  (90° default)",
+            "Angular width of each sector.  90° matches the legacy 4-quadrant behavior; "
+            "smaller values (for example 10°) give finer local adaptation for irregular "
+            "parts.")
+    _param(f, "Smooth  (0 default)",
+            "Circular moving-average smoothing across sector radii, measured in sector "
+            "counts.  0 means no additional smoothing; higher values stabilize noisy "
+            "or sparse geometries.")
     _param(f, "Blend  (°)",
-           "Angular blending width between quadrant boundaries in asymmetric mode.  "
-           "A larger angle (e.g., 30°) gives smoother quadrant transitions at the "
-           "cost of reducing the per-quadrant independence.  20° is a good default.")
+            "Angular crossfade width at sector boundaries in asymmetric mode.  A larger "
+            "angle (e.g., 30°) gives smoother transitions at the cost of reducing the "
+            "independence between neighboring sectors.  20° is a good default.")
 
     _section(f, "Calibration tip")
     _para(f, (

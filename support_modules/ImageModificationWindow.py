@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+
 """
 Image Modification Window
 
@@ -12,7 +12,7 @@ import glob
 import threading
 from pathlib import Path
 
-from tkinter import Toplevel, Frame, Label, Entry, Button, Checkbutton, BooleanVar, StringVar, Radiobutton
+from tkinter import Toplevel, Frame, Label, Entry, Button, Checkbutton, BooleanVar, StringVar, Radiobutton, Canvas
 from tkinter import ttk, filedialog, messagebox, font as tkFont
 
 # Ensure project root is on sys.path so 'support_modules' is importable
@@ -29,6 +29,7 @@ from support_modules.image_modification.processor import (
     process_single_for_preview,
     process_folder,
 )
+from support_modules.z_compensation import compute_layer_factors
 try:
     from support_modules.image_modification.feature_depth import build_feature_depth_map
     HAS_FEATURE_DEPTH = True
@@ -97,14 +98,103 @@ class ImageModificationWindow:
 
         self.window = Toplevel(master_window)
         self.window.title("Image Modification")
-        self.window.geometry("750x970")
+        self.window.geometry("800x700")
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
         control_font = tkFont.Font(family="Helvetica", size=11)
         title_font = tkFont.Font(family="Helvetica", size=20, weight="bold")
 
+        # --- Create scrollable canvas ---
+        canvas = Canvas(self.window)
+        scrollbar = ttk.Scrollbar(self.window, orient="vertical", command=canvas.yview)
+        scrollable_frame = Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack the canvas and a right-side control column (up button, scrollbar, down button)
+        right_col = Frame(self.window)
+        right_col.pack(side="right", fill="y")
+
+        up_btn = Button(right_col, text="▲", width=2, command=lambda: canvas.yview_scroll(-3, "units"))
+        up_btn.pack(side="top", pady=(10, 2))
+        scrollbar.pack(in_=right_col, side="top", fill="y", expand=True)
+        down_btn = Button(right_col, text="▼", width=2, command=lambda: canvas.yview_scroll(3, "units"))
+        down_btn.pack(side="top", pady=(2, 10))
+
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        # Bind mousewheel/scroll events (platform-aware, bind on enter/leave)
+        def _on_mousewheel_windows(event):
+            # Windows and macOS (event.delta in multiples of 120)
+            try:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
+
+        def _on_mousewheel_unix(event):
+            # X11 systems: use Button-4 (up) and Button-5 (down)
+            try:
+                if event.num == 4:
+                    canvas.yview_scroll(-1, "units")
+                elif event.num == 5:
+                    canvas.yview_scroll(1, "units")
+            except Exception:
+                pass
+
+        def _bind_mousewheel(widget):
+            # Attach all reasonable bindings while the cursor is over the frame
+            widget.bind_all("<MouseWheel>", _on_mousewheel_windows)
+            widget.bind_all("<Button-4>", _on_mousewheel_unix)
+            widget.bind_all("<Button-5>", _on_mousewheel_unix)
+
+        def _unbind_mousewheel(widget):
+            try:
+                widget.unbind_all("<MouseWheel>")
+            except Exception:
+                pass
+            try:
+                widget.unbind_all("<Button-4>")
+                widget.unbind_all("<Button-5>")
+            except Exception:
+                pass
+
+        # Bind when the cursor enters/leaves the scrollable area so bindings are scoped
+        scrollable_frame.bind("<Enter>", lambda e: _bind_mousewheel(canvas))
+        scrollable_frame.bind("<Leave>", lambda e: _unbind_mousewheel(canvas))
+
+        # Focus and keyboard bindings to improve accessibility (Up/Down/PageUp/PageDown)
+        def _bind_keyboard_nav():
+            scrollable_frame.bind_all("<Up>", lambda e: canvas.yview_scroll(-1, "units"))
+            scrollable_frame.bind_all("<Down>", lambda e: canvas.yview_scroll(1, "units"))
+            scrollable_frame.bind_all("<Prior>", lambda e: canvas.yview_scroll(-1, "pages"))
+            scrollable_frame.bind_all("<Next>", lambda e: canvas.yview_scroll(1, "pages"))
+
+        def _unbind_keyboard_nav():
+            try:
+                scrollable_frame.unbind_all("<Up>")
+                scrollable_frame.unbind_all("<Down>")
+                scrollable_frame.unbind_all("<Prior>")
+                scrollable_frame.unbind_all("<Next>")
+            except Exception:
+                pass
+
+        scrollable_frame.bind("<Enter>", lambda e: _bind_keyboard_nav())
+        scrollable_frame.bind("<Leave>", lambda e: _unbind_keyboard_nav())
+
+        # Ensure the scrollable area gets focus when window opens
+        try:
+            self.window.after(100, lambda: (scrollable_frame.focus_set(), _bind_mousewheel(canvas)))
+        except Exception:
+            pass
+
         # --- Header ---
-        top_frame = Frame(self.window)
+        top_frame = Frame(scrollable_frame)
         top_frame.pack(side="top", fill="x", padx=10, pady=(5, 0))
 
         Label(top_frame, text="Image Modification", font=title_font).pack(side="left", padx=(0, 10))
@@ -116,7 +206,7 @@ class ImageModificationWindow:
         Label(top_frame, text=credit, font=tkFont.Font(family="Helvetica", size=7)).pack(side="right")
 
         # --- File path ---
-        path_frame = Frame(self.window)
+        path_frame = Frame(scrollable_frame)
         path_frame.pack(side="top", fill="x", padx=10, pady=(10, 5))
         Label(path_frame, text="Folder:", font=control_font).pack(side="left", padx=(0, 5))
         self.folder_entry = Entry(path_frame, font=control_font)
@@ -125,7 +215,7 @@ class ImageModificationWindow:
         Button(path_frame, text="Browse", command=self._browse_folder, font=control_font).pack(side="left")
 
         # --- Layer number + Load ---
-        layer_frame = Frame(self.window)
+        layer_frame = Frame(scrollable_frame)
         layer_frame.pack(side="top", fill="x", padx=10, pady=(2, 5))
         Label(layer_frame, text="Layer:", font=control_font).pack(side="left", padx=(0, 5))
         self.layer_var = StringVar(value="1")
@@ -137,7 +227,7 @@ class ImageModificationWindow:
         Button(layer_frame, text="Load", command=self._load_layer, font=control_font).pack(side="left")
 
         # --- Image preview ---
-        preview_frame = Frame(self.window, relief="groove", borderwidth=2)
+        preview_frame = Frame(scrollable_frame, relief="groove", borderwidth=2)
         preview_frame.pack(side="top", padx=10, pady=(5, 10))
         # No width/height on Label - it sizes to the image; char units would clip the display
         self.preview_label = Label(preview_frame, text="No image loaded",
@@ -145,7 +235,7 @@ class ImageModificationWindow:
         self.preview_label.pack(padx=5, pady=5)
 
         # --- Section 1: Edge Enhancement ---
-        ee_frame = ttk.LabelFrame(self.window, text="Edge Enhancement", padding=(10, 5))
+        ee_frame = ttk.LabelFrame(scrollable_frame, text="Edge Enhancement", padding=(10, 5))
         ee_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
         self.ee_var = BooleanVar(value=True)
         ttk.Checkbutton(ee_frame, text="Enable", variable=self.ee_var).pack(side="left", padx=(0, 15))
@@ -163,7 +253,7 @@ class ImageModificationWindow:
         Entry(ee_frame, textvariable=self.max_var, width=5, font=control_font).pack(side="left")
 
         # --- Section 2: Global Enhancement ---
-        ge_frame = ttk.LabelFrame(self.window, text="Global Blur Enhancement", padding=(10, 5))
+        ge_frame = ttk.LabelFrame(scrollable_frame, text="Global Blur Enhancement", padding=(10, 5))
         ge_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
         ge_row1 = ttk.Frame(ge_frame)
         ge_row1.pack(side="top", fill="x")
@@ -178,13 +268,19 @@ class ImageModificationWindow:
         ge_row2 = ttk.Frame(ge_frame)
         ge_row2.pack(side="top", fill="x", pady=(5, 0))
         self.ge_asymmetric_var = BooleanVar(value=False)
-        ttk.Checkbutton(ge_row2, text="Asymmetric (4 quadrants, per-ray furthest white)", variable=self.ge_asymmetric_var).pack(side="left", padx=(0, 15))
+        ttk.Checkbutton(ge_row2, text="Asymmetric (angular sectors, per-ray furthest white)", variable=self.ge_asymmetric_var).pack(side="left", padx=(0, 15))
+        Label(ge_row2, text="Slice (°):", font=control_font).pack(side="left", padx=(0, 5))
+        self.ge_sector_angle_var = StringVar(value="90")
+        Entry(ge_row2, textvariable=self.ge_sector_angle_var, width=5, font=control_font).pack(side="left", padx=(0, 10))
+        Label(ge_row2, text="Smooth (sectors):", font=control_font).pack(side="left", padx=(0, 5))
+        self.ge_sector_smoothing_var = StringVar(value="0")
+        Entry(ge_row2, textvariable=self.ge_sector_smoothing_var, width=5, font=control_font).pack(side="left", padx=(0, 10))
         Label(ge_row2, text="Blend (°):", font=control_font).pack(side="left", padx=(0, 5))
         self.blend_angle_var = StringVar(value="20")
         Entry(ge_row2, textvariable=self.blend_angle_var, width=5, font=control_font).pack(side="left")
 
         # --- Section 3: Padding ---
-        pad_frame = ttk.LabelFrame(self.window, text="Image Padding", padding=(10, 5))
+        pad_frame = ttk.LabelFrame(scrollable_frame, text="Image Padding", padding=(10, 5))
         pad_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
         self.pad_var = BooleanVar(value=False)
         ttk.Checkbutton(pad_frame, text="Insert black padding after each image ({x}_1.png)", variable=self.pad_var).pack(anchor="w")
@@ -201,7 +297,7 @@ class ImageModificationWindow:
         self.fd_sink_var     = StringVar(value="0.1")
 
         if HAS_FEATURE_DEPTH:
-            fd_frame = ttk.LabelFrame(self.window, text="Feature Depth Correction  (overcuring compensation)", padding=(10, 5))
+            fd_frame = ttk.LabelFrame(scrollable_frame, text="Feature Depth Correction  (overcuring compensation)", padding=(10, 5))
             fd_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
             # Row 1: enable + strength
             fd_row1 = ttk.Frame(fd_frame)
@@ -230,8 +326,34 @@ class ImageModificationWindow:
             Label(fd_row3, text="Sink:", font=control_font).pack(side="left", padx=(0, 5))
             Entry(fd_row3, textvariable=self.fd_sink_var, width=5, font=control_font).pack(side="left")
 
-        # --- Section 5: Scattering Compensation ---
-        sc_frame = ttk.LabelFrame(self.window, text="Scattering Compensation", padding=(10, 5))
+        # --- Section 5: Axial Z Compensation (experimental) ---
+        zc_frame = ttk.LabelFrame(scrollable_frame, text="Axial Z Compensation  (simplified overcuring model)", padding=(10, 5))
+        zc_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
+        self.zc_var = BooleanVar(value=False)
+        self.zc_layer_thickness_var = StringVar(value="50")
+        self.zc_penetration_depth_var = StringVar(value="120")
+        self.zc_strength_var = StringVar(value="1.0")
+        self.zc_min_factor_var = StringVar(value="0.25")
+        self.zc_factor_preview_var = StringVar(value="Preview factor: 1.000")
+
+        zc_row1 = ttk.Frame(zc_frame)
+        zc_row1.pack(side="top", fill="x")
+        ttk.Checkbutton(zc_row1, text="Enable", variable=self.zc_var).pack(side="left", padx=(0, 15))
+        Label(zc_row1, text="Layer thickness (um):", font=control_font).pack(side="left", padx=(0, 5))
+        Entry(zc_row1, textvariable=self.zc_layer_thickness_var, width=6, font=control_font).pack(side="left", padx=(0, 12))
+        Label(zc_row1, text="Penetration depth Dp (um):", font=control_font).pack(side="left", padx=(0, 5))
+        Entry(zc_row1, textvariable=self.zc_penetration_depth_var, width=6, font=control_font).pack(side="left")
+
+        zc_row2 = ttk.Frame(zc_frame)
+        zc_row2.pack(side="top", fill="x", pady=(5, 0))
+        Label(zc_row2, text="Strength (0-1):", font=control_font).pack(side="left", padx=(0, 5))
+        Entry(zc_row2, textvariable=self.zc_strength_var, width=6, font=control_font).pack(side="left", padx=(0, 12))
+        Label(zc_row2, text="Min factor:", font=control_font).pack(side="left", padx=(0, 5))
+        Entry(zc_row2, textvariable=self.zc_min_factor_var, width=6, font=control_font).pack(side="left", padx=(0, 12))
+        Label(zc_row2, textvariable=self.zc_factor_preview_var, font=control_font).pack(side="left", padx=(8, 0))
+
+        # --- Section 6: Scattering Compensation ---
+        sc_frame = ttk.LabelFrame(scrollable_frame, text="Scattering Compensation", padding=(10, 5))
         sc_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
         sc_row = ttk.Frame(sc_frame)
         sc_row.pack(side="top", fill="x")
@@ -251,7 +373,7 @@ class ImageModificationWindow:
         Entry(sc_row, textvariable=self.sc_max_var, width=5, font=control_font).pack(side="left")
 
         # --- Preview and Build buttons ---
-        btn_frame = Frame(self.window)
+        btn_frame = Frame(scrollable_frame)
         btn_frame.pack(side="top", padx=10, pady=(15, 10))
         self.preview_btn = Button(btn_frame, text="Preview", command=self._do_preview, font=control_font)
         self.preview_btn.pack(side="left", padx=(0, 10))
@@ -330,6 +452,24 @@ class ImageModificationWindow:
         except ValueError:
             blend_angle = 20.0
         try:
+            ge_sector_angle = float(self.ge_sector_angle_var.get().strip() or "90")
+        except ValueError:
+            ge_sector_angle = 90.0
+        try:
+            ge_sector_smoothing = int(self.ge_sector_smoothing_var.get().strip() or "0")
+        except ValueError:
+            ge_sector_smoothing = 0
+
+        if ge_sector_angle <= 0:
+            ge_sector_angle = 90.0
+        ge_sector_angle = min(180.0, ge_sector_angle)
+        if ge_sector_smoothing < 0:
+            ge_sector_smoothing = 0
+        if blend_angle < 0:
+            blend_angle = 0.0
+        if blend_angle > ge_sector_angle:
+            blend_angle = ge_sector_angle
+        try:
             fd_strength = float(self.fd_strength_var.get().strip() or "0.4")
         except ValueError:
             fd_strength = 0.4
@@ -370,14 +510,68 @@ class ImageModificationWindow:
             sc_falloff = int(self.sc_falloff_var.get().strip() or "61")
         except ValueError:
             sc_falloff = 61
-        return blur, globe, sigma, blend_angle, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff
+
+        try:
+            zc_layer_thickness = float(self.zc_layer_thickness_var.get().strip() or "50")
+        except ValueError:
+            zc_layer_thickness = 50.0
+        try:
+            zc_penetration_depth = float(self.zc_penetration_depth_var.get().strip() or "120")
+        except ValueError:
+            zc_penetration_depth = 120.0
+        try:
+            zc_strength = float(self.zc_strength_var.get().strip() or "1.0")
+        except ValueError:
+            zc_strength = 1.0
+        try:
+            zc_min_factor = float(self.zc_min_factor_var.get().strip() or "0.25")
+        except ValueError:
+            zc_min_factor = 0.25
+
+        return (
+            blur,
+            globe,
+            sigma,
+            blend_angle,
+            ge_sector_angle,
+            ge_sector_smoothing,
+            fd_strength,
+            fd_decay,
+            fd_smooth,
+            fd_mode,
+            fd_conductivity,
+            fd_sink,
+            sc_width,
+            sc_min,
+            sc_max,
+            ee_falloff,
+            sc_falloff,
+            zc_layer_thickness,
+            zc_penetration_depth,
+            zc_strength,
+            zc_min_factor,
+        )
 
     def _do_preview(self):
         if not self.current_image_path or not os.path.isfile(self.current_image_path):
             messagebox.showwarning("Preview", "Load an image first (set folder and click Load).", parent=self.window)
             return
-        blur, globe, sigma, blend_angle, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff = self._get_params()
+        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor = self._get_params()
         try:
+            axial_factor = 1.0
+            if self.zc_var.get() and self.image_files:
+                layer_idx = max(1, min(len(self.image_files), int(self.layer_var.get().strip() or "1"))) - 1
+                factors = compute_layer_factors(
+                    num_layers=len(self.image_files),
+                    layer_thickness_um=zc_layer_thickness,
+                    penetration_depth_um=zc_penetration_depth,
+                    strength=zc_strength,
+                    min_factor=zc_min_factor,
+                )
+                if 0 <= layer_idx < len(factors):
+                    axial_factor = factors[layer_idx]
+            self.zc_factor_preview_var.set(f"Preview factor: {axial_factor:.3f}")
+
             result = process_single_for_preview(
                 self.current_image_path,
                 edge_enabled=self.ee_var.get(),
@@ -387,6 +581,8 @@ class ImageModificationWindow:
                 sigma=sigma,
                 global_asymmetric=self.ge_asymmetric_var.get(),
                 blend_angle=blend_angle,
+                ge_sector_angle=ge_sector_angle,
+                ge_sector_smoothing=ge_sector_smoothing,
                 depth_enabled=self.fd_var.get(),
                 depth_strength=fd_strength,
                 depth_decay_sigma=fd_decay,
@@ -398,6 +594,7 @@ class ImageModificationWindow:
                 scatter_width=sc_width,
                 scatter_min_val=sc_min,
                 scatter_max_val=sc_max,
+                axial_factor=axial_factor,
                 ee_falloff=ee_falloff,
                 scatter_falloff=sc_falloff,
             )
@@ -416,7 +613,7 @@ class ImageModificationWindow:
         if not self.image_files:
             messagebox.showerror("Build", "No PNG images found in folder.", parent=self.window)
             return
-        blur, globe, sigma, blend_angle, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff = self._get_params()
+        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor = self._get_params()
 
         def run_build():
             try:
@@ -433,6 +630,8 @@ class ImageModificationWindow:
                     padding_enabled=self.pad_var.get(),
                     global_asymmetric=self.ge_asymmetric_var.get(),
                     blend_angle=blend_angle,
+                    ge_sector_angle=ge_sector_angle,
+                    ge_sector_smoothing=ge_sector_smoothing,
                     depth_enabled=self.fd_var.get(),
                     depth_strength=fd_strength,
                     depth_decay_sigma=fd_decay,
@@ -444,6 +643,11 @@ class ImageModificationWindow:
                     scatter_width=sc_width,
                     scatter_min_val=sc_min,
                     scatter_max_val=sc_max,
+                    axial_enabled=self.zc_var.get(),
+                    layer_thickness_um=zc_layer_thickness,
+                    penetration_depth_um=zc_penetration_depth,
+                    axial_strength=zc_strength,
+                    axial_min_factor=zc_min_factor,
                     ee_falloff=ee_falloff,
                     scatter_falloff=sc_falloff,
                 )

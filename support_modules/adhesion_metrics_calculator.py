@@ -33,6 +33,8 @@ class AdhesionMetricsCalculator:
                  median_kernel=31,
                  savgol_window=51,
                  savgol_order=3,
+                 smoothing_window=None,
+                 smoothing_polyorder=None,
                  baseline_threshold_factor=0.002,
                  baseline_mode='prop_end_point',
                  baseline_window_points=25,
@@ -47,6 +49,10 @@ class AdhesionMetricsCalculator:
             median_kernel (int): Kernel size for median filter (must be odd, for outlier rejection).
             savgol_window (int): Window length for Savitzky-Golay filter (must be odd).
             savgol_order (int): Polynomial order for Savitzky-Golay filter.
+            smoothing_window (Optional[int]): Backward-compatible alias for
+                savgol_window used by older modules.
+            smoothing_polyorder (Optional[int]): Backward-compatible alias for
+                savgol_order used by older modules.
             baseline_threshold_factor (float): Threshold above baseline for initiation detection (N).
             baseline_mode (str): Baseline strategy.
                 - 'prop_end_point': force at propagation end index.
@@ -60,6 +66,16 @@ class AdhesionMetricsCalculator:
             min_peak_height (float): Minimum peak height for detection (N).
             min_peak_distance (int): Minimum distance between peaks (data points).
         """
+        # Preserve compatibility with legacy callers that still pass
+        # smoothing_window/smoothing_polyorder.
+        if smoothing_window is not None:
+            savgol_window = smoothing_window
+            # Legacy smoothing calls historically did not include median filtering.
+            if median_kernel == 31:
+                median_kernel = 1
+        if smoothing_polyorder is not None:
+            savgol_order = smoothing_polyorder
+
         self.median_kernel = median_kernel if median_kernel % 2 == 1 else median_kernel + 1
         self.savgol_window = savgol_window if savgol_window % 2 == 1 else savgol_window + 1
         self.savgol_order = savgol_order
@@ -218,6 +234,12 @@ class AdhesionMetricsCalculator:
         except Exception as e:
             warnings.warn(f"Two-step filtering failed: {e}. Using raw data.")
             return force_data.copy()
+
+    def _integrate_trapezoid(self, y: np.ndarray, x: np.ndarray) -> float:
+        """Version-safe trapezoidal integration across NumPy releases."""
+        if hasattr(np, 'trapezoid'):
+            return float(np.trapezoid(y, x))
+        return float(np.trapz(y, x))
     
     def _calculate_metrics(self, 
                          times: np.ndarray, 
@@ -382,14 +404,14 @@ class AdhesionMetricsCalculator:
 
         try:
             if len(pos_total_m) >= 2:
-                results['work_of_adhesion_total_J'] = float(np.trapezoid(force_total_corr, pos_total_m))
+                results['work_of_adhesion_total_J'] = self._integrate_trapezoid(force_total_corr, pos_total_m)
 
             propagation_energy_J = 0.0
             if len(pos_prop_m) >= 2:
-                propagation_energy_J = float(np.trapezoid(force_prop_corr, pos_prop_m))
+                propagation_energy_J = self._integrate_trapezoid(force_prop_corr, pos_prop_m)
 
             if len(pos_init_m) >= 2:
-                results['dissipated_energy_initiation_J'] = float(np.trapezoid(force_init_corr, pos_init_m))
+                results['dissipated_energy_initiation_J'] = self._integrate_trapezoid(force_init_corr, pos_init_m)
 
             if contact_area_m2 > 0:
                 # Define G as full baseline-corrected work over peel path divided by area.
@@ -836,20 +858,20 @@ class AdhesionMetricsCalculator:
         
         try:
             # Work of adhesion (trapezoidal integration)
-            work_J = np.trapezoid(peel_forces, peel_positions_m)
+            work_J = self._integrate_trapezoid(peel_forces, peel_positions_m)
             results['work_of_adhesion_mJ'] = work_J * 1000
             
             # Baseline-corrected work
-            work_corrected_J = np.trapezoid(peel_forces_corrected, peel_positions_m)
+            work_corrected_J = self._integrate_trapezoid(peel_forces_corrected, peel_positions_m)
             results['work_of_adhesion_corrected_mJ'] = work_corrected_J * 1000
             
             # Energy dissipation (negative work regions)
             negative_forces = np.minimum(peel_forces_corrected, 0)
-            dissipation_J = np.trapezoid(np.abs(negative_forces), peel_positions_m)
+            dissipation_J = self._integrate_trapezoid(np.abs(negative_forces), peel_positions_m)
             results['energy_dissipation_mJ'] = dissipation_J * 1000
             
             # Total energy
-            total_energy_J = np.trapezoid(np.abs(peel_forces_corrected), peel_positions_m)
+            total_energy_J = self._integrate_trapezoid(np.abs(peel_forces_corrected), peel_positions_m)
             results['total_energy_mJ'] = total_energy_J * 1000
             
             # Energy density
