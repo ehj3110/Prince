@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Global Blur Enhancement Module
+"""Global Blur Enhancement Module.
 
 Symmetric: Gaussian vignette (center darker, edges brighter).
-Asymmetric: Per-quadrant gradients based on furthest white pixel from center,
-with smooth blending at quadrant boundaries.
+Asymmetric: Angular-sector gradients based on furthest white pixel from center,
+with boundary-centered blending.
 """
 
 import numpy as np
@@ -19,14 +19,14 @@ def build_asymmetric_gaussian_map(image: np.ndarray,
                                  globe: float,
                                  blend_angle_deg: float = 20.0) -> np.ndarray:
     """
-    Build an asymmetric vignette map using 4 quadrants. Each quadrant has a
-    gradient from center (min) to the furthest white pixel in that quadrant (max).
-    Values are blended smoothly at quadrant boundaries.
+    Build an asymmetric vignette map using angular sectors. Each sector has a
+    gradient from center (min) to the furthest white pixel in that sector (max).
+    Values are blended smoothly near sector boundaries.
 
     Args:
         image: Grayscale image (uint8 or float) - used to find white (non-zero) pixels
         globe: Minimum value at center (e.g., 0.8 = center is 80% of edge intensity)
-        blend_angle_deg: Angular width for blending at quadrant boundaries (degrees)
+        blend_angle_deg: Angular width for blending at sector boundaries (degrees)
 
     Returns:
         2D float array, same shape as image
@@ -47,13 +47,12 @@ def build_asymmetric_gaussian_map(image: np.ndarray,
     theta_deg = np.degrees(np.arctan2(dY, dX))  # -180 to 180
     theta_deg = (theta_deg + 360) % 360  # 0 to 360
 
-    # Quadrant boundaries at 0°, 90°, 180°, 270°
-    # Q0: [0, 90), Q1: [90, 180), Q2: [180, 270), Q3: [270, 360)
+    # Sector boundaries distributed evenly around 360°.
     mask_nonzero = image > 0
     if not np.any(mask_nonzero):
         return np.ones_like(image, dtype=np.float64)
 
-    # Find r_max for each quadrant (furthest white pixel from center)
+    # Find r_max for each sector (furthest white pixel from center)
     r_max_per_quad = np.zeros(4)
     for q in range(4):
         theta_lo = 90 * q
@@ -70,14 +69,14 @@ def build_asymmetric_gaussian_map(image: np.ndarray,
     min_val = globe
     max_val = 1.0
 
-    # For each quadrant, compute gradient value: min + (max-min) * (r / r_max)
+    # For each sector, compute gradient value: min + (max-min) * (r / r_max)
     # r/r_max capped at 1 so we don't exceed max
     map_q0 = min_val + (max_val - min_val) * np.minimum(r / r_max_per_quad[0], 1.0)
     map_q1 = min_val + (max_val - min_val) * np.minimum(r / r_max_per_quad[1], 1.0)
     map_q2 = min_val + (max_val - min_val) * np.minimum(r / r_max_per_quad[2], 1.0)
     map_q3 = min_val + (max_val - min_val) * np.minimum(r / r_max_per_quad[3], 1.0)
 
-    # Build blended map: for each pixel, use its quadrant's gradient and blend at boundaries
+    # Build blended map: for each pixel, use its sector's gradient and blend at boundaries
     maps = [map_q0, map_q1, map_q2, map_q3]
     half_blend = blend_angle_deg / 2.0
 

@@ -316,6 +316,35 @@ Image Directory: C:\Slicing\MyPrint_50umLayers\
 Generated File:  C:\Slicing\MyPrint_50umLayers\MyPrint_50umLayers.txt
 ```
 
+### Instruction Ramping (Image Modification Helper)
+
+The Image Modification window includes an **Instruction Ramping** helper for creating non-uniform exposure schedules without manually editing the `.txt` file.
+
+**Use case:**
+- Keep tab-delimited instruction format intact
+- Define exposure at control layers only
+- Auto-fill intermediate layers with linear or exponential ramps
+- Auto-update power per layer to preserve constant dosage
+
+**Inputs:**
+- Source instruction file (`.txt`)
+- Ramp mode: `Linear` or `Exponential`
+- Power at first control layer
+- Control-layer list in `layer, exposure_s` form
+
+**Interpolation behavior:**
+- Before first control layer: uses first control-layer exposure
+- Between control layers: interpolates based on selected mode
+- After last control layer: uses last control-layer exposure (clamped tail)
+
+**Power update model (constant dosage):**
+- Anchor dosage: `D = P_first × t_first`
+- Per layer: `P_i = D / t_i` (clipped to `0..255`)
+
+**Output:**
+- New folder: `<source_folder>_ramped_linear` or `<source_folder>_ramped_exponential`
+- Copied image stack + new tab-delimited instruction file named after the output folder
+
 ### Typical Print Parameters
 
 **Standard Print Settings:**

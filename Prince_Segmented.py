@@ -37,6 +37,7 @@ from support_modules.ImageModificationWindow import ImageModificationWindow
 from support_modules.SandwichRoutines import SandwichRoutineManager
 from support_modules.SessionManager import SessionManager
 from support_modules.motion_controller import MotionController
+from support_modules.PrintSessionUtils import ensure_print_session, get_today_str
 
 
 class MyWindow:
@@ -149,6 +150,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.exp_conditions_window = None
         self.image_modification_window = None
         self.auto_home_thread = None
+        self.current_print_session_log_dir = None
+        self.current_print_number = None
+        self.current_print_date_dir = None
+        self.current_print_log_base_dir = None
+        self.reserved_print_session_log_dir = None
+        self.reserved_print_number = None
+        self.reserved_print_date_str = None
+        self.print_session_in_progress = False
 
         self.cache_clear_layer = 100000
         self.time1 = 1000
@@ -688,6 +697,44 @@ Evan Jones, evanjones2026@u.northwestern.edu
         """Determines the next print number for a given date directory."""
         return self.session_manager.get_next_print_number(date_specific_log_dir)
 
+    def _allocate_print_session(self, main_img_dir, prefer_reserved=True, mark_active=False):
+        today_str = get_today_str()
+        preferred = None
+
+        if prefer_reserved and self.reserved_print_session_log_dir and self.reserved_print_date_str == today_str:
+            preferred = self.reserved_print_session_log_dir
+
+        session_info = ensure_print_session(main_img_dir, date_str=today_str, preferred_print_dir=preferred)
+
+        self.current_print_log_base_dir = session_info['base_dir']
+        self.current_print_date_dir = session_info['date_dir']
+        self.current_print_number = session_info['print_number']
+        self.current_print_session_log_dir = session_info['print_dir']
+
+        if mark_active:
+            self.print_session_in_progress = True
+            self.reserved_print_session_log_dir = None
+            self.reserved_print_number = None
+            self.reserved_print_date_str = None
+        else:
+            self.reserved_print_session_log_dir = self.current_print_session_log_dir
+            self.reserved_print_number = self.current_print_number
+            self.reserved_print_date_str = today_str
+
+        return session_info
+
+    def reserve_print_session_for_conditions(self):
+        main_img_dir = str(self.t1.get()).strip()
+        if not main_img_dir or not os.path.isdir(main_img_dir):
+            raise ValueError("Please set a valid image directory before saving conditions.")
+        return self._allocate_print_session(main_img_dir, prefer_reserved=True, mark_active=False)['print_dir']
+
+    def ensure_print_session_for_image_processing(self, source_folder):
+        main_img_dir = source_folder
+        if self.print_session_in_progress and self.current_print_session_log_dir:
+            return self.current_print_session_log_dir
+        return self._allocate_print_session(main_img_dir, prefer_reserved=True, mark_active=False)['print_dir']
+
     def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
         # The try block should start here, encompassing all setup and thread starting
         try:
@@ -699,34 +746,26 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 messagebox.showerror("Setup Error", "Please set a valid image directory first.", parent=self.win)
                 return
 
+            session_info = self._allocate_print_session(path, prefer_reserved=True, mark_active=True)
+            self.update_status_message(f"Print session ready: {session_info['print_dir']}")
+
+            if self.exp_conditions_window and self.exp_conditions_window.is_logging_enabled():
+                self.exp_conditions_window.start_new_print(self.current_print_session_log_dir)
+
             # Auto-logging configuration now relies entirely on SensorDataWindow's state
             if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
                 # Check if the "Enable Automated Logging" checkbox *within SensorDataWindow* is checked
                 if self.sensor_data_window_instance.auto_log_enabled_var.get():
                     self.update_status_message("Sensor Panel auto-log is enabled, configuring...")
                     
-                    # Set up logging directory structure like backup version
-                    main_img_dir = path
-                    self.current_print_log_base_dir = os.path.join(main_img_dir, "Printing_Logs")
-                    current_date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-                    self.current_print_date_dir = os.path.join(self.current_print_log_base_dir, current_date_str)
-                    self.current_print_number = self._get_next_print_number(self.current_print_date_dir)
-                    self.current_print_session_log_dir = os.path.join(self.current_print_date_dir, f"Print {self.current_print_number}")
-                    os.makedirs(self.current_print_session_log_dir, exist_ok=True)
-                    self.update_status_message(f"Log directory created: {self.current_print_session_log_dir}")
-                    
                     # Configure AutomatedLayerLogger via SensorDataWindow with proper parameters
                     self.sensor_data_window_instance.configure_automated_layer_logging(
-                        main_image_dir=main_img_dir,
+                        main_image_dir=path,
                         print_number=self.current_print_number,
-                        date_str_for_dir=current_date_str,
+                        date_str_for_dir=session_info['date_str'],
                         log_directory=self.current_print_session_log_dir
                     )
                     self.update_status_message(f"AutomatedLayerLogger configured for print {self.current_print_number}.")
-                    
-                    # Initialize experimental conditions logging if enabled
-                    if self.exp_conditions_window and self.exp_conditions_window.is_logging_enabled():
-                        self.exp_conditions_window.start_new_print(self.current_print_session_log_dir)
                 else:
                     self.update_status_message("Sensor Panel auto-log is disabled. Proceeding without automated logging.")
             else:
@@ -758,6 +797,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # List of modules to reload (add more as needed)
             modules_to_reload = [
                 'support_modules.SensorDataWindow',
+                # Reload image-modification dependencies before the window class
+                # so new symbols (e.g., helper generators) are available.
+                'support_modules.image_modification.processor',
+                'support_modules.image_modification.edge_enhancement',
+                'support_modules.image_modification.global_enhancement',
+                'support_modules.image_modification.padding',
+                'support_modules.image_modification.scattering_compensation',
                 'support_modules.ImageModificationWindow',
                 'support_modules.PeakForceLogger',
                 'support_modules.adhesion_metrics_calculator',
@@ -787,6 +833,18 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 from support_modules.ImageModificationWindow import ImageModificationWindow as _IMWClass
                 # If the window is currently open, destroy and recreate it to pick up changes
                 if hasattr(self, 'image_modification_window') and self.image_modification_window is not None:
+                    old_folder = None
+                    old_layer = None
+                    try:
+                        if hasattr(self.image_modification_window, 'folder_entry'):
+                            old_folder = self.image_modification_window.folder_entry.get().strip()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self.image_modification_window, 'layer_var'):
+                            old_layer = self.image_modification_window.layer_var.get().strip()
+                    except Exception:
+                        pass
                     try:
                         if hasattr(self.image_modification_window, 'window') and self.image_modification_window.window.winfo_exists():
                             self.image_modification_window.window.destroy()
@@ -794,6 +852,21 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         pass
                     try:
                         self.image_modification_window = _IMWClass(self.win, self.update_status_message, self)
+                        if old_folder:
+                            try:
+                                self.image_modification_window.folder_entry.delete(0, 'end')
+                                self.image_modification_window.folder_entry.insert(0, old_folder)
+                                self.image_modification_window._refresh_image_list()
+                                if old_layer:
+                                    self.image_modification_window.layer_var.set(old_layer)
+                                self.image_modification_window._load_layer()
+                            except Exception:
+                                pass
+                        try:
+                            self.image_modification_window.window.lift()
+                            self.image_modification_window.window.focus_force()
+                        except Exception:
+                            pass
                         self.update_status_message('Image Modification window reloaded and refreshed')
                     except Exception as e:
                         self.update_status_message(f'Error recreating Image Modification window after reload: {e}', error=True)
@@ -982,7 +1055,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
             cv2.moveWindow(self.window_name, self.screen.x + 1439, self.screen.y - 1) 
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             cv2.imshow(self.window_name, self.black_image)
-            cv2.waitKey(1)
+            # Pump events longer on the first print to guarantee the black frame reaches the HDMI display buffer
+            for _ in range(10):
+                cv2.waitKey(50)
+            self.win.update_idletasks()
+            self.win.update()
             self.update_status_message("OpenCV window initialized.")
 
             # DLP setup for pattern projection
@@ -990,6 +1067,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.controller.power(current=0)  # Set power to 0 BEFORE mode change to prevent flash
                 time.sleep(0.1)
                 self.controller.changemode(0) # Switch to pattern sequence mode
+                self.controller.power(current=0)  # Prevent auto-ignition from mode change
+
                 time.sleep(2.0) # Crucial delay for mode change to take effect
                 self.controller.power(current=dlp_power) 
                 self.update_status_message(f"DLP set to pattern mode, power: {dlp_power}.")
@@ -1708,7 +1787,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # OpenCV window cleanup
             if hasattr(self, 'window_name') and self.window_name: # Check if window_name is not None
                 try:
+                    if hasattr(self, 'black_image'):
+                        cv2.imshow(self.window_name, self.black_image)
+                        cv2.waitKey(1)
                     cv2.destroyWindow(self.window_name)
+                    cv2.waitKey(1)  # Pump events so Windows properly destroys the window
                     self.update_status_message("OpenCV window closed.")
                 except cv2.error as cv_err:
                     # Handle cases where the window might already be destroyed or was never properly created
@@ -2134,6 +2217,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         """Open or show the experimental conditions window."""
         if self.exp_conditions_window is None:
             self.exp_conditions_window = ExperimentalConditionsWindow(self.win, self.update_status_message)
+            self.exp_conditions_window.prince_main_app_ref = self
             self.exp_conditions_window.show_window()
             self.update_status_message("Experimental conditions window opened")
         else:

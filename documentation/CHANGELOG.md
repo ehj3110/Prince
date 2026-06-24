@@ -1,5 +1,25 @@
 # Changelog - Prince 3D Printer Control Software
 
+## [2026-06-11] - Image Modification Helpers: Cone Generator + Instruction Ramping
+
+### Cone Generator (Image Modification Window)
+- Added a new helper that generates a synthetic cone layer stack directly from geometry inputs.
+- Inputs: initial radius (µm), ending radius (µm), height (µm), layer height (µm), output base folder.
+- Output: newly created parameter-tagged folder containing sequential files `1.png`..`N.png`.
+- Layer count computed as `ceil(height / layer_height)`.
+
+### Instruction Ramping (Image Modification Window)
+- Added instruction-file utility that builds a new instruction folder from a selected source `.txt`.
+- Supports control points specified as `layer, exposure` and ramp mode selection (`linear` or `exponential`).
+- Exposure schedule behavior:
+   - Before first control layer: fixed to first control exposure.
+   - Between control layers: interpolated by chosen mode.
+   - After last control layer: fixed to last control exposure.
+- Per-layer power is recomputed to preserve constant dosage anchored at the first control layer:
+   - `D = P_first × t_first`
+   - `P_i = D / t_i` (clipped to `0..255`).
+- Output: `<source_folder>_ramped_linear` or `_ramped_exponential` folder with copied images and a new compatible 10-column tab-delimited instruction file.
+
 ## [2026-03-07] - Image Modification GUI Overhaul
 
 ### Scattering Compensation — algorithm rewrite

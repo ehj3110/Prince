@@ -15,7 +15,7 @@ DLP/SLA resin printers cure each layer by projecting a grayscale bitmap. Several
 
 1. **Optical blur** — UV light scatters slightly, causing features to receive dose from neighboring illuminated regions. Edge pixels are most affected; inner pixels less so. This is corrected by **Edge Enhancement**.
 
-2. **Radial intensity fall-off** — The projector's light path is not perfectly uniform; the center is typically dimmer than the edges. For symmetrical parts this is corrected by **Global Enhancement (Symmetric)**; for asymmetric parts, **Global Enhancement (Asymmetric)** adapts the gradient per-quadrant.
+2. **Radial intensity fall-off** — The projector's light path is not perfectly uniform; the center is typically dimmer than the edges. For symmetrical parts this is corrected by **Global Enhancement (Symmetric)**; for asymmetric parts, **Global Enhancement (Asymmetric)** adapts the gradient by angular sector so irregular, non-circular shapes can be corrected more locally.
 
 3. **Resin pre-curing / overcuring for dense lattices** — In lattice structures, resin flows from the outer bath through black channels to reach the white (curing) features. As it travels, scattered UV partially cures it. Features deep in the lattice receive pre-cured resin, causing overcuring relative to features at the perimeter. This is corrected by **Feature Depth Correction**.
 
@@ -70,6 +70,13 @@ Padding output files (`*_1.png`) are automatically excluded from the image list.
 
 The currently loaded image is displayed at up to **640×400 px**, downscaled proportionally. After clicking **Preview**, the processed version replaces the raw image in the preview area.
 
+### Utility Helpers
+
+The Image Modification window now includes two utility helpers in addition to EE/GE/FDC/SC:
+
+1. **Cone Generator**
+2. **Instruction Ramping**
+
 ---
 
 ## Sub-Routines
@@ -98,7 +105,7 @@ Replicates the MATLAB Gaussian edge enhancement, ported to Python with a float64
 
 ### 2. Global Enhancement
 
-**Enable checkbox + Globe ratio / Sigma + Asymmetric checkbox + Blend (°)**
+**Enable checkbox + Globe ratio / Sigma + Asymmetric checkbox + Slice (°) / Smooth (sectors) / Blend (°)**
 
 Applies a radial vignette map that dims the center relative to the edges, compensating for projector light fall-off.
 
@@ -115,19 +122,23 @@ A single circular Gaussian vignette is computed from the image dimensions. The m
 
 #### Asymmetric Mode
 
-*Check "Asymmetric (4 quadrants, per-ray furthest white)"*
+*Check "Asymmetric (angular sectors, per-ray furthest white)"*
 
-Designed for parts that are not centered or not circular. Instead of one fixed radius, the vignette gradient in each quadrant (NE, NW, SE, SW) is scaled to the distance of the **furthest white pixel** from the center in that quadrant. This means:
-- All four quadrant gradients share the same `Globe ratio` minimum at the center.
-- Each gradient reaches `1.0` at its own quadrant's furthest feature, not at a fixed radius.
-- At quadrant boundaries, values are **smoothstep-blended** over the `Blend (°)` angular window so transitions are continuous.
+Designed for parts that are not centered or not circular. Instead of one fixed radius, the vignette gradient is computed per angular sector, where each sector's radius is scaled to the distance of the **furthest white pixel** from the center in that sector. This means:
+- All sectors share the same `Globe ratio` minimum at the center.
+- Each sector reaches `1.0` at its own furthest feature, not at a fixed radius.
+- `Slice (°)` controls the angular width of each sector. Smaller values give finer shape adaptation.
+- `Smooth (sectors)` circularly smooths the per-sector radius profile before applying the map, which helps stabilize noisy or sparse geometries.
+- At sector boundaries, values are crossfaded over the `Blend (°)` angular window so transitions are continuous.
 
 **Parameters:**
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| Globe ratio | 0.8 | Center intensity (shared across all quadrants). |
-| Blend (°) | 20 | Angular width of the blend zone at each 90° boundary. |
+| Globe ratio | 0.8 | Center intensity (shared across all sectors). |
+| Slice (°) | 90 | Angular width of each sector. 90° matches the legacy 4-quadrant behavior; 10° is a good starting point for irregular parts. |
+| Smooth (sectors) | 0 | Circular moving-average radius, measured in sector counts. 0 means no extra smoothing. |
+| Blend (°) | 20 | Angular width of the crossfade zone at each sector boundary. |
 
 > **Note:** In asymmetric mode, the vignette map is rebuilt per image (since the furthest white pixel may vary layer to layer). In symmetric mode, one map is built for the whole folder.
 
@@ -191,6 +202,49 @@ Features at the perimeter of the lattice receive fresh resin; features at the ce
 
 ---
 
+### 5. Cone Generator
+
+Creates a brand-new image stack (does not process existing layers) for an expanding cone profile.
+
+**Inputs:**
+- Initial radius (µm)
+- Ending radius (µm)
+- Height (µm)
+- Layer height (µm)
+- Output base folder
+
+**Behavior:**
+- Number of layers is `ceil(height / layer_height)`.
+- Radius is linearly interpolated from initial to ending radius over the generated layers.
+- Output files are sequentially numbered: `1.png`, `2.png`, ..., `N.png`.
+- Output folder is auto-named with the cone parameters and created under the selected base folder.
+- Current implementation uses a direct micron-to-pixel mapping (`1 µm == 1 px`).
+
+---
+
+### 6. Instruction Ramping
+
+Builds a new instruction folder from an existing instruction file and image set by ramping exposure time between user-defined control layers.
+
+**Inputs:**
+- Source instruction file (`.txt`, standard 10-column tab-delimited format)
+- Ramp mode: **Linear** or **Exponential**
+- Power at the first control layer
+- Control layers entered as one per line: `layer_number, exposure_seconds`
+
+**Behavior:**
+- Control layers must be strictly increasing and within the instruction layer count.
+- Exposure schedule rules:
+   - Layers before the first control layer use the first control-layer exposure.
+   - Layers between adjacent control layers are interpolated (linear or exponential).
+   - Layers after the last control layer are clamped to the last control-layer exposure.
+- Power is recomputed per layer to maintain constant dosage anchored at the first control layer:
+   - `dose_anchor = first_control_power × first_control_exposure`
+   - `power[layer] = dose_anchor / exposure[layer]` (clipped to `[0, 255]`)
+- A new output folder is created (`<source_folder>_ramped_<mode>`), source images are copied into it, and a new instruction file is written as `<output_folder_name>.txt`.
+
+---
+
 ## Output Folder Naming
 
 All processed images are saved to a subfolder inside the source folder. The folder name encodes the active settings:
@@ -251,6 +305,6 @@ pip install numpy opencv-python Pillow
 
 - **Feature Depth Correction — outer pool definition:** Currently uses a 1-pixel dilation of the filled part silhouette to define the fresh-resin boundary. An alternative approach (bounding-box outer pool) was explored and may be revisited: this would define the outer pool as all connected-black pixels outside the axis-aligned bounding box of the part, which naturally penalises small channels that penetrate into the lattice without threshold tuning.
 
-- **Asymmetric GE — quadrant count:** Currently hardcoded to 4 quadrants (NE, NW, SE, SW). A finer ray-based approach (more rays, e.g. 8 or 16) could give better correction for highly irregular part shapes.
+- **Asymmetric GE — sector tuning:** The angular-sector implementation is now configurable. Smaller `Slice (°)` values give finer local adaptation, while `Smooth (sectors)` can suppress noisy radius estimates on sparse or jagged shapes.
 
 - **Feature Depth Correction — channel width:** The current model does not weight by channel cross-section. A narrow 2-px channel penetrating 100 px into the part gets the same `channel_depth` as a wide 50-px channel of the same length, even though the wide channel can supply far more resin. A potential improvement is to weight `channel_depth` by local channel width (e.g., via the distance transform of the connected-black region itself).

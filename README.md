@@ -112,6 +112,28 @@ Prince_CurrentWorkingVersion/
 
 ## Recent Changes
 
+### June 2026 - Image Modification Utilities Added
+
+**Cone Generator (Image Modification window):**
+- Added direct cone stack generation from geometric inputs:
+  - initial radius (µm)
+  - ending radius (µm)
+  - total height (µm)
+  - layer height (µm)
+- Writes a new output folder with sequential layer images (`1.png` → `N.png`).
+
+**Instruction Ramping (Image Modification window):**
+- Added instruction-file ramp helper with user-defined control layers (`layer, exposure`).
+- Supports both linear and exponential interpolation between control layers.
+- Exposure scheduling behavior:
+  - before first control: fixed at first control exposure
+  - between controls: interpolated
+  - after last control: fixed at last control exposure
+- Recomputes per-layer power to keep dosage constant using first control layer anchor:
+  - `dose = power_first × exposure_first`
+  - `power_i = dose / exposure_i` (clipped to 0-255)
+- Produces a new ramped output folder containing copied images and a new tab-delimited instruction file.
+
 ### March 2026 - Image Modification GUI Overhaul
 
 **Scattering Compensation (SC) — full rewrite:**

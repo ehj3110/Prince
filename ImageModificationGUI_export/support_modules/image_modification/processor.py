@@ -107,7 +107,7 @@ def process_single_image(filename: str,
         global_check: 1 to enable global enhancement
         gaussian_map: Pre-built map for symmetric mode (or None if asymmetric)
         guide_padding: 1 to enable padding normalization (when EE and GE off)
-        global_asymmetric: Use per-quadrant asymmetric map instead of symmetric
+        global_asymmetric: Use angular-sector asymmetric map instead of symmetric
         globe: Center min value for global enhancement
         blend_angle: Angular blend width for asymmetric mode (degrees)
         depth_check: 1 to enable feature depth correction
@@ -197,7 +197,7 @@ def process_single_for_preview(image_path: str,
         global_enabled: Enable global enhancement
         globe: Global map center ratio
         sigma: Global map sigma divisor (symmetric mode)
-        global_asymmetric: Use per-quadrant asymmetric map
+        global_asymmetric: Use angular-sector asymmetric map
         blend_angle: Angular blend width for asymmetric mode (degrees)
         depth_mode: "distance" or "pressure"
         pressure_conductivity: Channel K ratio — pressure mode
@@ -283,7 +283,7 @@ def process_folder(input_folder: str,
         globe: Global map center ratio
         sigma: Global map sigma divisor (symmetric mode)
         padding_enabled: Insert black {x}_1.png after each image
-        global_asymmetric: Use per-quadrant asymmetric map
+        global_asymmetric: Use angular-sector asymmetric map
         blend_angle: Angular blend width for asymmetric mode (degrees)
         progress_callback: Optional fn(current, total, message)
 

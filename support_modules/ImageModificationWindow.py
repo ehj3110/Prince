@@ -9,10 +9,14 @@ padding normalization. Provides Preview and Build functionality.
 import os
 import re
 import glob
+import csv
+import math
+import shutil
 import threading
 from pathlib import Path
+from datetime import datetime
 
-from tkinter import Toplevel, Frame, Label, Entry, Button, Checkbutton, BooleanVar, StringVar, Radiobutton, Canvas
+from tkinter import Toplevel, Frame, Label, Entry, Button, Checkbutton, BooleanVar, StringVar, Radiobutton, Canvas, Text
 from tkinter import ttk, filedialog, messagebox, font as tkFont
 
 # Ensure project root is on sys.path so 'support_modules' is importable
@@ -25,10 +29,7 @@ if _project_root not in _sys.path:
 import cv2
 import numpy as np
 
-from support_modules.image_modification.processor import (
-    process_single_for_preview,
-    process_folder,
-)
+import support_modules.image_modification.processor as _im_processor
 from support_modules.z_compensation import compute_layer_factors
 try:
     from support_modules.image_modification.feature_depth import build_feature_depth_map
@@ -43,6 +44,84 @@ except ImportError:
     HAS_DEFINITIONS = False
 
 PREVIEW_MAX_SIZE = (640, 400)  # Full image downscaled to fit; preserves aspect ratio
+CONE_OUTPUT_WIDTH = 2560
+CONE_OUTPUT_HEIGHT = 1600
+CONE_UM_PER_PIXEL = 7.607
+
+
+process_single_for_preview = _im_processor.process_single_for_preview
+process_folder = _im_processor.process_folder
+
+
+def _local_generate_cone_images(input_folder: str,
+                                initial_radius_um: float,
+                                ending_radius_um: float,
+                                height_um: float,
+                                layer_height_um: float,
+                                progress_callback=None) -> str:
+    """Fallback cone generator used if processor symbol is temporarily unavailable."""
+    if not input_folder:
+        raise ValueError("An output folder must be selected for cone generation")
+    if height_um <= 0:
+        raise ValueError("Height must be greater than zero")
+    if layer_height_um <= 0:
+        raise ValueError("Layer height must be greater than zero")
+    if initial_radius_um < 0 or ending_radius_um < 0:
+        raise ValueError("Cone radii must be non-negative")
+
+    layer_count = max(1, int(math.ceil(float(height_um) / float(layer_height_um))))
+    if layer_count == 1:
+        radii = [float(ending_radius_um)]
+    else:
+        radii = [
+            float(initial_radius_um) + (
+                (float(ending_radius_um) - float(initial_radius_um)) * (layer_index / float(layer_count - 1))
+            )
+            for layer_index in range(layer_count)
+        ]
+
+    max_radius_um = max(float(initial_radius_um), float(ending_radius_um))
+    max_fit_radius_px = min((CONE_OUTPUT_WIDTH - 4) / 2.0, (CONE_OUTPUT_HEIGHT - 4) / 2.0)
+    max_fit_radius_um = max_fit_radius_px * CONE_UM_PER_PIXEL
+    if max_radius_um > max_fit_radius_um:
+        raise ValueError(
+            f"Cone radius {max_radius_um:g} um exceeds the printable field for {CONE_UM_PER_PIXEL:g} um/px "
+            f"on a {CONE_OUTPUT_WIDTH}x{CONE_OUTPUT_HEIGHT} frame. Maximum safe radius is {max_fit_radius_um:.1f} um."
+        )
+
+    def _format_um_tag(value: float) -> str:
+        return str(round(float(value), 2)).replace('.', '_')
+
+    output_folder_name = (
+        f"Cone_R{_format_um_tag(initial_radius_um)}_To{_format_um_tag(ending_radius_um)}"
+        f"_H{_format_um_tag(height_um)}_LH{_format_um_tag(layer_height_um)}"
+    )
+    output_folder = os.path.join(input_folder, output_folder_name)
+    os.makedirs(output_folder, exist_ok=True)
+
+    if progress_callback:
+        progress_callback(0, layer_count, "Generating cone images...")
+
+    for index, radius_um in enumerate(radii, start=1):
+        image = np.zeros((CONE_OUTPUT_HEIGHT, CONE_OUTPUT_WIDTH), dtype=np.uint8)
+        draw_radius = max(0, int(round(float(radius_um) / CONE_UM_PER_PIXEL)))
+        cv2.circle(
+            image,
+            (CONE_OUTPUT_WIDTH // 2, CONE_OUTPUT_HEIGHT // 2),
+            draw_radius,
+            255,
+            thickness=-1,
+            lineType=cv2.LINE_8,
+        )
+        output_path = os.path.join(output_folder, f"{index}.png")
+        cv2.imwrite(output_path, image)
+        if progress_callback:
+            progress_callback(index, layer_count, f"Generated layer {index}/{layer_count}")
+
+    return output_folder
+
+
+generate_cone_images = getattr(_im_processor, 'generate_cone_images', _local_generate_cone_images)
 
 
 def _natural_sort_key(filepath):
@@ -73,7 +152,7 @@ def _cv2_to_photoimage(img_bgr_or_gray, max_size=PREVIEW_MAX_SIZE):
         img_bgr = img_bgr_or_gray
 
     h, w = img_bgr.shape[:2]
-    if w > max_size[0] or h > max_size[1]:
+    if max_size is not None and (w > max_size[0] or h > max_size[1]):
         scale = min(max_size[0] / w, max_size[1] / h)
         img_bgr = cv2.resize(img_bgr, (int(w * scale), int(h * scale)),
                              interpolation=cv2.INTER_AREA)
@@ -95,6 +174,13 @@ class ImageModificationWindow:
         self.current_image_path = None
         self.current_photo = None  # Keep reference to prevent GC
         self._build_thread = None
+        self.zoom_level = 1.0  # Track zoom level (1.0 = fit to preview)
+        self.current_image_array = None  # Store original image for zoom
+        self.preview_width = 640  # Fixed preview dimensions
+        self.preview_height = 400
+        self.preview_canvas = None
+        self.preview_canvas_image = None
+        self.instruction_file_path = None
 
         self.window = Toplevel(master_window)
         self.window.title("Image Modification")
@@ -226,13 +312,47 @@ class ImageModificationWindow:
         self.layer_count_label.pack(side="left", padx=(0, 10))
         Button(layer_frame, text="Load", command=self._load_layer, font=control_font).pack(side="left")
 
-        # --- Image preview ---
+        # --- Image preview with zoom/pan controls ---
         preview_frame = Frame(scrollable_frame, relief="groove", borderwidth=2)
         preview_frame.pack(side="top", padx=10, pady=(5, 10))
-        # No width/height on Label - it sizes to the image; char units would clip the display
-        self.preview_label = Label(preview_frame, text="No image loaded",
-                                   bg="#333", fg="white", font=control_font)
-        self.preview_label.pack(padx=5, pady=5)
+        
+        # Zoom controls
+        zoom_frame = Frame(preview_frame)
+        zoom_frame.pack(side="top", padx=5, pady=(5, 0))
+        Button(zoom_frame, text="-", command=self._zoom_out, width=3, font=control_font).pack(side="left", padx=2)
+        self.zoom_label = Label(zoom_frame, text="Fit", width=8, font=control_font)
+        self.zoom_label.pack(side="left", padx=5)
+        Button(zoom_frame, text="+", command=self._zoom_in, width=3, font=control_font).pack(side="left", padx=2)
+        Button(zoom_frame, text="Reset", command=self._zoom_fit, width=6, font=control_font).pack(side="left", padx=2)
+        
+        preview_view = Frame(preview_frame)
+        preview_view.pack(side="top", padx=5, pady=5)
+
+        self.preview_canvas = Canvas(
+            preview_view,
+            width=self.preview_width,
+            height=self.preview_height,
+            bg="#333",
+            highlightthickness=0,
+        )
+        self.preview_canvas.grid(row=0, column=0, sticky="nsew")
+
+        y_scroll = ttk.Scrollbar(preview_view, orient="vertical", command=self.preview_canvas.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+
+        x_scroll = ttk.Scrollbar(preview_view, orient="horizontal", command=self.preview_canvas.xview)
+        x_scroll.grid(row=1, column=0, sticky="ew")
+
+        preview_view.grid_rowconfigure(0, weight=1)
+        preview_view.grid_columnconfigure(0, weight=1)
+
+        self.preview_canvas.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        self.preview_canvas.create_text(
+            self.preview_width // 2,
+            self.preview_height // 2,
+            text="No image loaded",
+            fill="white",
+        )
 
         # --- Section 1: Edge Enhancement ---
         ee_frame = ttk.LabelFrame(scrollable_frame, text="Edge Enhancement", padding=(10, 5))
@@ -372,6 +492,75 @@ class ImageModificationWindow:
         self.sc_max_var = StringVar(value="255")
         Entry(sc_row, textvariable=self.sc_max_var, width=5, font=control_font).pack(side="left")
 
+        # --- Section 7: Cone Generator ---
+        cone_frame = ttk.LabelFrame(scrollable_frame, text="Cone Generator", padding=(10, 5))
+        cone_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
+
+        cone_row1 = ttk.Frame(cone_frame)
+        cone_row1.pack(side="top", fill="x")
+        Label(cone_row1, text="Output base folder:", font=control_font).pack(side="left", padx=(0, 5))
+        self.cone_output_entry = Entry(cone_row1, font=control_font)
+        self.cone_output_entry.pack(side="left", expand=True, fill="x", padx=(0, 5))
+        self.cone_output_entry.insert(0, os.getcwd())
+        Button(cone_row1, text="Browse", command=self._browse_cone_output_folder, font=control_font).pack(side="left")
+
+        cone_row2 = ttk.Frame(cone_frame)
+        cone_row2.pack(side="top", fill="x", pady=(5, 0))
+        Label(cone_row2, text="Initial radius (um):", font=control_font).pack(side="left", padx=(0, 5))
+        self.cone_initial_radius_var = StringVar(value="0")
+        Entry(cone_row2, textvariable=self.cone_initial_radius_var, width=7, font=control_font).pack(side="left", padx=(0, 10))
+        Label(cone_row2, text="Ending radius (um):", font=control_font).pack(side="left", padx=(0, 5))
+        self.cone_ending_radius_var = StringVar(value="500")
+        Entry(cone_row2, textvariable=self.cone_ending_radius_var, width=7, font=control_font).pack(side="left", padx=(0, 10))
+        Label(cone_row2, text="Height (um):", font=control_font).pack(side="left", padx=(0, 5))
+        self.cone_height_var = StringVar(value="1000")
+        Entry(cone_row2, textvariable=self.cone_height_var, width=7, font=control_font).pack(side="left", padx=(0, 10))
+        Label(cone_row2, text="Layer height (um):", font=control_font).pack(side="left", padx=(0, 5))
+        self.cone_layer_height_var = StringVar(value="50")
+        Entry(cone_row2, textvariable=self.cone_layer_height_var, width=7, font=control_font).pack(side="left")
+
+        cone_row3 = ttk.Frame(cone_frame)
+        cone_row3.pack(side="top", fill="x", pady=(6, 0))
+        self.cone_generate_btn = Button(cone_row3, text="Generate Cone", command=self._generate_cone, font=control_font)
+        self.cone_generate_btn.pack(side="left")
+        self.cone_status_label = Label(cone_row3, text="", font=control_font)
+        self.cone_status_label.pack(side="left", padx=(15, 0))
+
+        # --- Section 8: Instruction Ramping ---
+        ramp_frame = ttk.LabelFrame(scrollable_frame, text="Instruction Ramping", padding=(10, 5))
+        ramp_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
+
+        ramp_row1 = ttk.Frame(ramp_frame)
+        ramp_row1.pack(side="top", fill="x")
+        Label(ramp_row1, text="Instruction file:", font=control_font).pack(side="left", padx=(0, 5))
+        self.ramp_instruction_entry = Entry(ramp_row1, font=control_font)
+        self.ramp_instruction_entry.pack(side="left", expand=True, fill="x", padx=(0, 5))
+        Button(ramp_row1, text="Browse", command=self._browse_instruction_file, font=control_font).pack(side="left")
+
+        ramp_row2 = ttk.Frame(ramp_frame)
+        ramp_row2.pack(side="top", fill="x", pady=(5, 0))
+        Label(ramp_row2, text="Ramp mode:", font=control_font).pack(side="left", padx=(0, 5))
+        self.ramp_mode_var = StringVar(value="linear")
+        Radiobutton(ramp_row2, text="Linear", variable=self.ramp_mode_var, value="linear", font=control_font).pack(side="left", padx=(0, 10))
+        Radiobutton(ramp_row2, text="Exponential", variable=self.ramp_mode_var, value="exponential", font=control_font).pack(side="left", padx=(0, 15))
+        Label(ramp_row2, text="Power at first control layer:", font=control_font).pack(side="left", padx=(0, 5))
+        self.ramp_first_power_var = StringVar(value="255")
+        Entry(ramp_row2, textvariable=self.ramp_first_power_var, width=7, font=control_font).pack(side="left")
+
+        ramp_row3 = ttk.Frame(ramp_frame)
+        ramp_row3.pack(side="top", fill="both", pady=(5, 0))
+        Label(ramp_row3, text="Control layers (one per line: layer, exposure_s):", font=control_font).pack(anchor="w")
+        self.ramp_control_text = Text(ramp_row3, height=5, width=60, font=control_font)
+        self.ramp_control_text.pack(side="top", fill="x")
+        self.ramp_control_text.insert("end", "1, 9.0\n10, 0.25\n20, 0.25")
+
+        ramp_row4 = ttk.Frame(ramp_frame)
+        ramp_row4.pack(side="top", fill="x", pady=(6, 0))
+        self.ramp_generate_btn = Button(ramp_row4, text="Generate Ramp", command=self._generate_instruction_ramp, font=control_font)
+        self.ramp_generate_btn.pack(side="left")
+        self.ramp_status_label = Label(ramp_row4, text="", font=control_font)
+        self.ramp_status_label.pack(side="left", padx=(15, 0))
+
         # --- Preview and Build buttons ---
         btn_frame = Frame(scrollable_frame)
         btn_frame.pack(side="top", padx=10, pady=(15, 10))
@@ -418,20 +607,72 @@ class ImageModificationWindow:
         self.current_image_path = path
         self._display_image(path)
 
-    def _display_image(self, path, processed_array=None):
+    def _zoom_in(self):
+        """Increase zoom level."""
+        if self.current_image_array is None:
+            return
+        self.zoom_level = min(self.zoom_level * 1.25, 8.0)
+        self._update_zoom_display()
+
+    def _zoom_out(self):
+        """Decrease zoom level."""
+        if self.current_image_array is None:
+            return
+        self.zoom_level = max(self.zoom_level / 1.25, 1.0)
+        self._update_zoom_display()
+
+    def _zoom_fit(self):
+        """Reset to fit view."""
+        self.zoom_level = 1.0
+        self._update_zoom_display()
+
+    def _update_zoom_display(self):
+        """Update the preview with current zoom level and scrollbar pan."""
+        if self.current_image_array is None:
+            return
+
+        img = self.current_image_array
+        h, w = img.shape[:2]
+
+        fit_scale = min(self.preview_width / w, self.preview_height / h)
+        scale = fit_scale * self.zoom_level
+        disp_w = max(1, int(w * scale))
+        disp_h = max(1, int(h * scale))
+        img_display = cv2.resize(img, (disp_w, disp_h), interpolation=cv2.INTER_LINEAR)
+
+        self.current_photo = _cv2_to_photoimage(img_display, max_size=None)
+        if self.current_photo is None or self.preview_canvas is None:
+            return
+
+        self.preview_canvas.delete("all")
+        self.preview_canvas_image = self.preview_canvas.create_image(0, 0, image=self.current_photo, anchor="nw")
+        self.preview_canvas.config(scrollregion=(0, 0, disp_w, disp_h))
+        self.zoom_label.config(text="Fit" if self.zoom_level == 1.0 else f"{int(self.zoom_level * 100)}%")
+
+    def _display_image(self, path, processed_array=None, preserve_view=False):
         """Display image from path or from processed numpy array."""
         if processed_array is not None:
             img = processed_array
         else:
             img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         if img is None:
-            self.preview_label.config(image="", text="Could not load image")
+            if self.preview_canvas is not None:
+                self.preview_canvas.delete("all")
+                self.preview_canvas.create_text(
+                    self.preview_width // 2,
+                    self.preview_height // 2,
+                    text="Could not load image",
+                    fill="white",
+                )
+            self.current_image_array = None
             return
-        self.current_photo = _cv2_to_photoimage(img)
-        if self.current_photo is not None:
-            self.preview_label.config(image=self.current_photo, text="")
-        else:
-            self.preview_label.config(image="", text="Install Pillow for image preview")
+        
+        # Store original for zoom operations
+        self.current_image_array = img.copy()
+        if not preserve_view:
+            self.zoom_level = 1.0
+        
+        self._update_zoom_display()
 
     def _get_params(self):
         """Get current params, with validation."""
@@ -507,6 +748,14 @@ class ImageModificationWindow:
         except ValueError:
             ee_falloff = 101
         try:
+            ee_min = float(self.min_var.get().strip() or "100")
+        except ValueError:
+            ee_min = 100.0
+        try:
+            ee_max = float(self.max_var.get().strip() or "255")
+        except ValueError:
+            ee_max = 255.0
+        try:
             sc_falloff = int(self.sc_falloff_var.get().strip() or "61")
         except ValueError:
             sc_falloff = 61
@@ -550,13 +799,15 @@ class ImageModificationWindow:
             zc_penetration_depth,
             zc_strength,
             zc_min_factor,
+            ee_min,
+            ee_max,
         )
 
     def _do_preview(self):
         if not self.current_image_path or not os.path.isfile(self.current_image_path):
             messagebox.showwarning("Preview", "Load an image first (set folder and click Load).", parent=self.window)
             return
-        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor = self._get_params()
+        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor, ee_min, ee_max = self._get_params()
         try:
             axial_factor = 1.0
             if self.zc_var.get() and self.image_files:
@@ -597,8 +848,10 @@ class ImageModificationWindow:
                 axial_factor=axial_factor,
                 ee_falloff=ee_falloff,
                 scatter_falloff=sc_falloff,
+                ee_min=ee_min,
+                ee_max=ee_max,
             )
-            self._display_image(None, processed_array=result)
+            self._display_image(None, processed_array=result, preserve_view=True)
             self.update_status("Preview updated.")
         except Exception as e:
             messagebox.showerror("Preview Error", str(e), parent=self.window)
@@ -613,7 +866,7 @@ class ImageModificationWindow:
         if not self.image_files:
             messagebox.showerror("Build", "No PNG images found in folder.", parent=self.window)
             return
-        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor = self._get_params()
+        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor, ee_min, ee_max = self._get_params()
 
         def run_build():
             try:
@@ -650,6 +903,8 @@ class ImageModificationWindow:
                     axial_min_factor=zc_min_factor,
                     ee_falloff=ee_falloff,
                     scatter_falloff=sc_falloff,
+                    ee_min=ee_min,
+                    ee_max=ee_max,
                 )
                 self.window.after(0, lambda: self._build_done(output, None))
             except Exception as e:
@@ -657,6 +912,242 @@ class ImageModificationWindow:
 
         self._build_thread = threading.Thread(target=run_build, daemon=True)
         self._build_thread.start()
+
+    def _browse_cone_output_folder(self):
+        path = filedialog.askdirectory(title="Select base folder for cone images")
+        if path:
+            self.cone_output_entry.delete(0, "end")
+            self.cone_output_entry.insert(0, path)
+
+    def _browse_instruction_file(self):
+        path = filedialog.askopenfilename(
+            title="Select instruction file",
+            filetypes=[("Instruction files", "*.txt"), ("All files", "*.*")],
+        )
+        if path:
+            self.instruction_file_path = path
+            self.ramp_instruction_entry.delete(0, "end")
+            self.ramp_instruction_entry.insert(0, path)
+
+    def _parse_control_layers(self):
+        raw_text = self.ramp_control_text.get("1.0", "end").strip()
+        control_points = []
+        for line in raw_text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = [part.strip() for part in re.split(r"[,\t ]+", line) if part.strip()]
+            if len(parts) < 2:
+                raise ValueError(f"Invalid control layer line: '{line}'")
+            layer_num = int(float(parts[0]))
+            exposure_s = float(parts[1])
+            if layer_num < 1:
+                raise ValueError("Control layer numbers must be 1 or greater")
+            if exposure_s <= 0:
+                raise ValueError("Control layer exposure times must be greater than zero")
+            control_points.append((layer_num, exposure_s))
+        if len(control_points) < 2:
+            raise ValueError("Enter at least two control layers")
+        control_points.sort(key=lambda item: item[0])
+        for idx in range(1, len(control_points)):
+            if control_points[idx][0] <= control_points[idx - 1][0]:
+                raise ValueError("Control layer numbers must be strictly increasing")
+        return control_points
+
+    def _read_instruction_rows(self, instruction_path):
+        with open(instruction_path, "r", newline="", encoding="utf-8") as handle:
+            reader = csv.reader(handle, delimiter="\t")
+            rows = [row for row in reader if row]
+        if len(rows) < 2:
+            raise ValueError("Instruction file does not contain any layer rows")
+        header = rows[0]
+        if len(header) < 10:
+            raise ValueError("Instruction file must have the standard 10-column header")
+
+        parsed_rows = []
+        for row in rows[1:]:
+            if len(row) < 10:
+                row_text = "\t".join(row)
+                raise ValueError(f"Invalid instruction row: {row_text}")
+            parsed_rows.append({
+                "layer": int(float(row[0])),
+                "file": row[1],
+                "thickness": row[2],
+                "time": float(row[3]),
+                "intensity": float(row[4]),
+                "step_speed": row[5],
+                "overstep": row[6],
+                "acceleration": row[7],
+                "pause": row[8],
+                "sandwich_speed": row[9],
+            })
+
+        parsed_rows.sort(key=lambda item: item["layer"])
+        for expected, row in enumerate(parsed_rows, start=1):
+            if row["layer"] != expected:
+                raise ValueError("Instruction file layers must be sequential starting at 1")
+        return header, parsed_rows
+
+    def _interpolate_exposure(self, left_layer, left_exposure, right_layer, right_exposure, current_layer, mode):
+        if right_layer <= left_layer:
+            return left_exposure
+        t = (current_layer - left_layer) / float(right_layer - left_layer)
+        if mode == "exponential" and left_exposure > 0 and right_exposure > 0:
+            if abs(left_exposure - right_exposure) < 1e-12:
+                return left_exposure
+            return left_exposure * ((right_exposure / left_exposure) ** t)
+        return left_exposure + ((right_exposure - left_exposure) * t)
+
+    def _generate_controlled_ramp(self, source_path, control_points, mode, first_power):
+        header, rows = self._read_instruction_rows(source_path)
+        total_layers = len(rows)
+        if control_points[0][0] > total_layers or control_points[-1][0] > total_layers:
+            raise ValueError("Control layer numbers cannot exceed the number of layers in the instruction file")
+
+        if len(control_points) == 2:
+            boundaries = [(control_points[0], control_points[1])]
+        else:
+            boundaries = list(zip(control_points[:-1], control_points[1:]))
+
+        exposure_by_layer = [0.0] * total_layers
+        for layer_index in range(1, total_layers + 1):
+            if layer_index <= control_points[0][0]:
+                exposure_by_layer[layer_index - 1] = control_points[0][1]
+                continue
+            if layer_index >= control_points[-1][0]:
+                exposure_by_layer[layer_index - 1] = control_points[-1][1]
+                continue
+            for left, right in boundaries:
+                if left[0] <= layer_index <= right[0]:
+                    exposure_by_layer[layer_index - 1] = self._interpolate_exposure(
+                        left[0], left[1], right[0], right[1], layer_index, mode
+                    )
+                    break
+
+        anchor_exposure = control_points[0][1]
+        anchor_power = float(first_power)
+        anchor_dose = anchor_power * anchor_exposure
+
+        output_rows = []
+        for row, exposure in zip(rows, exposure_by_layer):
+            if exposure <= 0:
+                raise ValueError("Interpolated exposure time became non-positive")
+            power = anchor_dose / exposure
+            power = max(0.0, min(255.0, power))
+            output_rows.append([
+                str(row["layer"]),
+                row["file"],
+                row["thickness"],
+                f"{exposure:.6f}",
+                f"{power:.6f}",
+                row["step_speed"],
+                row["overstep"],
+                row["acceleration"],
+                row["pause"],
+                row["sandwich_speed"],
+            ])
+
+        source_folder = Path(source_path).resolve().parent
+        source_folder_name = source_folder.name
+        output_folder = source_folder.parent / f"{source_folder_name}_ramped_{mode}"
+        output_folder.mkdir(parents=True, exist_ok=True)
+
+        for row in rows:
+            source_image = source_folder / row["file"]
+            if source_image.exists():
+                shutil.copy2(source_image, output_folder / row["file"])
+
+        output_txt = output_folder / f"{output_folder.name}.txt"
+        with open(output_txt, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle, delimiter="\t")
+            writer.writerow(header[:10])
+            writer.writerows(output_rows)
+
+        return output_folder, output_txt
+
+    def _generate_instruction_ramp(self):
+        source_path = self.ramp_instruction_entry.get().strip()
+        if not source_path or not os.path.isfile(source_path):
+            messagebox.showerror("Instruction Ramping", "Select a valid instruction file first.", parent=self.window)
+            return
+
+        try:
+            control_points = self._parse_control_layers()
+            first_power = float(self.ramp_first_power_var.get().strip() or "255")
+            if first_power < 0:
+                raise ValueError("Power at the first control layer must be non-negative")
+            mode = self.ramp_mode_var.get().strip().lower()
+            if mode not in {"linear", "exponential"}:
+                mode = "linear"
+
+            self.ramp_generate_btn.config(state="disabled")
+            self.ramp_status_label.config(text="Generating...")
+            output_folder, output_txt = self._generate_controlled_ramp(source_path, control_points, mode, first_power)
+            self.ramp_status_label.config(text="Done")
+            self.update_status(f"Instruction ramp generated: {output_txt}")
+            messagebox.showinfo("Instruction Ramping Complete", f"Output folder:\n{output_folder}", parent=self.window)
+        except Exception as e:
+            self.ramp_status_label.config(text="Failed")
+            messagebox.showerror("Instruction Ramping Failed", str(e), parent=self.window)
+            self.update_status(f"Instruction ramping failed: {e}", error=True)
+        finally:
+            self.ramp_generate_btn.config(state="normal")
+
+    def _get_cone_params(self):
+        try:
+            initial_radius = float(self.cone_initial_radius_var.get().strip() or "0")
+        except ValueError:
+            initial_radius = 0.0
+        try:
+            ending_radius = float(self.cone_ending_radius_var.get().strip() or "500")
+        except ValueError:
+            ending_radius = 500.0
+        try:
+            height_um = float(self.cone_height_var.get().strip() or "1000")
+        except ValueError:
+            height_um = 1000.0
+        try:
+            layer_height_um = float(self.cone_layer_height_var.get().strip() or "50")
+        except ValueError:
+            layer_height_um = 50.0
+        return initial_radius, ending_radius, height_um, layer_height_um
+
+    def _generate_cone(self):
+        base_folder = self.cone_output_entry.get().strip()
+        if not base_folder or not os.path.isdir(base_folder):
+            messagebox.showerror("Cone Generator", "Select a valid base folder first.", parent=self.window)
+            return
+
+        initial_radius, ending_radius, height_um, layer_height_um = self._get_cone_params()
+
+        def run_generation():
+            try:
+                self.cone_status_label.config(text="Generating...")
+                self.cone_generate_btn.config(state="disabled")
+                output_folder = generate_cone_images(
+                    base_folder,
+                    initial_radius_um=initial_radius,
+                    ending_radius_um=ending_radius,
+                    height_um=height_um,
+                    layer_height_um=layer_height_um,
+                )
+                self.window.after(0, lambda: self._cone_generation_done(output_folder, None))
+            except Exception as e:
+                self.window.after(0, lambda: self._cone_generation_done(None, str(e)))
+
+        self._build_thread = threading.Thread(target=run_generation, daemon=True)
+        self._build_thread.start()
+
+    def _cone_generation_done(self, output_folder, error):
+        self.cone_generate_btn.config(state="normal")
+        if error:
+            self.cone_status_label.config(text="Failed")
+            messagebox.showerror("Cone Generator Failed", error, parent=self.window)
+            self.update_status(f"Cone generation failed: {error}", error=True)
+        else:
+            self.cone_status_label.config(text="Done")
+            self.update_status(f"Cone generation complete: {output_folder}")
+            messagebox.showinfo("Cone Generator Complete", f"Output saved to:\n{output_folder}", parent=self.window)
 
     def _build_done(self, output_folder, error):
         self.preview_btn.config(state="normal")
@@ -669,6 +1160,102 @@ class ImageModificationWindow:
             self.status_label.config(text="Done")
             self.update_status(f"Build complete: {output_folder}")
             messagebox.showinfo("Build Complete", f"Output saved to:\n{output_folder}", parent=self.window)
+
+        try:
+            self._write_processing_summary(output_folder, error)
+        except Exception as summary_error:
+            self.update_status(f"Build logging failed: {summary_error}", error=True)
+
+    def _resolve_build_session_dir(self, folder, create_if_missing=True):
+        main_image_dir = os.path.abspath(os.path.dirname(folder))
+        if self.prince_main_app_ref and hasattr(self.prince_main_app_ref, 'reserve_print_session_for_conditions'):
+            try:
+                if getattr(self.prince_main_app_ref, 'current_print_session_log_dir', None):
+                    return self.prince_main_app_ref.current_print_session_log_dir
+                return self.prince_main_app_ref.reserve_print_session_for_conditions()
+            except Exception:
+                pass
+
+        if not create_if_missing:
+            return None
+
+        try:
+            from support_modules.PrintSessionUtils import ensure_print_session
+            session_info = ensure_print_session(main_image_dir)
+            return session_info['print_dir']
+        except Exception:
+            return None
+
+    def _write_processing_summary(self, output_folder, error):
+        if not output_folder:
+            return
+
+        folder = self.folder_entry.get().strip()
+        session_dir = self._resolve_build_session_dir(folder) if folder and os.path.isdir(folder) else None
+        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor, ee_min, ee_max = self._get_params()
+
+        summary_rows = [
+            ("timestamp", datetime.now().isoformat(timespec="seconds")),
+            ("source_folder", folder),
+            ("output_folder", output_folder),
+            ("session_dir", session_dir or ""),
+            ("status", "error" if error else "success"),
+            ("error_message", error or ""),
+            ("edge_enabled", self.ee_var.get()),
+            ("blurring", blur),
+            ("global_enabled", self.ge_var.get()),
+            ("globe", globe),
+            ("sigma", sigma),
+            ("padding_enabled", self.pad_var.get()),
+            ("global_asymmetric", self.ge_asymmetric_var.get()),
+            ("blend_angle", blend_angle),
+            ("ge_sector_angle", ge_sector_angle),
+            ("ge_sector_smoothing", ge_sector_smoothing),
+            ("depth_enabled", self.fd_var.get()),
+            ("depth_strength", fd_strength),
+            ("depth_decay_sigma", fd_decay),
+            ("depth_smooth_sigma", fd_smooth),
+            ("depth_mode", fd_mode),
+            ("pressure_conductivity", fd_conductivity),
+            ("pressure_sink", fd_sink),
+            ("scatter_enabled", self.sc_var.get()),
+            ("scatter_width", sc_width),
+            ("scatter_min_val", sc_min),
+            ("scatter_max_val", sc_max),
+            ("axial_enabled", self.zc_var.get()),
+            ("layer_thickness_um", zc_layer_thickness),
+            ("penetration_depth_um", zc_penetration_depth),
+            ("axial_strength", zc_strength),
+            ("axial_min_factor", zc_min_factor),
+            ("ee_falloff", ee_falloff),
+            ("scatter_falloff", sc_falloff),
+            ("ee_min", ee_min),
+            ("ee_max", ee_max),
+        ]
+
+        os.makedirs(output_folder, exist_ok=True)
+        summary_path = os.path.join(output_folder, "processing_summary.csv")
+        with open(summary_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["field", "value"])
+            writer.writerows(summary_rows)
+
+        if session_dir:
+            os.makedirs(session_dir, exist_ok=True)
+            session_log_path = os.path.join(session_dir, "image_build_log.csv")
+            write_header = not os.path.exists(session_log_path)
+            with open(session_log_path, "a", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                if write_header:
+                    writer.writerow(["timestamp", "source_folder", "output_folder", "summary_path", "status", "error_message"])
+                writer.writerow([
+                    datetime.now().isoformat(timespec="seconds"),
+                    folder,
+                    output_folder,
+                    summary_path,
+                    "error" if error else "success",
+                    error or "",
+                ])
 
     def _on_close(self):
         if self.prince_main_app_ref and hasattr(self.prince_main_app_ref, 'image_modification_window'):

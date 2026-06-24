@@ -28,6 +28,14 @@ python support_modules/ImageModificationWindow.py
 | **Image Padding** | Inserts a black padding frame after each real layer (`{x}_1.png`) to improve layer separation. |
 | **Scattering Compensation** | Dims pixels near part boundaries to counter resin light scattering. Inverse of Edge Enhancement. |
 
+### Local-only helpers (not in export package)
+
+The integrated Prince Image Modification window includes additional utilities:
+- Cone Generator
+- Instruction Ramping
+
+These helpers are currently implemented in the main project GUI and are not included in this standalone export package.
+
 ### Key parameters
 
 **Blur** — Gaussian sigma (px). Controls how far the effect extends from the boundary.  

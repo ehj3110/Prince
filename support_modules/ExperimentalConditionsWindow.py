@@ -262,16 +262,36 @@ class ExperimentalConditionsWindow:
         self.update_status("All fields cleared")
     
     def _save_conditions(self):
-        """Manually save current conditions to CSV."""
+        """Manually save current conditions to CSV.
+        
+        If no print is currently active, attempts to reserve a Print N session for today.
+        If print is active, saves to the active session.
+        """
         if not self.logging_enabled.get():
             messagebox.showwarning("Logging Disabled", 
                                   "Experimental conditions logging is disabled. Enable it first.")
             return
         
+        # If no active print, try to reserve a session
         if not self.current_csv_file:
-            messagebox.showwarning("No Active Print", 
-                                  "No active print session. Start a print first.")
-            return
+            # Try to reserve a session if main app reference exists
+            if hasattr(self, 'prince_main_app_ref') and self.prince_main_app_ref:
+                try:
+                    reserved_dir = self.prince_main_app_ref.reserve_print_session_for_conditions()
+                    self.start_new_print(reserved_dir)
+                    messagebox.showinfo("Session Reserved", 
+                        f"Conditions reserved for today.\nSession: {Path(reserved_dir).name}")
+                    self.update_status("Experimental conditions session reserved")
+                    return
+                except Exception as e:
+                    messagebox.showerror("Reservation Error", 
+                        f"Could not reserve print session:\n{e}")
+                    self.update_status(f"Error reserving print session: {e}", error=True)
+                    return
+            else:
+                messagebox.showwarning("No Active Print", 
+                                      "No active print session and cannot reserve one.\nStart a print first or set image directory.")
+                return
         
         try:
             self._write_conditions_to_csv()

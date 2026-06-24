@@ -117,6 +117,16 @@ This directory contains comprehensive guides, technical references, and process 
 - Running Experiments
 - Best Practices
 
+### `IMAGE_MODIFICATION_MODULE.md`
+**Detailed reference for image-preprocessing tools and helper utilities**
+
+**When to use:** Compensating slice images before printing, generating cone image stacks, or generating ramped instruction files from control layers
+
+**Key Sections:**
+- Edge / Global / Feature Depth / Scattering compensation features
+- Cone Generator workflow and output naming
+- Instruction Ramping workflow (linear/exponential), control-layer behavior, and dosage-preserving power updates
+
 ---
 
 ## Technical References
@@ -151,6 +161,15 @@ This directory contains comprehensive guides, technical references, and process 
 - **`PROJECT_UPDATE_HYBRID_SYSTEM.md`** - Latest system updates and changes
 - **`HYBRID_SYSTEM_SUCCESS_REPORT.md`** - Complete project documentation with results
 - **`HYBRID_SYSTEM_BACKUP_MANIFEST.md`** - System backup information and organization
+
+### Round 2 Folder Indexes
+
+The following folder-level indexes were added during the documentation sweep:
+
+- **`POST_PROCESSING_FOLDER_INDEX.md`** - Post-processing architecture and pipeline map
+- **`CALIBRATION_FOLDER_INDEX.md`** - Calibration modules and workflow map
+- **`DEBUG_FOLDER_INDEX.md`** - Debug utilities, integration checks, and debug support map
+- **`SUPPORT_MODULES_ROUND2_INDEX.md`** - Shared support_modules architecture map
 
 ---
 

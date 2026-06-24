@@ -122,13 +122,35 @@ class TestImageModification(unittest.TestCase):
         self.assertEqual(result.dtype, "uint8")
 
     def test_process_single_for_preview_asymmetric(self):
-        """Preview: GE asymmetric (4 quadrants)."""
+        """Preview: GE asymmetric (angular sectors, 90° compatibility)."""
         from support_modules.image_modification.processor import process_single_for_preview
 
         images = sorted(Path(self.test_path).glob("*.png"), key=lambda p: int(p.stem) if p.stem.isdigit() else 0)
         images = [p for p in images if "_" not in p.stem or not p.stem.endswith("_1")]
         path = str(images[0])
         result = process_single_for_preview(path, edge_enabled=False, blurring=25, global_enabled=True, globe=0.8, sigma=6.0, global_asymmetric=True, blend_angle=20.0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.dtype, "uint8")
+
+    def test_process_single_for_preview_asymmetric_fine_slices(self):
+        """Preview: GE asymmetric with fine angular slices (e.g., 10°)."""
+        from support_modules.image_modification.processor import process_single_for_preview
+
+        images = sorted(Path(self.test_path).glob("*.png"), key=lambda p: int(p.stem) if p.stem.isdigit() else 0)
+        images = [p for p in images if "_" not in p.stem or not p.stem.endswith("_1")]
+        path = str(images[0])
+        result = process_single_for_preview(
+            path,
+            edge_enabled=False,
+            blurring=25,
+            global_enabled=True,
+            globe=0.8,
+            sigma=6.0,
+            global_asymmetric=True,
+            blend_angle=8.0,
+            ge_sector_angle=10.0,
+            ge_sector_smoothing=1,
+        )
         self.assertIsNotNone(result)
         self.assertEqual(result.dtype, "uint8")
 
@@ -203,6 +225,45 @@ class TestImageModification(unittest.TestCase):
         # Expect: 1.png, 1_1.png, 2.png, 2_1.png, 3.png, 3_1.png
         padded = [f for f in out_files if "_1.png" in f]
         self.assertGreater(len(padded), 0)
+
+    def test_process_folder_asymmetric_fine_slices(self):
+        """Build: GE asymmetric with fine angular slices and naming tags."""
+        from support_modules.image_modification.processor import process_folder
+
+        output = process_folder(
+            self.test_path,
+            edge_enabled=False,
+            blurring=25,
+            global_enabled=True,
+            globe=0.8,
+            sigma=6.0,
+            padding_enabled=False,
+            global_asymmetric=True,
+            blend_angle=8.0,
+            ge_sector_angle=10.0,
+            ge_sector_smoothing=1,
+        )
+        self.assertTrue(os.path.isdir(output))
+        self.assertIn("_AsymA10", output)
+
+    def test_angular_profile_interpolation_is_continuous(self):
+        """Angular profile interpolation should not jump at sector boundaries."""
+        from support_modules.image_modification.global_enhancement import _sample_blended_circular_profile
+
+        profile = np.array([1.0, 2.5, 4.0, 2.0], dtype=np.float64)
+        theta = np.array([89.999, 90.001], dtype=np.float64)
+        values = _sample_blended_circular_profile(theta, profile, sector_angle_deg=90.0, blend_angle_deg=20.0)
+        self.assertLess(abs(values[0] - values[1]), 0.01)
+
+    def test_blend_angle_changes_result(self):
+        """Blend angle should materially change the sampled angular profile."""
+        from support_modules.image_modification.global_enhancement import _sample_blended_circular_profile
+
+        profile = np.array([1.0, 4.0], dtype=np.float64)
+        theta = np.array([1.0, 45.0, 89.0], dtype=np.float64)
+        no_blend = _sample_blended_circular_profile(theta, profile, sector_angle_deg=90.0, blend_angle_deg=0.0)
+        full_blend = _sample_blended_circular_profile(theta, profile, sector_angle_deg=90.0, blend_angle_deg=180.0)
+        self.assertFalse(np.allclose(no_blend, full_blend))
 
     def test_import_image_modification_window(self):
         """Import ImageModificationWindow (GUI class)."""

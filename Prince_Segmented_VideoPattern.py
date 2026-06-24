@@ -33,11 +33,14 @@ import traceback
 from tkinter import messagebox
 from SensorDataWindow import SensorDataWindow
 from AutoHomeRoutine import AutoHomer
-from support_modules.ExperimentalConditionsWindow import ExperimentalConditionsWindow
+from support_modules.ExperimentalConditionsWindow_VideoPattern import ExperimentalConditionsWindow_VideoPattern
+from support_modules.LoggingCheckWindow_VideoPattern import LoggingCheckWindow_VideoPattern
+from support_modules.VideoPatternPrintLogging import VideoPatternPrintLogging
 from support_modules.ImageModificationWindow import ImageModificationWindow
 from support_modules.SandwichRoutines import SandwichRoutineManager
 from support_modules.SessionManager import SessionManager
 from support_modules.motion_controller import MotionController
+from support_modules.PrintSessionUtils import ensure_print_session, get_today_str
 from support_modules.USBCoordinator import usb_coordinator
 from support_modules.hardware.stage.zaber_stage_adapter import ZaberStageAdapter
 from support_modules.hardware.light_engine.dlp9000_light_engine_adapter import DLP9000LightEngineAdapter
@@ -78,6 +81,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.session_manager = SessionManager(self)
         self.session_manager.init_session_log()
         self.current_print_session_log_dir = None
+            self.current_print_log_base_dir = None
+            self.current_print_date_dir = None
+            self.current_print_number = None
+            self.reserved_print_session_log_dir = None
+            self.reserved_print_number = None
+            self.reserved_print_date_str = None
+            self.print_session_in_progress = False
         
         # Logging verbosity levels
         self.LOG_MINIMAL = 0   # Only critical errors and major events
@@ -175,6 +185,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.exp_conditions_window = None
         self.image_modification_window = None
         self.auto_home_thread = None
+        
+        # VideoPattern logging modules
+        self.print_logging_service = None
+        self.quality_check_gate = False  # Blocks next print until quality check is complete
 
         self.cache_clear_layer = 100000
         self.time1 = 1000
@@ -754,9 +768,47 @@ Evan Jones, evanjones2026@u.northwestern.edu
         """Determines the next print number for a given date directory."""
         return self.session_manager.get_next_print_number(date_specific_log_dir)
 
+    def _allocate_print_session(self, main_img_dir, prefer_reserved=True, mark_active=False):
+        today_str = get_today_str()
+        preferred = None
+
+        if prefer_reserved and self.reserved_print_session_log_dir and self.reserved_print_date_str == today_str:
+            preferred = self.reserved_print_session_log_dir
+
+        session_info = ensure_print_session(main_img_dir, date_str=today_str, preferred_print_dir=preferred)
+
+        self.current_print_log_base_dir = session_info['base_dir']
+        self.current_print_date_dir = session_info['date_dir']
+        self.current_print_number = session_info['print_number']
+        self.current_print_session_log_dir = session_info['print_dir']
+
+        if mark_active:
+            self.print_session_in_progress = True
+            self.reserved_print_session_log_dir = None
+            self.reserved_print_number = None
+            self.reserved_print_date_str = None
+        else:
+            self.reserved_print_session_log_dir = self.current_print_session_log_dir
+            self.reserved_print_number = self.current_print_number
+            self.reserved_print_date_str = today_str
+
+        return session_info
+
+    def reserve_print_session_for_conditions(self):
+        main_img_dir = str(self.t1.get()).strip()
+        if not main_img_dir or not os.path.isdir(main_img_dir):
+            raise ValueError("Please set a valid image directory before saving conditions.")
+        return self._allocate_print_session(main_img_dir, prefer_reserved=True, mark_active=False)['print_dir']
     def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
         # The try block should start here, encompassing all setup and thread starting
         try:
+            # Check quality check gate for VideoPattern
+            if self.quality_check_gate:
+                self.update_status_message("⚠️ Waiting for quality check. Cannot start print until quality check is complete.", error=True)
+                messagebox.showwarning("Quality Check Pending", 
+                                      "The previous print is waiting for quality check. Please complete the quality check before starting a new print.")
+                return
+            
             self.update_status_message(f"Starting {print_mode} Print Setup...")
             
             path = str(self.t1.get())
@@ -765,34 +817,34 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 messagebox.showerror("Setup Error", "Please set a valid image directory first.", parent=self.win)
                 return
 
+            session_info = self._allocate_print_session(path, prefer_reserved=True, mark_active=True)
+            self.update_status_message(f"Print session ready: {session_info['print_dir']}")
+
+            if self.exp_conditions_window and self.exp_conditions_window.is_logging_enabled():
+                self.exp_conditions_window.start_new_print(self.current_print_session_log_dir)
+                
+                # Initialize VideoPattern logging service
+                if self.print_logging_service is None:
+                    self.print_logging_service = VideoPatternPrintLogging(self.update_status_message)
+                
+                # Capture conditions for logging
+                conditions = self.exp_conditions_window.get_conditions()
+                self.print_logging_service.start_new_print(self.current_print_session_log_dir, conditions)
+
             # Auto-logging configuration now relies entirely on SensorDataWindow's state
             if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
                 # Check if the "Enable Automated Logging" checkbox *within SensorDataWindow* is checked
                 if self.sensor_data_window_instance.auto_log_enabled_var.get():
                     self.update_status_message("Sensor Panel auto-log is enabled, configuring...")
                     
-                    # Set up logging directory structure like backup version
-                    main_img_dir = path
-                    self.current_print_log_base_dir = os.path.join(main_img_dir, "Printing_Logs")
-                    current_date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-                    self.current_print_date_dir = os.path.join(self.current_print_log_base_dir, current_date_str)
-                    self.current_print_number = self._get_next_print_number(self.current_print_date_dir)
-                    self.current_print_session_log_dir = os.path.join(self.current_print_date_dir, f"Print {self.current_print_number}")
-                    os.makedirs(self.current_print_session_log_dir, exist_ok=True)
-                    self.update_status_message(f"Log directory created: {self.current_print_session_log_dir}")
-                    
                     # Configure AutomatedLayerLogger via SensorDataWindow with proper parameters
                     self.sensor_data_window_instance.configure_automated_layer_logging(
-                        main_image_dir=main_img_dir,
+                        main_image_dir=path,
                         print_number=self.current_print_number,
-                        date_str_for_dir=current_date_str,
+                        date_str_for_dir=session_info['date_str'],
                         log_directory=self.current_print_session_log_dir
                     )
                     self.update_status_message(f"AutomatedLayerLogger configured for print {self.current_print_number}.")
-                    
-                    # Initialize experimental conditions logging if enabled
-                    if self.exp_conditions_window and self.exp_conditions_window.is_logging_enabled():
-                        self.exp_conditions_window.start_new_print(self.current_print_session_log_dir)
                 else:
                     self.update_status_message("Sensor Panel auto-log is disabled. Proceeding without automated logging.")
             else:
@@ -824,6 +876,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # List of modules to reload (add more as needed)
             modules_to_reload = [
                 'support_modules.SensorDataWindow',
+                'support_modules.ImageModificationWindow',
+                'support_modules.image_modification.processor',
+                'support_modules.image_modification.edge_enhancement',
                 'support_modules.PeakForceLogger',
                 'support_modules.adhesion_metrics_calculator',
                 'support_modules.enhanced_adhesion_metrics',
@@ -843,6 +898,55 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 if module_name in sys.modules:
                     importlib.reload(sys.modules[module_name])
                     reloaded_count += 1
+
+            # Ensure ImageModificationWindow module/class is re-imported and active
+            try:
+                if 'support_modules.ImageModificationWindow' in sys.modules:
+                    importlib.reload(sys.modules['support_modules.ImageModificationWindow'])
+                # Import the class into our namespace
+                from support_modules.ImageModificationWindow import ImageModificationWindow as _IMWClass
+                # If the window is currently open, destroy and recreate it to pick up changes
+                if hasattr(self, 'image_modification_window') and self.image_modification_window is not None:
+                    old_folder = None
+                    old_layer = None
+                    try:
+                        if hasattr(self.image_modification_window, 'folder_entry'):
+                            old_folder = self.image_modification_window.folder_entry.get().strip()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self.image_modification_window, 'layer_var'):
+                            old_layer = self.image_modification_window.layer_var.get().strip()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self.image_modification_window, 'window') and self.image_modification_window.window.winfo_exists():
+                            self.image_modification_window.window.destroy()
+                    except Exception:
+                        pass
+                    try:
+                        self.image_modification_window = _IMWClass(self.win, self.update_status_message, self)
+                        if old_folder:
+                            try:
+                                self.image_modification_window.folder_entry.delete(0, 'end')
+                                self.image_modification_window.folder_entry.insert(0, old_folder)
+                                self.image_modification_window._refresh_image_list()
+                                if old_layer:
+                                    self.image_modification_window.layer_var.set(old_layer)
+                                self.image_modification_window._load_layer()
+                            except Exception:
+                                pass
+                        try:
+                            self.image_modification_window.window.lift()
+                            self.image_modification_window.window.focus_force()
+                        except Exception:
+                            pass
+                        self.update_status_message('Image Modification window reloaded and refreshed')
+                    except Exception as e:
+                        self.update_status_message(f'Error recreating Image Modification window after reload: {e}', error=True)
+            except Exception as e:
+                # Non-fatal: continue, but report
+                self.update_status_message(f'Warning: could not hot-reload ImageModificationWindow: {e}', error=True)
             
             self.update_status_message(f"Script reload complete: {reloaded_count} modules reloaded")
             self.update_status_message("Note: Changes will take effect for new operations. Hardware connections preserved.")
@@ -927,7 +1031,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.controller.power(current=0)
             self._diag_checkpoint("Command sent: power(0)")
             self.controller.changemode(0x00)
-            self._diag_checkpoint("Command sent: changemode(0x00)")
+            self.controller.power(current=0) # Many DLP firmwares auto-ignite the LED when mode is changed
+            self._diag_checkpoint("Command sent: changemode(0x00) and power(0)")
 
             self.controller.hdmi()
             self._diag_checkpoint("Command sent: hdmi()")
@@ -936,7 +1041,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self._diag_checkpoint("HDMI mode-0 settle complete")
 
             self.controller.changemode(0x02)
-            self._diag_checkpoint("Command sent: changemode(0x02)")
+            self.controller.power(current=0) # Again, prevent auto-ignition of LED in Video Pattern Mode
+            self._diag_checkpoint("Command sent: changemode(0x02) and power(0)")
 
             self.controller.configurelut(1, 0xFFFFFFFF)
             self._diag_checkpoint("Command sent: configurelut(1, 0xFFFFFFFF)")
@@ -1159,7 +1265,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
             cv2.moveWindow(self.window_name, self.screen.x, self.screen.y)
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             cv2.imshow(self.window_name, self.black_image)
-            cv2.waitKey(1)
+            # Pump events longer on the first print to guarantee the black frame reaches the HDMI display buffer
+            for _ in range(10):
+                cv2.waitKey(50)
             self.win.update_idletasks()
             self.win.update()
             self.update_status_message("OpenCV window initialized.")
@@ -1906,7 +2014,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # OpenCV window cleanup
             if hasattr(self, 'window_name') and self.window_name: # Check if window_name is not None
                 try:
+                    if hasattr(self, 'black_image'):
+                        cv2.imshow(self.window_name, self.black_image)
+                        cv2.waitKey(1)
                     cv2.destroyWindow(self.window_name)
+                    cv2.waitKey(1)  # Pump events so Windows properly destroys the window
                     self.update_status_message("OpenCV window closed.")
                 except cv2.error as cv_err:
                     # Handle cases where the window might already be destroyed or was never properly created
@@ -1948,6 +2060,38 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         success = (status_to_write == "completed")
                         self.exp_conditions_window.end_print(success=success)
                         self.update_status_message(f"Experimental conditions finalized: {status_to_write}")
+                        
+                        # Show VideoPattern Logging Check popup (post-print dialog)
+                        try:
+                            print_number = getattr(self, 'current_print_number', 'Unknown')
+                            logging_dialog = LoggingCheckWindow_VideoPattern(
+                                self.win,
+                                print_number,
+                                on_close_callback=None  # We'll capture result directly
+                            )
+                            logging_result = logging_dialog.wait_for_result()
+                            
+                            if logging_result:
+                                # Update logging service with final result
+                                if self.print_logging_service and hasattr(self, 'current_print_session_log_dir'):
+                                    self.print_logging_service.end_print(logging_result)
+                                    self.update_status_message(f"Print logged: {logging_result['status']}")
+                                
+                                # Quality check gating:
+                                # If user selected "Wait for quality check", set gate to block next print
+                                if logging_result.get('wait_for_qc', False):
+                                    self.quality_check_gate = True
+                                    self.update_status_message(f"⏸️ Print {print_number} is waiting for quality check. Next print is BLOCKED.")
+                                    self.win.after(100, lambda: messagebox.showinfo(
+                                        "Quality Check Gating Active",
+                                        f"Print {print_number} is waiting for quality check.\n\n"
+                                        f"Next print start is BLOCKED until quality check is complete."
+                                    ))
+                                else:
+                                    self.update_status_message(f"Print {print_number} logged successfully")
+                        except Exception as logging_dialog_err:
+                            self.update_status_message(f"Error in logging dialog: {logging_dialog_err}", error=True)
+                            
                     except Exception as exp_err:
                         self.update_status_message(f"Error finalizing experimental conditions: {exp_err}", error=True)
 
@@ -2041,6 +2185,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.cleanup_dlp_safe_state()
             except Exception as e:
                 self.update_status_message(f"Error stopping DLP sequence: {e}")
+    
+    def clear_quality_check_gate(self):
+        """Clear the quality check gate to allow next print to start."""
+        if self.quality_check_gate:
+            self.quality_check_gate = False
+            self.update_status_message("Quality check gate cleared. Next print may proceed.")
+            messagebox.showinfo("Quality Check Gate Cleared", 
+                              "Quality check gate has been cleared.\n\nYou may now start the next print.")
+        else:
+            self.update_status_message("Quality check gate is not active.")
+            messagebox.showinfo("Gate Not Active", "Quality check gate is not currently active.")
 
     def initilze_stage(self):
         """Initializes the stage and resets DLP to a known idle state."""
@@ -2271,13 +2426,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.update_auto_home_button_state()
     
     def open_exp_conditions_window(self):
-        """Open or show the experimental conditions window."""
+        """Open or show the experimental conditions window (VideoPattern version)."""
         if self.exp_conditions_window is None:
-            self.exp_conditions_window = ExperimentalConditionsWindow(self.win, self.update_status_message)
+            self.exp_conditions_window = ExperimentalConditionsWindow_VideoPattern(self.win, self.update_status_message)
             self.exp_conditions_window.show_window()
-            self.update_status_message("Experimental conditions window opened")
+            self.update_status_message("VideoPattern Experimental conditions window opened")
         else:
             self.exp_conditions_window.show_window()
+        
+        # Initialize print logging service if not already done
+        if self.print_logging_service is None:
+            self.print_logging_service = VideoPatternPrintLogging(self.update_status_message)
 
     def open_image_modification_window(self):
         """Open or show the Image Modification window."""
@@ -2397,6 +2556,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.controller.standby()
             except Exception as e:
                 print(f"Error shutting down DLP: {e}")
+
+        # Ensure any residual OpenCV windows are fully destroyed before the main GUI exits
+        try:
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
+        except Exception:
+            pass
 
         self.win.destroy()
 

@@ -108,10 +108,14 @@ class ExperimentalConditionsWindow_VideoPattern:
         
         self.clear_button = ttk.Button(button_frame, text="Clear All Fields", 
                                        command=self._clear_fields)
-        self.clear_button.grid(row=0, column=0, padx=5)
+        self.clear_button.grid(row=0, column=1, padx=5)
+        
+        self.save_button = ttk.Button(button_frame, text="Save & Reserve Session", 
+                                      command=self._save_and_reserve)
+        self.save_button.grid(row=0, column=0, padx=5)
         
         close_button = ttk.Button(button_frame, text="Close", command=self.hide_window)
-        close_button.grid(row=0, column=1, padx=5)
+        close_button.grid(row=0, column=2, padx=5)
     
     def show_window(self):
         """Show the window."""
@@ -135,6 +139,37 @@ class ExperimentalConditionsWindow_VideoPattern:
         for entry in self.entries.values():
             entry.delete(0, tk.END)
         self.update_status("All fields cleared")
+        def _save_and_reserve(self):
+            """Save current conditions and reserve a print session for today.
+        
+            If no print is currently active, attempts to reserve a Print N session for today.
+            """
+            if not self.logging_enabled.get():
+                messagebox.showwarning("Logging Disabled", 
+                                      "Experimental conditions logging is disabled. Enable it first.")
+                return
+        
+            # Try to reserve a session if main app reference exists
+            if hasattr(self, 'prince_main_app_ref') and self.prince_main_app_ref:
+                try:
+                    reserved_dir = self.prince_main_app_ref.reserve_print_session_for_conditions()
+                
+                    # Capture conditions to current_conditions
+                    self.current_conditions = self.get_conditions()
+                
+                    messagebox.showinfo("Session Reserved", 
+                        f"VideoPattern conditions reserved for today.\nSession: {Path(reserved_dir).name}\n"
+                        f"User: {self.current_conditions.get('user', 'N/A')}")
+                    self.update_status("VideoPattern conditions reserved for print session")
+                except Exception as e:
+                    messagebox.showerror("Reservation Error", 
+                        f"Could not reserve print session:\n{e}")
+                    self.update_status(f"Error reserving print session: {e}", error=True)
+            else:
+                messagebox.showwarning("No Main App Reference", 
+                                      "Cannot reserve session. Please set image directory and try again.")
+                self.update_status("Error: No main app reference for session reservation", error=True)
+    
     
     def start_new_print(self, print_directory):
         """

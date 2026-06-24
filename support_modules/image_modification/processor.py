@@ -8,6 +8,7 @@ Handles file I/O, natural sort, multiprocessing, output naming.
 import os
 import re
 import glob
+import math
 import cv2
 import numpy as np
 import multiprocessing
@@ -32,6 +33,9 @@ from support_modules.z_compensation import compute_layer_factors
 
 MIN_INTENSITY = 100
 MAX_INTENSITY = 255
+CONE_OUTPUT_WIDTH = 2560
+CONE_OUTPUT_HEIGHT = 1600
+CONE_UM_PER_PIXEL = 7.607
 
 
 def _extract_number(filepath: str) -> int:
@@ -73,7 +77,7 @@ def _get_output_folder_name(input_folder: str, blur: float, padded: bool, globe:
     return f"EE_{ee_val}_{pad_str}_GE_{ge_str}{asym_str}{fd_str}{sc_str}"
 
 
-def _apply_padding_normalization(intermediate: np.ndarray, img_float: np.ndarray) -> np.ndarray:
+def _apply_padding_normalization(intermediate: np.ndarray, img_float: np.ndarray, min_intensity: float = 100.0, max_intensity: float = 255.0) -> np.ndarray:
     """Padding normalization: only when EE and GE are off. Normalize non-zero pixels to intensity range."""
     mask = img_float > 0
     if not np.any(mask):
@@ -82,9 +86,83 @@ def _apply_padding_normalization(intermediate: np.ndarray, img_float: np.ndarray
     min_i = np.min(intermediate[mask])
     if max_i > min_i:
         intermediate = (intermediate - min_i) / (max_i - min_i)
-    intermediate = intermediate * (MAX_INTENSITY - MIN_INTENSITY) + MIN_INTENSITY
+    intermediate = intermediate * (max_intensity - min_intensity) + min_intensity
     intermediate[~mask] = 0
     return intermediate
+
+
+def _format_um_tag(value: float) -> str:
+    return str(round(float(value), 2)).replace('.', '_')
+
+
+def _build_cone_slice_image(radius_px: float, canvas_size: int) -> np.ndarray:
+    image = np.zeros((CONE_OUTPUT_HEIGHT, CONE_OUTPUT_WIDTH), dtype=np.uint8)
+    center_x = CONE_OUTPUT_WIDTH // 2
+    center_y = CONE_OUTPUT_HEIGHT // 2
+    draw_radius = max(0, int(round(float(radius_px))))
+    cv2.circle(image, (center_x, center_y), draw_radius, 255, thickness=-1, lineType=cv2.LINE_8)
+    return image
+
+
+def generate_cone_images(input_folder: str,
+                         initial_radius_um: float,
+                         ending_radius_um: float,
+                         height_um: float,
+                         layer_height_um: float,
+                         progress_callback=None) -> str:
+    """Generate a sequential PNG stack for a cone-shaped cross-section.
+
+    The cone is linearly interpolated from ``initial_radius_um`` to
+    ``ending_radius_um`` across the generated layers. Output files are written
+    as ``1.png``, ``2.png``, ... inside a dedicated subfolder.
+    """
+    if not input_folder:
+        raise ValueError("An output folder must be selected for cone generation")
+    if height_um <= 0:
+        raise ValueError("Height must be greater than zero")
+    if layer_height_um <= 0:
+        raise ValueError("Layer height must be greater than zero")
+    if initial_radius_um < 0 or ending_radius_um < 0:
+        raise ValueError("Cone radii must be non-negative")
+
+    layer_count = max(1, int(math.ceil(float(height_um) / float(layer_height_um))))
+    if layer_count == 1:
+        radii = [float(ending_radius_um)]
+    else:
+        radii = [
+            float(initial_radius_um) + (
+                (float(ending_radius_um) - float(initial_radius_um)) * (layer_index / float(layer_count - 1))
+            )
+            for layer_index in range(layer_count)
+        ]
+
+    max_radius_um = max(float(initial_radius_um), float(ending_radius_um))
+    max_fit_radius_px = min((CONE_OUTPUT_WIDTH - 4) / 2.0, (CONE_OUTPUT_HEIGHT - 4) / 2.0)
+    max_fit_radius_um = max_fit_radius_px * CONE_UM_PER_PIXEL
+    if max_radius_um > max_fit_radius_um:
+        raise ValueError(
+            f"Cone radius {max_radius_um:g} um exceeds the printable field for {CONE_UM_PER_PIXEL:g} um/px "
+            f"on a {CONE_OUTPUT_WIDTH}x{CONE_OUTPUT_HEIGHT} frame. Maximum safe radius is {max_fit_radius_um:.1f} um."
+        )
+
+    output_folder_name = (
+        f"Cone_R{_format_um_tag(initial_radius_um)}_To{_format_um_tag(ending_radius_um)}"
+        f"_H{_format_um_tag(height_um)}_LH{_format_um_tag(layer_height_um)}"
+    )
+    output_folder = os.path.join(input_folder, output_folder_name)
+    os.makedirs(output_folder, exist_ok=True)
+
+    if progress_callback:
+        progress_callback(0, layer_count, "Generating cone images...")
+
+    for index, radius_um in enumerate(radii, start=1):
+        image = _build_cone_slice_image(radius_um / CONE_UM_PER_PIXEL, 0)
+        output_path = os.path.join(output_folder, f"{index}.png")
+        cv2.imwrite(output_path, image)
+        if progress_callback:
+            progress_callback(index, layer_count, f"Generated layer {index}/{layer_count}")
+
+    return output_folder
 
 
 def process_single_image(filename: str,
@@ -110,7 +188,9 @@ def process_single_image(filename: str,
                          scatter_width: float = 15.0,
                          scatter_min_val: float = 127.0,
                          scatter_max_val: float = 255.0,
-                         scatter_falloff: int = 0) -> np.ndarray:
+                         scatter_falloff: int = 0,
+                         ee_min: float = 100.0,
+                         ee_max: float = 255.0) -> np.ndarray:
     """
     Process a single image. Used by multiprocessing pool.
 
@@ -147,7 +227,7 @@ def process_single_image(filename: str,
 
     if edge_check == 1:
         intermediate = edge_enhance(
-            intermediate, blurring, filter_size, MIN_INTENSITY, MAX_INTENSITY
+            intermediate, blurring, filter_size, ee_min, ee_max
         )
 
     if global_check == 1:
@@ -183,7 +263,7 @@ def process_single_image(filename: str,
         )
 
     if guide_padding == 1 and edge_check == 0 and global_check == 0:
-        intermediate = _apply_padding_normalization(intermediate, img_float)
+        intermediate = _apply_padding_normalization(intermediate, img_float, ee_min, ee_max)
 
     final_img = np.clip(intermediate, 0, 255).astype(np.uint8)
     return final_img
@@ -212,7 +292,9 @@ def process_single_for_preview(image_path: str,
                                scatter_max_val: float = 255.0,
                                axial_factor: float = 1.0,
                                ee_falloff: int = 0,
-                               scatter_falloff: int = 0) -> np.ndarray:
+                               scatter_falloff: int = 0,
+                               ee_min: float = 100.0,
+                               ee_max: float = 255.0) -> np.ndarray:
     """
     Process a single image for GUI preview. Applies EE and GE only (no padding insertion).
 
@@ -244,7 +326,7 @@ def process_single_for_preview(image_path: str,
     if edge_enabled:
         filter_size = int(ee_falloff) if ee_falloff and ee_falloff > 0 else int(2 * (2 * blurring) + 1)
         intermediate = edge_enhance(
-            intermediate, blurring, filter_size, MIN_INTENSITY, MAX_INTENSITY
+            intermediate, blurring, filter_size, ee_min, ee_max
         )
 
     if global_enabled:
@@ -314,6 +396,8 @@ def process_folder(input_folder: str,
                    axial_min_factor: float = 0.25,
                    ee_falloff: int = 0,
                    scatter_falloff: int = 0,
+                   ee_min: float = 100.0,
+                   ee_max: float = 255.0,
                    progress_callback=None) -> str:
     """
     Process all PNG images in folder. Output to subfolder named
@@ -389,6 +473,8 @@ def process_folder(input_folder: str,
         scatter_min_val=scatter_min_val,
         scatter_max_val=scatter_max_val,
         scatter_falloff=scatter_falloff,
+        ee_min=ee_min,
+        ee_max=ee_max
     )
 
     if progress_callback:
