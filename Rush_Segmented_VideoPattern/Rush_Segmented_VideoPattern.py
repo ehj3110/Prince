@@ -890,7 +890,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.controller.power(current=0)
             self._diag_checkpoint("Command sent: power(0)")
             self.controller.changemode(0x00)
-            self._diag_checkpoint("Command sent: changemode(0x00)")
+            self.controller.power(current=0) # Many DLP firmwares auto-ignite the LED when mode is changed
+            self._diag_checkpoint("Command sent: changemode(0x00) and power(0)")
 
             self.controller.hdmi()
             self._diag_checkpoint("Command sent: hdmi()")
@@ -899,7 +900,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self._diag_checkpoint("HDMI mode-0 settle complete")
 
             self.controller.changemode(0x02)
-            self._diag_checkpoint("Command sent: changemode(0x02)")
+            self.controller.power(current=0) # Again, prevent auto-ignition of LED in Video Pattern Mode
+            self._diag_checkpoint("Command sent: changemode(0x02) and power(0)")
 
             self.controller.configurelut(1, 0xFFFFFFFF)
             self._diag_checkpoint("Command sent: configurelut(1, 0xFFFFFFFF)")
@@ -1087,7 +1089,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
             cv2.moveWindow(self.window_name, self.screen.x, self.screen.y)
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             cv2.imshow(self.window_name, self.black_image)
-            cv2.waitKey(1)
+            # Pump events longer on the first print to guarantee the black frame reaches the HDMI display buffer
+            for _ in range(10):
+                cv2.waitKey(50)
             self.win.update_idletasks()
             self.win.update()
             self.update_status_message("OpenCV window initialized.")
@@ -1743,7 +1747,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # OpenCV window cleanup
             if hasattr(self, 'window_name') and self.window_name: # Check if window_name is not None
                 try:
+                    if hasattr(self, 'black_image'):
+                        cv2.imshow(self.window_name, self.black_image)
+                        cv2.waitKey(1)
                     cv2.destroyWindow(self.window_name)
+                    cv2.waitKey(1)  # Pump events so Windows properly destroys the window
                     self.update_status_message("OpenCV window closed.")
                 except cv2.error as cv_err:
                     # Handle cases where the window might already be destroyed or was never properly created
@@ -2344,6 +2352,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
             print(f"[Shutdown] Summary: {summary}")
         except Exception as e:
             print(f"[Shutdown] Failed to export lifecycle log: {e}")
+            
+        # Ensure any residual OpenCV windows are fully destroyed before the main GUI exits
+        try:
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
+        except Exception:
+            pass
         
         self.win.destroy()
 

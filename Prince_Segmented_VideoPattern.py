@@ -81,13 +81,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.session_manager = SessionManager(self)
         self.session_manager.init_session_log()
         self.current_print_session_log_dir = None
-            self.current_print_log_base_dir = None
-            self.current_print_date_dir = None
-            self.current_print_number = None
-            self.reserved_print_session_log_dir = None
-            self.reserved_print_number = None
-            self.reserved_print_date_str = None
-            self.print_session_in_progress = False
+        self.current_print_log_base_dir = None
+        self.current_print_date_dir = None
+        self.current_print_number = None
+        self.reserved_print_session_log_dir = None
+        self.reserved_print_number = None
+        self.reserved_print_date_str = None
+        self.print_session_in_progress = False
         
         # Logging verbosity levels
         self.LOG_MINIMAL = 0   # Only critical errors and major events
@@ -173,17 +173,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         self.b_load_state = Button(win, text="Load State", command=self.load_gui_state)
         self.b_load_state.place(x=925, y=130) # Side by side with save state
-        
-        # State save/load buttons
-        self.b_save_state = Button(win, text="Save State", command=self.save_gui_state)
-        self.b_save_state.place(x=800, y=130) # Below reload script button
-        
-        self.b_load_state = Button(win, text="Load State", command=self.load_gui_state)
-        self.b_load_state.place(x=925, y=130) # Side by side with save state
+
+        self.b_ramped_cylinder = Button(win, text="Ramped Cylinder", command=self.open_ramped_cylinder_window)
+        self.b_ramped_cylinder.place(x=1050, y=130) # Below reconnect DLP
         
         self.sensor_data_window_instance = None
         self.exp_conditions_window = None
         self.image_modification_window = None
+        self.ramped_cylinder_window = None
         self.auto_home_thread = None
         
         # VideoPattern logging modules
@@ -879,6 +876,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 'support_modules.ImageModificationWindow',
                 'support_modules.image_modification.processor',
                 'support_modules.image_modification.edge_enhancement',
+                'support_modules.image_modification.ramped_cylinder',
                 'support_modules.PeakForceLogger',
                 'support_modules.adhesion_metrics_calculator',
                 'support_modules.enhanced_adhesion_metrics',
@@ -2448,6 +2446,18 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.update_status_message("Image Modification window opened")
         else:
             self.image_modification_window.window.lift()
+
+    def open_ramped_cylinder_window(self):
+        """Open or show the Ramped Cylinder window."""
+        if (not hasattr(self, 'ramped_cylinder_window') or self.ramped_cylinder_window is None or
+                not (hasattr(self.ramped_cylinder_window, 'window') and
+                     self.ramped_cylinder_window.window.winfo_exists())):
+            from support_modules.image_modification.ramped_cylinder import RampedCylinderWindow
+            self.ramped_cylinder_window = RampedCylinderWindow(
+                self.win, self.update_status_message, self)
+            self.update_status_message("Ramped Cylinder window opened")
+        else:
+            self.ramped_cylinder_window.window.lift()
 
     def start_auto_home_sequence(self):
         if self.auto_home_thread and self.auto_home_thread.is_alive():

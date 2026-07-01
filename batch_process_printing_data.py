@@ -95,15 +95,10 @@ class BatchPrintingDataProcessor:
             return self.calculator._find_propagation_end_two_step_max_second_derivative(
                 time_data, smoothed_force, peak_idx, motion_end_idx
             )
-        if mode == 'second_derivative_zero_crossing_unsmoothed':
-            return self.calculator._find_propagation_end_second_derivative_zero_crossing_unsmoothed(
-                smoothed_force, peak_idx, motion_end_idx
-            )
-        if mode in ('legacy_second_derivative', 'second_derivative'):
-            # Positions are not used in this path; provide a placeholder array.
-            placeholder_positions = np.zeros_like(smoothed_force)
-            return self.calculator._find_propagation_end_second_derivative(
-                time_data, placeholder_positions, smoothed_force, peak_idx, motion_end_idx
+        if mode in ('second_derivative_zero_crossing_unsmoothed', 'legacy_second_derivative', 'second_derivative'):
+            print(
+                f"Warning: Unsupported prop_end_mode '{mode}' for current calculator; "
+                "falling back to 'second_derivative_zero_crossing'."
             )
 
         return self.calculator._find_propagation_end_second_derivative_zero_crossing(

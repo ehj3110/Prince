@@ -35,6 +35,7 @@ def test_pattern_generation():
     
     # Test different resolutions
     test_resolutions = [
+        (2560, 1600, "WQXGA"),
         (1920, 1080, "Full HD"),
         (1280, 720, "HD"),
         (800, 600, "SVGA")
@@ -67,6 +68,7 @@ def test_pattern_generation():
     print("Pattern Generation: SUCCESS")
     print("="*60)
     print("\nGenerated files:")
+    print("  - charuco_pattern_2560x1600.png (WQXGA)")
     print("  - charuco_pattern_1920x1080.png (Full HD)")
     print("  - charuco_pattern_1280x720.png (HD)")
     print("  - charuco_pattern_800x600.png (SVGA)")
@@ -77,16 +79,16 @@ def test_pattern_generation():
     
     # Offer to display the main pattern
     print("\n" + "-"*60)
-    response = input("Display Full HD pattern? (y/n): ").strip().lower()
+    response = input("Display WQXGA pattern? (y/n): ").strip().lower()
     
     if response == 'y':
-        pattern_file = "charuco_pattern_1920x1080.png"
+        pattern_file = "charuco_pattern_2560x1600.png"
         if os.path.exists(pattern_file):
             print(f"Opening {pattern_file}...")
             print("Press any key in the image window to close")
             
             img = cv2.imread(pattern_file)
-            cv2.imshow('ChArUco Calibration Pattern (1920×1080)', img)
+            cv2.imshow('ChArUco Calibration Pattern (2560×1600)', img)
             cv2.waitKey(0)
             cv2.destroyAllWindows()
             

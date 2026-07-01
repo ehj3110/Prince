@@ -138,17 +138,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         self.b_load_state = Button(win, text="Load State", command=self.load_gui_state)
         self.b_load_state.place(x=925, y=130) # Side by side with save state
-        
-        # State save/load buttons
-        self.b_save_state = Button(win, text="Save State", command=self.save_gui_state)
-        self.b_save_state.place(x=800, y=130) # Below reload script button
-        
-        self.b_load_state = Button(win, text="Load State", command=self.load_gui_state)
-        self.b_load_state.place(x=925, y=130) # Side by side with save state
+
+        self.b_ramped_cylinder = Button(win, text="Ramped Cylinder", command=self.open_ramped_cylinder_window)
+        self.b_ramped_cylinder.place(x=1050, y=130) # Below reconnect DLP
         
         self.sensor_data_window_instance = None
         self.exp_conditions_window = None
         self.image_modification_window = None
+        self.ramped_cylinder_window = None
         self.auto_home_thread = None
         self.current_print_session_log_dir = None
         self.current_print_number = None
@@ -804,6 +801,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 'support_modules.image_modification.global_enhancement',
                 'support_modules.image_modification.padding',
                 'support_modules.image_modification.scattering_compensation',
+                'support_modules.image_modification.ramped_cylinder',
                 'support_modules.ImageModificationWindow',
                 'support_modules.PeakForceLogger',
                 'support_modules.adhesion_metrics_calculator',
@@ -2233,6 +2231,18 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.update_status_message("Image Modification window opened")
         else:
             self.image_modification_window.window.lift()
+
+    def open_ramped_cylinder_window(self):
+        """Open or show the Ramped Cylinder window."""
+        if (not hasattr(self, 'ramped_cylinder_window') or self.ramped_cylinder_window is None or
+                not (hasattr(self.ramped_cylinder_window, 'window') and
+                     self.ramped_cylinder_window.window.winfo_exists())):
+            from support_modules.image_modification.ramped_cylinder import RampedCylinderWindow
+            self.ramped_cylinder_window = RampedCylinderWindow(
+                self.win, self.update_status_message, self)
+            self.update_status_message("Ramped Cylinder window opened")
+        else:
+            self.ramped_cylinder_window.window.lift()
 
     def start_auto_home_sequence(self):
         if self.auto_home_thread and self.auto_home_thread.is_alive():
