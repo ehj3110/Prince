@@ -1,0 +1,31 @@
+{
+  "rush_root": "C:\\Users\\User\\Documents\\Boyuan Sun\\CLIP1&2&etc\\Rush\\Rush_Segmented_VideoPattern",
+  "checks": [
+    {
+      "name": "imports",
+      "passed": true,
+      "details": "All Rush modules import successfully",
+      "duration_s": 2.016843557357788
+    },
+    {
+      "name": "dlp",
+      "passed": true,
+      "details": "DLP reachable; safe idle command sequence completed; before={'mode': None, 'input_source': None, 'sequence_state': None, 'led_current': 0}; after={'mode': None, 'input_source': None, 'sequence_state': None, 'led_current': 0}",
+      "duration_s": 0.2870051860809326
+    },
+    {
+      "name": "stage",
+      "passed": true,
+      "details": "Stage connected; non-destructive motion probe completed (start=1785.170um, end=1785.170um)",
+      "duration_s": 1.5196564197540283
+    },
+    {
+      "name": "phidget",
+      "passed": true,
+      "details": "Phidget attached on channel 0; voltage ratio sample=n/a",
+      "duration_s": 2.526637077331543
+    }
+  ],
+  "failures": 0,
+  "timestamp": "2026-04-13 17:43:50"
+}

@@ -12,13 +12,6 @@ Comprehensive unit test suite using Python's unittest framework:
   - Run specific: `python run_all_tests.py session`
   - Verbose: `python run_all_tests.py -v`
 
-### Prince Feature Harness
-- **run_prince_feature_tests.py** - Feature-selective harness for Prince_Segmented_VideoPattern
-  - Run all safe feature checks: `python run_prince_feature_tests.py --all`
-  - Run specific checks: `python run_prince_feature_tests.py --prince-core --stage --dlp`
-  - List checks: `python run_prince_feature_tests.py --list`
-  - Launch the spoofed sensor window: `python run_prince_feature_tests.py --sensor --launch-sensor-window`
-
 ### Unit Test Files
 - **test_session_manager.py** - SessionManager unit tests (20+ test cases)
   - Session log initialization
@@ -63,7 +56,6 @@ Legacy test scripts for hardware and workflow testing:
 ### Data & Analysis Tests
 - **test_csv_output_quick.py** - CSV output functionality test
 - **test_water_loss_plot.py** - Water loss plotting test
-- **test_z_compensation_torture.py** - Heavy stress and correctness test for Z-compensation module
 
 ### Calibration Tests (in calibration_modules/)
 - **test_pattern_generation.py** - Pattern generation test
@@ -89,12 +81,6 @@ python run_all_tests.py peakforce    # PeakForceLogger tests
 ```powershell
 python test_dlp_simple.py
 python test_sandwich_integration.py
-```
-
-### Run Z Compensation Torture Test
-```powershell
-python tests\test_z_compensation_torture.py
-python tests\test_z_compensation_torture.py --z 224 --height 1024 --width 1024
 ```
 
 ## Requirements

@@ -55,46 +55,30 @@ class Ensemble:
 
 
 class Application():
-    POWER_SCALE_FACTOR = 2.72
-
     def __init__(self):
         self.image_list = []
         self.position_list = []
         self.time_list = []
         self.thickness_list = []
         self.step_speed_list = []
+        self.overstep_distance_list = []
         self.step_type_list = []
         self.pause_list = []
         self.intensity_list = []
         debug_print("Application instance created.")
 
-    @staticmethod
-    def _power_from_speed(speed_um_s):
-        """Compute calibrated layer power from speed using updated polynomial scaling."""
-        x = float(speed_um_s)
-        y = (-1.939507e-6 * x * x) + (4.869025e-3 * x) + 7.617950e-3
-        return y * Application.POWER_SCALE_FACTOR
-
-    @staticmethod
-    def _safe_exposure_from_speed(thickness_um, speed_um_s):
-        """Convert speed input to exposure time while guarding against zero/negative speeds."""
-        t_um = float(thickness_um)
-        v_um_s = float(speed_um_s)
-        if v_um_s <= 1e-9:
-            return 0.0
-        return t_um / v_um_s
-
     def set_image_directory(self, path=''):
         """
         Reads the instruction text file and extracts image file paths and printing parameters.
         
-        Segmented Mode format: 9 columns (Layer, File, Thickness, Time, Intensity, Step Speed, Acceleration, Pause, Sandwich Speed)
+        Segmented Mode format: 10 columns (Layer, File, Thickness, Time, Intensity, Speed, Overstep, Acceleration, Pause, Sandwich Speed)
 
         Returns:
             image_list (list): List of image file paths.
             exposure_time_list (list): List of exposure times per layer.
             thickness_list (list): List of thickness values per layer.
             step_speed_list (list): List of step speeds per layer.
+            overstep_distance_list (list): List of overstep distances per layer.
             step_type_list (list): List of acceleration values per layer.
             pause_list (list): List of pause times per layer.
             intensity_list (list): List of intensity values per layer.
@@ -123,6 +107,7 @@ class Application():
         exposure_time_list = []
         thickness_list = []
         step_speed_list = []
+        overstep_distance_list = []
         step_type_list = []
         pause_list = []
         intensity_list = []
@@ -132,8 +117,9 @@ class Application():
         for line in lines_full[1:]:
             elements = line.split("\t")  # Use tab as the separator
 
-            if len(elements) < 9:
-                raise ValueError(f"Incorrect format in line: {line}. Expected at least 9 columns, got {len(elements)}.")
+            # Segmented Mode format: 10 columns
+            if len(elements) < 10:
+                raise ValueError(f"Incorrect format in line: {line}. Expected 10 columns, got {len(elements)}.")
 
             # Extract parameters from columns
             count = elements[0]  # Layer number
@@ -142,23 +128,17 @@ class Application():
             exposure_time = elements[3]  # Exposure time
             intensity = elements[4]  # Intensity level
             step_speed = elements[5]  # Step speed
-
-            # New format is 9 columns without overstep.
-            # Backward compatibility: accept legacy 10-column files and ignore overstep column.
-            if len(elements) >= 10:
-                step_type = elements[7]  # Acceleration
-                pause = elements[8]  # Pause time
-                sandwich_speed = elements[9]  # Sandwich speed
-            else:
-                step_type = elements[6]  # Acceleration
-                pause = elements[7]  # Pause time
-                sandwich_speed = elements[8]  # Sandwich speed
+            overstep_distance = elements[6]  # Overstep distance
+            step_type = elements[7]  # Acceleration
+            pause = elements[8]  # Pause time
+            sandwich_speed = elements[9]  # Sandwich speed
 
             # Append extracted values to respective lists
             image_list.append(Path(path) / image_path)
             exposure_time_list.append(float(exposure_time))
             thickness_list.append(float(thickness))
             step_speed_list.append(float(step_speed))
+            overstep_distance_list.append(float(overstep_distance))
             step_type_list.append(float(step_type))
             pause_list.append(float(pause))
             intensity_list.append(float(intensity))
@@ -169,8 +149,8 @@ class Application():
         # Segmented Mode return: 9 values (includes step_type and sandwich_speed)
         return (
             image_list, exposure_time_list, thickness_list,
-            step_speed_list, step_type_list,
-            pause_list, intensity_list,
+            step_speed_list, overstep_distance_list,
+            step_type_list, pause_list, intensity_list,
             sandwich_speed_list
         )
 
@@ -205,16 +185,12 @@ class Application():
             print("The directory does not exist for creating the text file.")
 
     def generate_instructions(self, path='', thickness='5', base='60', time='1', intensity='0',
-                              step_speed='100', step_type='500', 
+                              step_speed='100', overstep_distance='0.1', step_type='500', 
                               pause='0', sandwich_speed='100'):
         """
         Generates a simplified instruction text file for Segmented Mode.
-        Format: 9 columns (Layer, File, Thickness, Time, Intensity, Step Speed, Acceleration, Pause, Sandwich Speed)
+        Format: 9 columns (filename, exposure, thickness, speed, overstep, acceleration, pause, intensity, sandwich_speed)
         step_type parameter represents acceleration (µm/s²).
-
-        'time' is interpreted as exposure speed (µm/s) for non-base layers.
-        Exposure time is derived as thickness/speed while preserving the base-layer exposure override.
-        Intensity is computed from the calibrated speed->power polynomial.
         """
 
         # Generate the text file name based on the folder name
@@ -230,8 +206,8 @@ class Application():
             print(f"Error: Provided path is not a directory or does not exist: {path}")
             try:
                 with open(txt_path, 'w') as f:
-                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tAcceleration\tPause\tSandwich Speed\n')
-                    f.write("0\tERROR_INVALID_PATH\t0\t0\t0\t0\t0\t0\t0\n")  # Indicate error
+                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tAcceleration\tPause\tSandwich Speed\n')
+                    f.write("0\tERROR_INVALID_PATH\t0\t0\t0\t0\t0\t0\t0\t0\n")  # Indicate error
                 print(f"Generated empty/error instruction file: {txt_path}")
             except Exception as e_write:
                 print(f"Could not write to instruction file {txt_path}: {e_write}")
@@ -253,8 +229,8 @@ class Application():
             print(f"No suitable image files found in '{path}' (after excluding 'autologs' and non-image files).")
             try:
                 with open(txt_path, 'w') as f:
-                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tAcceleration\tPause\tSandwich Speed\n')
-                    f.write("0\tNO_IMAGES_FOUND\t0\t0\t0\t0\t0\t0\t0\n")  # Indicate no images
+                    f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tAcceleration\tPause\tSandwich Speed\n')
+                    f.write("0\tNO_IMAGES_FOUND\t0\t0\t0\t0\t0\t0\t0\t0\n")  # Indicate no images
                 print(f"Generated instruction file with no images: {txt_path}")
             except Exception as e_write:
                 print(f"Could not write to instruction file {txt_path}: {e_write}")
@@ -277,32 +253,19 @@ class Application():
         image_paths_sorted = sorted(collected_image_paths, key=get_order)
 
         try:
-            non_base_speed_um_s = float(time)
-            layer_thickness_um = float(thickness)
-            calibrated_power = self._power_from_speed(non_base_speed_um_s)
-            calibrated_intensity = int(round(max(0.0, min(255.0, calibrated_power))))
-
             with open(txt_path, 'w') as f:
-                f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tAcceleration\tPause\tSandwich Speed\n')
+                f.write('Layer\tFile\tThickness\tTime\tIntensity\tStep Speed\tOverstep Distance\tAcceleration\tPause\tSandwich Speed\n')
                 layer = 1
 
                 for img_path_obj in image_paths_sorted:  # Iterate through sorted Path objects
                     image_name = img_path_obj.name  # Get filename from Path object
 
-                    if layer == 1:
-                        current_exposure_time = float(base)
-                    else:
-                        current_exposure_time = self._safe_exposure_from_speed(layer_thickness_um, non_base_speed_um_s)
+                    current_exposure_time = base if layer == 1 else time
 
-                    line = f"{str(layer)}\t{str(image_name)}\t{str(thickness)}\t{str(current_exposure_time)}\t{str(calibrated_intensity)}\t{str(step_speed)}\t{str(step_type)}\t{str(pause)}\t{str(sandwich_speed)}\n"
+                    line = f"{str(layer)}\t{str(image_name)}\t{str(thickness)}\t{str(current_exposure_time)}\t{str(intensity)}\t{str(step_speed)}\t{str(overstep_distance)}\t{str(step_type)}\t{str(pause)}\t{str(sandwich_speed)}\n"
                     f.write(line)
                     layer += 1
-
-            dosage_mj_per_um = 0.0 if non_base_speed_um_s <= 1e-9 else calibrated_power / non_base_speed_um_s
-            print(
-                f"Instruction file generated: {txt_path} with {layer - 1} layers. "
-                f"Calibrated power={calibrated_power:.4f}, intensity={calibrated_intensity}, dosage={dosage_mj_per_um:.6f} mJ/um"
-            )
+            print(f"Instruction file generated: {txt_path} with {layer - 1} layers.")
         except Exception as e:
             print(f"An unexpected error occurred during instruction file generation for {txt_path}: {e}")
             traceback.print_exc()  # Print full traceback for debugging

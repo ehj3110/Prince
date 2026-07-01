@@ -44,7 +44,6 @@ from support_modules.DLPLightController import DLPLightController
 from support_modules.StageSequencer import StageSequencer
 from support_modules.ProjectionFrameManager import ProjectionFrameManager
 from support_modules.print_engine.print_orchestrator import PrintOrchestrator, PrintOrchestratorDeps
-from lifecycle_logger import get_logger as get_lifecycle_logger
 
 
 class MyWindow:
@@ -59,15 +58,13 @@ Boyuan Sun, boyuansun2026@u.northwestern.edu
 Evan Jones, evanjones2026@u.northwestern.edu
 '''
         self.reference = 0
-        self.lifecycle_logger = get_lifecycle_logger()
-        self.lifecycle_logger.log_event("app_init_start")
 
         # Initialize attributes for data loaded from instruction file
         self.image_list = []
         self.exposure_time = []  # This will store exposure_time_list
         self.thickness = []      # This will store thickness_list
         self.step_speed_list = []
-        self.default_overstep_microns = 0.0
+        self.overstep_distance_list = []
         self.step_type_list = []  # Corresponds to 'Acceleration' from the file
         self.pause_list = []
         self.intensity_list = []
@@ -177,6 +174,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         self.cache_clear_layer = 100000
         self.time1 = 1000
+        self._pending_jog_mm = None
+        self._pending_jog_after_id = None
+        self._jog_worker_active = False
+        self._jog_poll_after_id = None
 
         # --- Existing Canvases and Labels (adjust placement if they conflict with new frames) ---
         self.canvas1 = Canvas(win, height=200, width=270, bg=self.panel_bg)
@@ -228,7 +229,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.t8 = Label(win, textvariable=self.status_message_var, width=50, relief="sunken", anchor="w", justify=LEFT)
         self.lbl9 = Label(win, text='Move distance(mm)')
         self.lbl10 = Label(win, text='Layer thickness(um)', background=self.panel_bg)
-        self.lbl11 = Label(win, text='Exposure speed (um/s)', background=self.panel_bg)
+        self.lbl11 = Label(win, text='Exposure time(s)', background=self.panel_bg)
         self.lbl11_2 = Label(win, text='Base curing time(s)', background=self.panel_bg)
         self.lbl12 = Label(win, text='Stage Control', font='Helvetica 12 bold')
         self.lbl13 = Label(win, text='Print Parameters', font='Helvetica 12 bold')
@@ -244,18 +245,24 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         self.lbl16 = Label(win, text='Step Speed (um/s)', background=self.panel_bg) 
         self.lbl17 = Label(win, text='Pause (s)', background=self.panel_bg) 
+        self.lbl19 = Label(win, text='Overstep (µm)', background=self.panel_bg)
         self.lbl21 = Label(win, text='Acceleration (mm/s²)', background=self.panel_bg)  # UNIT CHANGED to mm/s²
 
-    # COLUMN 2: Step Speed, Pause
+        # COLUMN 2: Step Speed, Overstep, Pause
         column2_x = 550
         self.lbl16.place(x=column2_x, y=420)
         self.t16 = Entry(win)
         self.t16.place(x=column2_x, y=440)
         self.t16.insert(END, "1000") # Default Step Speed
-
-    self.lbl17.place(x=column2_x, y=460)
+        
+        self.lbl19.place(x=column2_x, y=460)
+        self.t19 = Entry(win)
+        self.t19.place(x=column2_x, y=480)
+        self.t19.insert(END, "0") # Default Overstep in µm
+        
+        self.lbl17.place(x=column2_x, y=500)
         self.t17 = Entry(win)
-    self.t17.place(x=column2_x, y=480)
+        self.t17.place(x=column2_x, y=520)
         self.t17.insert(END, "0") # Default Pause
         
         # COLUMN 3: Acceleration only
@@ -264,29 +271,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.t21 = Entry(win)
         self.t21.place(x=column3_x, y=440)
         self.t21.insert(END, "100") # Default Acceleration in mm/s²
-
-        # Small calculator next to print parameters.
-        self.calc_frame = LabelFrame(win, text="Dosage Calculator", padding=(8, 6))
-        self.calc_frame.place(x=860, y=390, width=300, height=200)
-
-        Label(self.calc_frame, text='Layer thickness (um):').grid(row=0, column=0, sticky=W, padx=4, pady=2)
-        self.calc_thickness_entry = Entry(self.calc_frame, width=12)
-        self.calc_thickness_entry.grid(row=0, column=1, sticky=W, padx=4, pady=2)
-
-        Label(self.calc_frame, text='Exposure speed (um/s):').grid(row=1, column=0, sticky=W, padx=4, pady=2)
-        self.calc_speed_entry = Entry(self.calc_frame, width=12)
-        self.calc_speed_entry.grid(row=1, column=1, sticky=W, padx=4, pady=2)
-
-        self.calc_power_var = StringVar(value='Power: -- mJ')
-        self.calc_dosage_var = StringVar(value='Dosage: -- mJ/um')
-        Label(self.calc_frame, textvariable=self.calc_power_var).grid(row=2, column=0, columnspan=2, sticky=W, padx=4, pady=3)
-        Label(self.calc_frame, textvariable=self.calc_dosage_var).grid(row=3, column=0, columnspan=2, sticky=W, padx=4, pady=3)
-
-        self.calc_update_button = Button(self.calc_frame, text='Update', command=self._update_dosage_calculator)
-        self.calc_update_button.grid(row=4, column=0, padx=4, pady=6, sticky=W)
-
-        self.calc_copy_button = Button(self.calc_frame, text='Use Print Params', command=self._copy_print_params_to_calculator)
-        self.calc_copy_button.grid(row=4, column=1, padx=4, pady=6, sticky=W)
 
         control_frame_width = 750
 
@@ -501,11 +485,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # self.t8.insert(END, str("Stage connected")) # This will be set by update_status_message
         self.t9.insert(END, str("0"))
         self.t10.insert(END, str("5"))
-        self.t11.insert(END, str("100"))
+        self.t11.insert(END, str("1"))
         self.t11_2.insert(END, str("1"))
         self.t14.insert(END, str("1"))
-
-        self._copy_print_params_to_calculator()
 
         # --- Screeninfo, window_name, black_image ---
         monitors = screeninfo.get_monitors()
@@ -590,15 +572,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 remaining_movement_time = 0.0
                 
                 # Get default parameters from GUI (fallbacks)
+                default_overstep = float(self.t19.get()) if hasattr(self, 't19') and self.t19.get() else 0.0
                 default_speed = float(self.t16.get()) if hasattr(self, 't16') and self.t16.get() else 1000.0
-                default_sandwich_speed = float(self.t_sandwich_speed.get()) if hasattr(self, 't_sandwich_speed') and self.t_sandwich_speed.get() else 500.0
                 
                 # Calculate movement time for each remaining layer
                 for layer_idx in range(current_layer_index, total_layers):
                     # Get layer-specific parameters
-                    layer_overstep = self.default_overstep_microns
+                    layer_overstep = self.overstep_distance_list[layer_idx] if hasattr(self, 'overstep_distance_list') and layer_idx < len(self.overstep_distance_list) else default_overstep
                     layer_speed = self.step_speed_list[layer_idx] if hasattr(self, 'step_speed_list') and layer_idx < len(self.step_speed_list) else default_speed
-                    layer_sandwich_speed = self.sandwich_speed_list[layer_idx] if hasattr(self, 'sandwich_speed_list') and layer_idx < len(self.sandwich_speed_list) else default_sandwich_speed
                     
                     # Lift time calculation (with smooth lifting if enabled)
                     if self.smooth_lifting_enabled:
@@ -622,16 +603,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         # Standard single-stage retraction
                         retract_time = (layer_overstep / layer_speed) if layer_speed > 0 else 0
                     
-                    # Sandwich time (if pre-calibration was successful)
+                    # Sandwich timing is intentionally excluded for Rush estimates.
                     sandwich_time = 0.0
-                    if hasattr(self, 'measured_gap_mm') and self.measured_gap_mm is not None:
-                        # Down movement: measured_gap distance at sandwich speed
-                        sandwich_down = (self.measured_gap_mm * 1000.0 / layer_sandwich_speed) if layer_sandwich_speed > 0 else 0
-                        # Up movement: same distance, same speed
-                        sandwich_up = sandwich_down
-                        # 1 second settling time after retract
-                        sandwich_settling = 1.0
-                        sandwich_time = sandwich_down + sandwich_up + sandwich_settling
                     
                     # Additional overhead per layer
                     # Based on empirical testing (7s observed vs 5.2s calculated):
@@ -675,6 +648,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
             val_t17 = self.t17.get()
             layer_pause_s = float(val_t17) if val_t17 else 0.0
 
+            val_t19 = self.t19.get()
+            overstep_um_gui = float(val_t19) if val_t19 else 0.0
+
             val_t21 = self.t21.get()
             step_type_val_mms2 = float(val_t21) if val_t21 else 0.0
             
@@ -686,6 +662,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 dlp_power=dlp_power,
                 step_speed_um_s=step_speed_um_s,
                 layer_pause_s=layer_pause_s,
+                overstep_um_gui=overstep_um_gui,
                 step_type_val_mms2=step_type_val_mms2, # Pass mm/s² value
                 print_mode="continuous"
             )
@@ -721,6 +698,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
             val_t17 = self.t17.get()
             layer_pause_s = float(val_t17) if val_t17 else 0.0
 
+            val_t19 = self.t19.get()
+            overstep_um_gui = float(val_t19) if val_t19 else 0.0
+
             val_t21 = self.t21.get()
             step_type_val_mms2 = float(val_t21) if val_t21 else 0.0
 
@@ -732,6 +712,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 dlp_power=dlp_power,
                 step_speed_um_s=step_speed_um_s,
                 layer_pause_s=layer_pause_s,
+                overstep_um_gui=overstep_um_gui,
                 step_type_val_mms2=step_type_val_mms2, # Pass mm/s² value
                 print_mode="stepped"
             )
@@ -750,7 +731,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         """Determines the next print number for a given date directory."""
         return self.session_manager.get_next_print_number(date_specific_log_dir)
 
-    def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, step_type_val_mms2, print_mode): # PARAM RENAMED
+    def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
         # The try block should start here, encompassing all setup and thread starting
         try:
             # Check quality check gate for VideoPattern
@@ -804,7 +785,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             
             # Start the actual print thread
             self.print_thread = threading.Thread(target=self.print_t, args=(
-                dlp_power, step_speed_um_s, layer_pause_s, step_type_val_mms2, print_mode # Pass mm/s²
+                dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode # Pass mm/s²
             ))
             self.print_thread.daemon = True
             self.print_thread.start()
@@ -817,45 +798,24 @@ Evan Jones, evanjones2026@u.northwestern.edu
             if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
             if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
 
-    def cleanup_dlp_safe_state(self, caller_source="unknown"):
+    def cleanup_dlp_safe_state(self):
         """Reset DLP to safe idle state: pattern-on-the-fly mode 0x03 with LED power off."""
-        self.lifecycle_logger.log_cleanup_start(caller_source)
         try:
             if hasattr(self, 'controller'):
                 self._enter_dark_pattern_idle()
                 self.update_status_message("DLP reset to dark idle mode (0x03)")
-                self.lifecycle_logger.log_cleanup_end(caller_source, success=True)
         except Exception as e:
-            self.lifecycle_logger.log_cleanup_end(caller_source, success=False, exception=e)
             self.update_status_message(f"Error resetting DLP: {e}", error=True)
 
     def _enter_dark_pattern_idle(self):
         """Enter dark parked idle in pattern-on-the-fly mode (0x03)."""
         self._diag("Entering dark idle command sequence")
-        try:
-            self.lifecycle_logger.log_event("dlp_enter_idle_start")
-            self.controller.power(current=0)
-            self.lifecycle_logger.log_dlp_command("power", result="success")
-            self._diag("Command sent: power(0)")
-        except Exception as e:
-            self.lifecycle_logger.log_dlp_command("power", result="exception", exception=e)
-            raise
-        
-        try:
-            self.controller.stopsequence()
-            self.lifecycle_logger.log_dlp_command("stopsequence", result="success")
-            self._diag("Command sent: stopsequence()")
-        except Exception as e:
-            self.lifecycle_logger.log_dlp_command("stopsequence", result="exception", exception=e)
-            raise
-        
-        try:
-            self.controller.changemode(0x03)
-            self.lifecycle_logger.log_dlp_command("changemode", result="success")
-            self._diag("Command sent: changemode(0x03)")
-        except Exception as e:
-            self.lifecycle_logger.log_dlp_command("changemode", result="exception", exception=e)
-            raise
+        self.controller.power(current=0)
+        self._diag("Command sent: power(0)")
+        self.controller.stopsequence()
+        self._diag("Command sent: stopsequence()")
+        self.controller.changemode(0x03)
+        self._diag("Command sent: changemode(0x03)")
 
     def _diag(self, message):
         """Temporary verbose diagnostics helper (safe to remove after troubleshooting)."""
@@ -882,6 +842,41 @@ Evan Jones, evanjones2026@u.northwestern.edu
             time.sleep(0.02)
         self._diag(f"OpenCV pump end: {note}, ticks={ticks}")
 
+    def _log_dlp_status_snapshot(self, context_label):
+        """Emit a compact DLP status line to verify mode/sequence state at runtime."""
+        if not hasattr(self, 'controller') or self.controller is None:
+            self.update_status_message(f"{context_label}: DLP status unavailable (no controller)", warning=True)
+            return
+
+        if not hasattr(self.controller, 'get_status_snapshot'):
+            self.update_status_message(f"{context_label}: DLP status API unavailable", warning=True)
+            return
+
+        try:
+            snapshot = self.controller.get_status_snapshot() or {}
+            mode = snapshot.get('mode')
+            input_source = snapshot.get('input_source')
+            sequence_state = snapshot.get('sequence_state')
+            led_current = snapshot.get('led_current')
+
+            mode_txt = f"0x{int(mode):02X}" if isinstance(mode, int) else str(mode)
+            src_txt = f"0x{int(input_source):02X}" if isinstance(input_source, int) else str(input_source)
+            seq_txt = str(sequence_state)
+            led_txt = str(led_current)
+
+            self.update_status_message(
+                f"{context_label}: DLP status mode={mode_txt}, input={src_txt}, seq={seq_txt}, led={led_txt}"
+            )
+
+            # In this flow, video-pattern mode is expected to be 0x02 while actively printing.
+            if mode is not None and int(mode) != 0x02:
+                self.update_status_message(
+                    f"{context_label}: WARNING expected video-pattern mode 0x02, got {mode_txt}",
+                    warning=True,
+                )
+        except Exception as e:
+            self.update_status_message(f"{context_label}: DLP status query failed: {e}", warning=True)
+
     def _arm_dlp_silent_wakeup(self):
         """Arm the projector in video-pattern mode while keeping the wake sequence dark."""
         with usb_coordinator.dlp_operation("rush_video_pattern_arm"):
@@ -890,8 +885,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.controller.power(current=0)
             self._diag_checkpoint("Command sent: power(0)")
             self.controller.changemode(0x00)
-            self.controller.power(current=0) # Many DLP firmwares auto-ignite the LED when mode is changed
-            self._diag_checkpoint("Command sent: changemode(0x00) and power(0)")
+            self._diag_checkpoint("Command sent: changemode(0x00)")
 
             self.controller.hdmi()
             self._diag_checkpoint("Command sent: hdmi()")
@@ -900,8 +894,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self._diag_checkpoint("HDMI mode-0 settle complete")
 
             self.controller.changemode(0x02)
-            self.controller.power(current=0) # Again, prevent auto-ignition of LED in Video Pattern Mode
-            self._diag_checkpoint("Command sent: changemode(0x02) and power(0)")
+            self._diag_checkpoint("Command sent: changemode(0x02)")
 
             self.controller.configurelut(1, 0xFFFFFFFF)
             self._diag_checkpoint("Command sent: configurelut(1, 0xFFFFFFFF)")
@@ -1062,7 +1055,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.update_status_message(f"Error during resource cleanup: {e}", error=True)
 
 
-    def print_t(self, dlp_power, step_speed_um_s, layer_pause_s, step_type_val_mms2, print_mode): # PARAM RENAMED
+    def print_t(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
         try:
             self._print_diag_t0 = time.perf_counter()
             self.update_status_message("Print thread started.")
@@ -1089,9 +1082,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             cv2.moveWindow(self.window_name, self.screen.x, self.screen.y)
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             cv2.imshow(self.window_name, self.black_image)
-            # Pump events longer on the first print to guarantee the black frame reaches the HDMI display buffer
-            for _ in range(10):
-                cv2.waitKey(50)
+            cv2.waitKey(1)
             self.win.update_idletasks()
             self.win.update()
             self.update_status_message("OpenCV window initialized.")
@@ -1107,6 +1098,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
                 dlp_wakeup_elapsed = time.time() - dlp_wakeup_start
                 self.update_status_message(f"DLP armed with direct 30Hz video pattern startup, power: {dlp_power}. Startup completed in {dlp_wakeup_elapsed:.2f}s.")
+                self._log_dlp_status_snapshot("Post-arm")
                 self._diag_checkpoint(f"DLP startup end ({dlp_wakeup_elapsed:.2f}s)")
             else:
                 self.update_status_message("DLP controller not available. Cannot control DLP.", error=True)
@@ -1146,8 +1138,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 current_thickness_um = self.thickness[i] if i < len(self.thickness) else 50.0 
                 actual_dlp_power = self.intensity_list[i] if i < len(self.intensity_list) else dlp_power
                 actual_step_speed_um_s = self.step_speed_list[i] if i < len(self.step_speed_list) else step_speed_um_s
-
-                actual_overstep_microns = self.default_overstep_microns
+                
+                # Overstep is now directly in µm from GUI or file (assuming file also uses µm)
+                actual_overstep_microns = self.overstep_distance_list[i] if i < len(self.overstep_distance_list) else overstep_um_gui
                 
                 # --- Acceleration Calculation (Input is mm/s², Zaber needs µm/s²) ---
                 PRACTICAL_MIN_ACCEL_UM_S2 = 800 # UPDATED practical minimum in µm/s²
@@ -1211,6 +1204,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                 last_commanded_dlp_power = current_dlp_power
                                 cv2.waitKey(1)
                                 self.update_status_message(f"L{current_layer_num_for_display}: DLP power set to {current_dlp_power}")
+                                if current_layer_num_for_display <= 2:
+                                    self._log_dlp_status_snapshot(f"L{current_layer_num_for_display} power-set")
                                 self._diag_checkpoint(f"Exposure power set to {current_dlp_power}", layer=current_layer_num_for_display)
                             else:
                                 self._diag_checkpoint(f"Skipped power write, cache already {last_commanded_dlp_power}", layer=current_layer_num_for_display)
@@ -1273,6 +1268,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                 last_commanded_dlp_power = current_dlp_power
                                 cv2.waitKey(1)
                                 self.update_status_message(f"L{current_layer_num_for_display}: DLP power set to {current_dlp_power}")
+                                if current_layer_num_for_display <= 2:
+                                    self._log_dlp_status_snapshot(f"L{current_layer_num_for_display} power-set")
                                 self._diag_checkpoint(f"Stepped exposure power set to {current_dlp_power}", layer=current_layer_num_for_display)
                             else:
                                 self._diag_checkpoint(f"Skipped stepped power write, cache already {last_commanded_dlp_power}", layer=current_layer_num_for_display)
@@ -1739,7 +1736,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # DLP Cleanup
             if hasattr(self, 'controller'):
                 try:
-                    self.cleanup_dlp_safe_state("print_finally")
+                    self.cleanup_dlp_safe_state()
                     self.update_status_message("DLP sequence stopped, LEDs off, mode returned to 0x03.")
                 except Exception as dlp_e:
                     self.update_status_message(f"Error during DLP cleanup: {dlp_e}", error=True)
@@ -1747,11 +1744,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # OpenCV window cleanup
             if hasattr(self, 'window_name') and self.window_name: # Check if window_name is not None
                 try:
-                    if hasattr(self, 'black_image'):
-                        cv2.imshow(self.window_name, self.black_image)
-                        cv2.waitKey(1)
                     cv2.destroyWindow(self.window_name)
-                    cv2.waitKey(1)  # Pump events so Windows properly destroys the window
                     self.update_status_message("OpenCV window closed.")
                 except cv2.error as cv_err:
                     # Handle cases where the window might already be destroyed or was never properly created
@@ -1888,8 +1881,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.pause_flag = False
         if hasattr(self, 'controller'):
             try:
-                # Use standardized DLP cleanup with caller attribution
-                self.cleanup_dlp_safe_state("stop_button")
+                # Use standardized DLP cleanup
+                self.cleanup_dlp_safe_state()
             except Exception as e:
                 self.update_status_message(f"Error stopping DLP sequence: {e}")
     
@@ -1934,6 +1927,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.exposure_time,  # Corresponds to exposure_time_list
                 self.thickness,      # Corresponds to thickness_list
                 self.step_speed_list,
+                self.overstep_distance_list,
                 self.step_type_list,  # This will hold the 'Acceleration' values from the file
                 self.pause_list,
                 self.intensity_list,
@@ -1964,6 +1958,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.exposure_time = []
             self.thickness = []
             self.step_speed_list = []
+            self.overstep_distance_list = []
             self.step_type_list = []
             self.pause_list = []
             self.intensity_list = []
@@ -1977,22 +1972,108 @@ Evan Jones, evanjones2026@u.northwestern.edu
             traceback.print_exc()
 
     def moveup(self):
-        self.axis.move_relative(position=float(self.t9.get())*-1, unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False,velocity=10,
-                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        try:
+            jog_mm = float(self.t9.get()) * -1.0
+        except ValueError:
+            self.update_status_message("Invalid Move distance(mm) value.", error=True)
+            return
+        self._queue_jog_command(jog_mm)
 
     def movedown(self):
-        self.axis.move_relative(position=float(self.t9.get()), unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False,velocity=5,
-                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        try:
+            jog_mm = float(self.t9.get())
+        except ValueError:
+            self.update_status_message("Invalid Move distance(mm) value.", error=True)
+            return
+        self._queue_jog_command(jog_mm)
+
+    def _queue_jog_command(self, jog_mm):
+        # Keep only the latest jog request; interrupt active jog so the last press wins.
+        self._pending_jog_mm = jog_mm
+
+        if self._jog_worker_active:
+            try:
+                self.axis.stop()
+            except Exception:
+                pass
+
+        if self._pending_jog_after_id is not None:
+            try:
+                self.win.after_cancel(self._pending_jog_after_id)
+            except Exception:
+                pass
+            self._pending_jog_after_id = None
+
+        if not self._jog_worker_active:
+            self._pending_jog_after_id = self.win.after(120, self._start_jog_worker)
+
+    def _start_jog_worker(self):
+        self._pending_jog_after_id = None
+        if self._jog_worker_active:
+            return
+        self._jog_worker_active = True
+        self._execute_queued_jog()
+
+    def _execute_queued_jog(self):
+        if self._pending_jog_mm is None:
+            self._jog_worker_active = False
+            return
+
+        jog_mm = self._pending_jog_mm
+        self._pending_jog_mm = None
+
+        velocity_mm_s = 10 if jog_mm < 0 else 5
+        try:
+            self.axis.move_relative(
+                position=jog_mm,
+                unit=Units.LENGTH_MILLIMETRES,
+                wait_until_idle=False,
+                velocity=velocity_mm_s,
+                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND,
+            )
+            self._schedule_jog_idle_poll()
+        except Exception as e:
+            self.update_status_message(f"Jog move failed: {e}", error=True)
+            self._jog_worker_active = False
+
+    def _schedule_jog_idle_poll(self):
+        if self._jog_poll_after_id is not None:
+            try:
+                self.win.after_cancel(self._jog_poll_after_id)
+            except Exception:
+                pass
+            self._jog_poll_after_id = None
+        self._jog_poll_after_id = self.win.after(40, self._poll_jog_idle)
+
+    def _poll_jog_idle(self):
+        self._jog_poll_after_id = None
+
+        is_busy = False
+        try:
+            if hasattr(self.axis, 'is_busy'):
+                is_busy = bool(self.axis.is_busy())
+        except Exception:
+            # If busy status is unavailable, proceed conservatively.
+            is_busy = False
+
+        if is_busy:
+            self._jog_poll_after_id = self.win.after(40, self._poll_jog_idle)
+            return
+
+        if self._pending_jog_mm is not None:
+            self._execute_queued_jog()
+            return
+
+        self._jog_worker_active = False
 
     def simple_txt(self):
         path = str(self.t1.get())
         thickness = str(self.t10.get())
         base = str(self.t11_2.get())
-        speed_um_s = str(self.t11.get())
+        time_val = str(self.t11.get())
         intensity = str(self.t14.get())
         step_speed = str(self.t16.get())
+        overstep_distance = str(self.t19.get())
         acceleration_val = str(self.t21.get())
         pause = str(self.t17.get())
         sandwich_speed = "0"
@@ -2001,53 +2082,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
             path=path, 
             thickness=thickness, 
             base=base, 
-            time=speed_um_s,
+            time=time_val, 
             intensity=intensity, 
             step_speed=step_speed, 
+            overstep_distance=overstep_distance, 
             step_type=acceleration_val, 
             pause=pause,
             sandwich_speed=sandwich_speed
         )
-
-        self._copy_print_params_to_calculator()
-        self._update_dosage_calculator()
         
         # Automatically load the generated instruction file
         self.input_directory()
-
-    @staticmethod
-    def _calibrated_power_from_speed(speed_um_s):
-        x = float(speed_um_s)
-        y = (-1.939507e-6 * x * x) + (4.869025e-3 * x) + 7.617950e-3
-        return y * 2.72
-
-    def _copy_print_params_to_calculator(self):
-        if not hasattr(self, 'calc_thickness_entry') or not hasattr(self, 'calc_speed_entry'):
-            return
-        self.calc_thickness_entry.delete(0, END)
-        self.calc_speed_entry.delete(0, END)
-        self.calc_thickness_entry.insert(END, self.t10.get().strip() if hasattr(self, 't10') else "")
-        self.calc_speed_entry.insert(END, self.t11.get().strip() if hasattr(self, 't11') else "")
-
-    def _update_dosage_calculator(self):
-        if not hasattr(self, 'calc_power_var') or not hasattr(self, 'calc_dosage_var'):
-            return
-
-        try:
-            speed_um_s = float(self.calc_speed_entry.get().strip())
-            if speed_um_s <= 1e-9:
-                raise ValueError("Speed must be greater than 0")
-
-            # Thickness is shown for context, but dosage remains thickness-invariant.
-            _ = float(self.calc_thickness_entry.get().strip())
-
-            power_mj = self._calibrated_power_from_speed(speed_um_s)
-            dosage_mj_per_um = power_mj / speed_um_s
-            self.calc_power_var.set(f"Power: {power_mj:.4f} mJ")
-            self.calc_dosage_var.set(f"Dosage: {dosage_mj_per_um:.6f} mJ/um")
-        except Exception:
-            self.calc_power_var.set("Power: -- mJ")
-            self.calc_dosage_var.set("Dosage: -- mJ/um")
     
     def _on_sandwich_mode_change(self):
         """Ensure only one sandwich mode is selected at a time."""
@@ -2292,25 +2337,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
             messagebox.showerror("Sandwich Failed", message)
         
     def on_closing(self):
-        self.lifecycle_logger.log_gui_close_start()
-        
         if self.sandwich_thread and self.sandwich_thread.is_alive():
             self.update_status_message("Attempting to stop Sandwich routine...")
             self.sandwich_thread.stop()
             self.sandwich_thread.join(timeout=2.0)
             if self.sandwich_thread.is_alive():
                 print("Warning: Sandwich thread did not terminate cleanly.")
-
-        # Attempt to join print thread before final cleanup
-        if hasattr(self, 'print_thread') and self.print_thread and self.print_thread.is_alive():
-            self.lifecycle_logger.log_print_thread_join_attempt(timeout_sec=5.0)
-            self.flag = True  # Signal thread to stop
-            self.print_thread.join(timeout=5.0)
-            if self.print_thread.is_alive():
-                self.lifecycle_logger.log_print_thread_join_result(success=False, timeout_sec=5.0)
-                self.update_status_message("Warning: Print thread did not terminate cleanly.")
-            else:
-                self.lifecycle_logger.log_print_thread_join_result(success=True, timeout_sec=5.0)
 
         if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
             self.sensor_data_window_instance.on_sensor_window_close()
@@ -2320,46 +2352,18 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         if hasattr(self, 'axis') and self.axis:
             try:
-                self.lifecycle_logger.log_event("stage_stop_start")
                 self.axis.stop()
-                self.lifecycle_logger.log_stage_command("stop", result="success")
-            except Exception as e:
-                self.lifecycle_logger.log_stage_command("stop", result="exception", exception=e)
-                print(f"Error stopping A3200 connection: {e}")
-            
-            try:
-                self.lifecycle_logger.log_event("stage_disconnect_start")
                 self.axis.disconnect()
-                self.lifecycle_logger.log_stage_command("disconnect", result="success")
             except Exception as e:
-                self.lifecycle_logger.log_stage_command("disconnect", result="exception", exception=e)
-                print(f"Error closing A3200 connection: {e}")
+                print(f"Error stopping/closing A3200 connection: {e}")
         
         if hasattr(self, 'controller'):
             try:
-                self.cleanup_dlp_safe_state("on_closing")
+                self.cleanup_dlp_safe_state()
                 self.controller.standby()
-                self.lifecycle_logger.log_dlp_command("standby", result="success")
             except Exception as e:
-                self.lifecycle_logger.log_dlp_command("standby", result="exception", exception=e)
                 print(f"Error shutting down DLP: {e}")
 
-        # Export lifecycle log before closing
-        try:
-            log_path = self.lifecycle_logger.export_session_log()
-            summary = self.lifecycle_logger.get_summary()
-            print(f"\n[Shutdown] Lifecycle log exported to: {log_path}")
-            print(f"[Shutdown] Summary: {summary}")
-        except Exception as e:
-            print(f"[Shutdown] Failed to export lifecycle log: {e}")
-            
-        # Ensure any residual OpenCV windows are fully destroyed before the main GUI exits
-        try:
-            cv2.destroyAllWindows()
-            cv2.waitKey(1)
-        except Exception:
-            pass
-        
         self.win.destroy()
 
     def _trigger_post_print_analysis(self):
