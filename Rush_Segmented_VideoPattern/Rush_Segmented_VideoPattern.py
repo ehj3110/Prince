@@ -2431,6 +2431,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
         def update_widget(widget):
             try:
                 w_class = widget.winfo_class()
+                
+                # Protect Ramped Cylinder window from being themed over
+                if w_class == 'Toplevel':
+                    try:
+                        if widget.title() == "Ramped Cylinder Generator":
+                            return
+                    except Exception:
+                        pass
+                        
                 # Special cases
                 if widget == getattr(self, 't8', None):
                     widget.configure(background=entry_bg, foreground=entry_fg)
