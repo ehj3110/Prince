@@ -44,7 +44,6 @@ from support_modules.DLPLightController import DLPLightController
 from support_modules.StageSequencer import StageSequencer
 from support_modules.ProjectionFrameManager import ProjectionFrameManager
 from support_modules.print_engine.print_orchestrator import PrintOrchestrator, PrintOrchestratorDeps
-from lifecycle_logger import get_logger as get_lifecycle_logger
 
 
 class MyWindow:
@@ -59,15 +58,13 @@ Boyuan Sun, boyuansun2026@u.northwestern.edu
 Evan Jones, evanjones2026@u.northwestern.edu
 '''
         self.reference = 0
-        self.lifecycle_logger = get_lifecycle_logger()
-        self.lifecycle_logger.log_event("app_init_start")
 
         # Initialize attributes for data loaded from instruction file
         self.image_list = []
         self.exposure_time = []  # This will store exposure_time_list
         self.thickness = []      # This will store thickness_list
         self.step_speed_list = []
-        self.default_overstep_microns = 0.0
+        self.overstep_distance_list = []
         self.step_type_list = []  # Corresponds to 'Acceleration' from the file
         self.pause_list = []
         self.intensity_list = []
@@ -165,6 +162,50 @@ Evan Jones, evanjones2026@u.northwestern.edu
         )
         self.b_open_sensor_window_monitoring.place(x=950, y=115)
         
+        self.b_disconnect_dlp = Button(win, text="Disconnect DLP", command=self.disconnect_dlp)
+        self.b_disconnect_dlp.place(x=800, y=150)
+        
+        self.b_reconnect_dlp = Button(win, text="Reconnect DLP", command=self.reconnect_dlp, state=DISABLED)
+        self.b_reconnect_dlp.place(x=950, y=150)
+
+        self.b_ramped_cylinder = Button(win, text="Ramped Cylinder", command=self.open_ramped_cylinder_window)
+        self.b_ramped_cylinder.place(x=800, y=185)
+
+        # --- Store default window bg and initialize Projection Mode variables ---
+        self.default_win_bg = win.cget('bg')
+        self.projection_mode_var = StringVar(value="video")
+        self.post_print_logging_var = BooleanVar(value=False)
+
+        # --- Projection Mode Panel ---
+        self.frame_proj_mode = tk.LabelFrame(
+            win,
+            text=' Projection Mode ',
+            font=('Segoe UI', 9, 'bold'),
+            bd=1,
+            relief=tk.SOLID
+        )
+        self.frame_proj_mode.place(x=800, y=225, width=350, height=95)
+
+        self.chk_proj_mode = tk.Checkbutton(
+            self.frame_proj_mode,
+            text='Enable Video Pattern Mode (Newer)',
+            variable=self.projection_mode_var,
+            onvalue='video_pattern',
+            offvalue='video',
+            command=self._on_projection_mode_change,
+            font=('Segoe UI', 9)
+        )
+        self.chk_proj_mode.pack(anchor=W, padx=10, pady=5)
+
+        self.lbl_warning_pm = tk.Label(
+            self.frame_proj_mode,
+            text='?? Power calibration differs between modes!',
+            foreground='#FF5555',
+            font=('Segoe UI', 8, 'bold')
+        )
+        # Hidden by default
+        self.lbl_warning_pm.pack_forget()
+        
         self.sensor_data_window_instance = None
         self.sensor_monitoring_window_instance = None
         self.image_modification_window = None
@@ -174,6 +215,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # VideoPattern logging modules
         self.print_logging_service = None
         self.quality_check_gate = False  # Blocks next print until quality check is complete
+        self._post_print_queue = queue.Queue()  # Thread-safe queue for post-print dialog scheduling
 
         self.cache_clear_layer = 100000
         self.time1 = 1000
@@ -182,7 +224,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.canvas1 = Canvas(win, height=200, width=270, bg=self.panel_bg)
         self.canvas1.place(x=70, y=390)
         
-        self.canvas2 = Canvas(win, height=200, width=500, bg=self.panel_bg)
+        self.canvas2 = Canvas(win, height=200, width=360, bg=self.panel_bg)
         self.canvas2.place(x=370, y=390)
 
         # Rush header logo (larger image-only header, no title text box).
@@ -228,7 +270,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.t8 = Label(win, textvariable=self.status_message_var, width=50, relief="sunken", anchor="w", justify=LEFT)
         self.lbl9 = Label(win, text='Move distance(mm)')
         self.lbl10 = Label(win, text='Layer thickness(um)', background=self.panel_bg)
-        self.lbl11 = Label(win, text='Exposure speed (um/s)', background=self.panel_bg)
+        self.lbl11 = Label(win, text='Exposure time(s)', background=self.panel_bg)
         self.lbl11_2 = Label(win, text='Base curing time(s)', background=self.panel_bg)
         self.lbl12 = Label(win, text='Stage Control', font='Helvetica 12 bold')
         self.lbl13 = Label(win, text='Print Parameters', font='Helvetica 12 bold')
@@ -246,47 +288,26 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.lbl17 = Label(win, text='Pause (s)', background=self.panel_bg) 
         self.lbl21 = Label(win, text='Acceleration (mm/s²)', background=self.panel_bg)  # UNIT CHANGED to mm/s²
 
-    # COLUMN 2: Step Speed, Pause
+        # COLUMN 2: Step Speed, Pause
         column2_x = 550
         self.lbl16.place(x=column2_x, y=420)
         self.t16 = Entry(win)
         self.t16.place(x=column2_x, y=440)
         self.t16.insert(END, "1000") # Default Step Speed
-
-    self.lbl17.place(x=column2_x, y=460)
+        
+        self.default_overstep_microns = 0.0
+        
+        self.lbl17.place(x=column2_x, y=460)
         self.t17 = Entry(win)
-    self.t17.place(x=column2_x, y=480)
+        self.t17.place(x=column2_x, y=480)
         self.t17.insert(END, "0") # Default Pause
         
         # COLUMN 3: Acceleration only
         column3_x = 700
-        self.lbl21.place(x=column3_x, y=420)
+        self.lbl21.place(x=column2_x, y=500)
         self.t21 = Entry(win)
-        self.t21.place(x=column3_x, y=440)
+        self.t21.place(x=column2_x, y=520)
         self.t21.insert(END, "100") # Default Acceleration in mm/s²
-
-        # Small calculator next to print parameters.
-        self.calc_frame = LabelFrame(win, text="Dosage Calculator", padding=(8, 6))
-        self.calc_frame.place(x=860, y=390, width=300, height=200)
-
-        Label(self.calc_frame, text='Layer thickness (um):').grid(row=0, column=0, sticky=W, padx=4, pady=2)
-        self.calc_thickness_entry = Entry(self.calc_frame, width=12)
-        self.calc_thickness_entry.grid(row=0, column=1, sticky=W, padx=4, pady=2)
-
-        Label(self.calc_frame, text='Exposure speed (um/s):').grid(row=1, column=0, sticky=W, padx=4, pady=2)
-        self.calc_speed_entry = Entry(self.calc_frame, width=12)
-        self.calc_speed_entry.grid(row=1, column=1, sticky=W, padx=4, pady=2)
-
-        self.calc_power_var = StringVar(value='Power: -- mJ')
-        self.calc_dosage_var = StringVar(value='Dosage: -- mJ/um')
-        Label(self.calc_frame, textvariable=self.calc_power_var).grid(row=2, column=0, columnspan=2, sticky=W, padx=4, pady=3)
-        Label(self.calc_frame, textvariable=self.calc_dosage_var).grid(row=3, column=0, columnspan=2, sticky=W, padx=4, pady=3)
-
-        self.calc_update_button = Button(self.calc_frame, text='Update', command=self._update_dosage_calculator)
-        self.calc_update_button.grid(row=4, column=0, padx=4, pady=6, sticky=W)
-
-        self.calc_copy_button = Button(self.calc_frame, text='Use Print Params', command=self._copy_print_params_to_calculator)
-        self.calc_copy_button.grid(row=4, column=1, padx=4, pady=6, sticky=W)
 
         control_frame_width = 750
 
@@ -376,7 +397,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # --- Existing Layer Logger instantiation removed ---
         
         # --- Define Entry Widgets (including t1) ---
-        self.t1 = Entry(width=160)
+        self.t1 = Entry(width=85)
         self.t4 = Entry()
         # self.t8 = Entry() # This comment is now misleading as t8 is a Label. Can be removed.
         self.t9 = Entry()
@@ -393,7 +414,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         self.lbl4.place(x=50, y=230) # Moved up from 260
         self.t4.place(x=50, y=250) # Moved up from 280
-        self.lbl5.place(x=710, y=180)
+        self.lbl5.place(x=710, y=330)
         self.lbl6.place(x=950, y=0)
         # self.t8.place(x=500, y=280) # This line will now work as self.t8 is defined
         self.lbl8.place(x=50, y=40) # "System Message:" - aligned slightly above system box
@@ -501,11 +522,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # self.t8.insert(END, str("Stage connected")) # This will be set by update_status_message
         self.t9.insert(END, str("0"))
         self.t10.insert(END, str("5"))
-        self.t11.insert(END, str("100"))
+        self.t11.insert(END, str("1"))
         self.t11_2.insert(END, str("1"))
         self.t14.insert(END, str("1"))
-
-        self._copy_print_params_to_calculator()
 
         # --- Screeninfo, window_name, black_image ---
         monitors = screeninfo.get_monitors()
@@ -540,6 +559,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.update_status_message("System Ready.") # Example of setting initial status
         
         self._sync_sensor_panel_button_states()
+        self._on_projection_mode_change()
         self._apply_recommended_window_geometry()
 
     def _apply_recommended_window_geometry(self):
@@ -590,15 +610,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 remaining_movement_time = 0.0
                 
                 # Get default parameters from GUI (fallbacks)
+                default_overstep = self.default_overstep_microns
                 default_speed = float(self.t16.get()) if hasattr(self, 't16') and self.t16.get() else 1000.0
-                default_sandwich_speed = float(self.t_sandwich_speed.get()) if hasattr(self, 't_sandwich_speed') and self.t_sandwich_speed.get() else 500.0
                 
                 # Calculate movement time for each remaining layer
                 for layer_idx in range(current_layer_index, total_layers):
                     # Get layer-specific parameters
                     layer_overstep = self.default_overstep_microns
                     layer_speed = self.step_speed_list[layer_idx] if hasattr(self, 'step_speed_list') and layer_idx < len(self.step_speed_list) else default_speed
-                    layer_sandwich_speed = self.sandwich_speed_list[layer_idx] if hasattr(self, 'sandwich_speed_list') and layer_idx < len(self.sandwich_speed_list) else default_sandwich_speed
                     
                     # Lift time calculation (with smooth lifting if enabled)
                     if self.smooth_lifting_enabled:
@@ -622,16 +641,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         # Standard single-stage retraction
                         retract_time = (layer_overstep / layer_speed) if layer_speed > 0 else 0
                     
-                    # Sandwich time (if pre-calibration was successful)
+                    # Sandwich timing is intentionally excluded for Rush estimates.
                     sandwich_time = 0.0
-                    if hasattr(self, 'measured_gap_mm') and self.measured_gap_mm is not None:
-                        # Down movement: measured_gap distance at sandwich speed
-                        sandwich_down = (self.measured_gap_mm * 1000.0 / layer_sandwich_speed) if layer_sandwich_speed > 0 else 0
-                        # Up movement: same distance, same speed
-                        sandwich_up = sandwich_down
-                        # 1 second settling time after retract
-                        sandwich_settling = 1.0
-                        sandwich_time = sandwich_down + sandwich_up + sandwich_settling
                     
                     # Additional overhead per layer
                     # Based on empirical testing (7s observed vs 5.2s calculated):
@@ -675,17 +686,23 @@ Evan Jones, evanjones2026@u.northwestern.edu
             val_t17 = self.t17.get()
             layer_pause_s = float(val_t17) if val_t17 else 0.0
 
+            overstep_um_gui = self.default_overstep_microns
+
             val_t21 = self.t21.get()
             step_type_val_mms2 = float(val_t21) if val_t21 else 0.0
             
             self.b1.config(state=DISABLED)
             self.b10.config(state=DISABLED)
             self.b4.config(state=NORMAL)
+            if hasattr(self, 'b_disconnect_dlp'): self.b_disconnect_dlp.config(state=DISABLED)
+            if hasattr(self, 'b_reconnect_dlp'): self.b_reconnect_dlp.config(state=DISABLED)
+            if hasattr(self, 'chk_proj_mode'): self.chk_proj_mode.config(state=DISABLED)
 
             self.start_print_thread(
                 dlp_power=dlp_power,
                 step_speed_um_s=step_speed_um_s,
                 layer_pause_s=layer_pause_s,
+                overstep_um_gui=overstep_um_gui,
                 step_type_val_mms2=step_type_val_mms2, # Pass mm/s² value
                 print_mode="continuous"
             )
@@ -694,11 +711,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
             messagebox.showerror("Input Error", f"Please check print parameters. One of them is not a valid number.\nDetails: {e}")
             self.b1.config(state=NORMAL)
             self.b10.config(state=NORMAL)
+            self._restore_dlp_button_states()
         except Exception as e:
             self.update_status_message(f"Error during print setup: {e}")
             messagebox.showerror("Setup Error", f"An error occurred: {e}")
             self.b1.config(state=NORMAL)
             self.b10.config(state=NORMAL)
+            self._restore_dlp_button_states()
 
     def run_Stepped(self):
         self.flag = False # Reset stop flag for a new print attempt
@@ -721,17 +740,23 @@ Evan Jones, evanjones2026@u.northwestern.edu
             val_t17 = self.t17.get()
             layer_pause_s = float(val_t17) if val_t17 else 0.0
 
+            overstep_um_gui = self.default_overstep_microns
+
             val_t21 = self.t21.get()
             step_type_val_mms2 = float(val_t21) if val_t21 else 0.0
 
             self.b1.config(state=DISABLED)
             self.b10.config(state=DISABLED)
             self.b4.config(state=NORMAL)
+            if hasattr(self, 'b_disconnect_dlp'): self.b_disconnect_dlp.config(state=DISABLED)
+            if hasattr(self, 'b_reconnect_dlp'): self.b_reconnect_dlp.config(state=DISABLED)
+            if hasattr(self, 'chk_proj_mode'): self.chk_proj_mode.config(state=DISABLED)
 
             self.start_print_thread(
                 dlp_power=dlp_power,
                 step_speed_um_s=step_speed_um_s,
                 layer_pause_s=layer_pause_s,
+                overstep_um_gui=overstep_um_gui,
                 step_type_val_mms2=step_type_val_mms2, # Pass mm/s² value
                 print_mode="stepped"
             )
@@ -740,17 +765,20 @@ Evan Jones, evanjones2026@u.northwestern.edu
             messagebox.showerror("Input Error", f"Please check print parameters. One of them is not a valid number.\nDetails: {e}")
             self.b1.config(state=NORMAL)
             self.b10.config(state=NORMAL)
+            self._restore_dlp_button_states()
         except Exception as e:
             self.update_status_message(f"Error during print setup: {e}")
             messagebox.showerror("Setup Error", f"An error occurred: {e}")
             self.b1.config(state=NORMAL)
             self.b10.config(state=NORMAL)
+            self._restore_dlp_button_states()
 
     def _get_next_print_number(self, date_specific_log_dir):
         """Determines the next print number for a given date directory."""
         return self.session_manager.get_next_print_number(date_specific_log_dir)
 
-    def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, step_type_val_mms2, print_mode): # PARAM RENAMED
+    def start_print_thread(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
+        self.print_mode = print_mode
         # The try block should start here, encompassing all setup and thread starting
         try:
             # Check quality check gate for VideoPattern
@@ -768,22 +796,25 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 messagebox.showerror("Setup Error", "Please set a valid image directory first.", parent=self.win)
                 return
 
-            # Auto-logging configuration now relies entirely on SensorDataWindow's state
+            # Check if either post-print logging OR automated sensor logging is enabled
+            post_print_enabled = self.post_print_logging_var.get()
+            sensor_log_enabled = False
             if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
-                # Check if the "Enable Automated Logging" checkbox *within SensorDataWindow* is checked
                 if self.sensor_data_window_instance.auto_log_enabled_var.get():
-                    self.update_status_message("Sensor Panel auto-log is enabled, configuring...")
-                    
-                    # Set up logging directory structure like backup version
-                    main_img_dir = path
-                    self.current_print_log_base_dir = os.path.join(main_img_dir, "Printing_Logs")
-                    current_date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-                    self.current_print_date_dir = os.path.join(self.current_print_log_base_dir, current_date_str)
-                    self.current_print_number = self._get_next_print_number(self.current_print_date_dir)
-                    self.current_print_session_log_dir = os.path.join(self.current_print_date_dir, f"Print {self.current_print_number}")
-                    os.makedirs(self.current_print_session_log_dir, exist_ok=True)
-                    self.update_status_message(f"Log directory created: {self.current_print_session_log_dir}")
-                    
+                    sensor_log_enabled = True
+
+            if post_print_enabled or sensor_log_enabled:
+                self.update_status_message("Logging is enabled, configuring directories...")
+                main_img_dir = path
+                self.current_print_log_base_dir = os.path.join(main_img_dir, "Printing_Logs")
+                current_date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+                self.current_print_date_dir = os.path.join(self.current_print_log_base_dir, current_date_str)
+                self.current_print_number = self._get_next_print_number(self.current_print_date_dir)
+                self.current_print_session_log_dir = os.path.join(self.current_print_date_dir, f"Print {self.current_print_number}")
+                os.makedirs(self.current_print_session_log_dir, exist_ok=True)
+                self.update_status_message(f"Log directory created: {self.current_print_session_log_dir}")
+
+                if sensor_log_enabled:
                     # Configure AutomatedLayerLogger via SensorDataWindow with proper parameters
                     self.sensor_data_window_instance.configure_automated_layer_logging(
                         main_image_dir=main_img_dir,
@@ -792,19 +823,19 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         log_directory=self.current_print_session_log_dir
                     )
                     self.update_status_message(f"AutomatedLayerLogger configured for print {self.current_print_number}.")
-                    
+
+                if post_print_enabled:
                     # Initialize VideoPattern print logging with default metadata.
                     if self.print_logging_service is None:
                         self.print_logging_service = VideoPatternPrintLogging(self.update_status_message)
                     self.print_logging_service.start_new_print(self.current_print_session_log_dir, self.experimental_conditions)
-                else:
-                    self.update_status_message("Sensor Panel auto-log is disabled. Proceeding without automated logging.")
             else:
-                self.update_status_message("Sensor Panel not open. Automated logging will not be active.")
+                self.current_print_session_log_dir = None
+                self.update_status_message("Logging is disabled. Proceeding without automated/post-print logging.")
             
             # Start the actual print thread
             self.print_thread = threading.Thread(target=self.print_t, args=(
-                dlp_power, step_speed_um_s, layer_pause_s, step_type_val_mms2, print_mode # Pass mm/s²
+                dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode # Pass mm/s²
             ))
             self.print_thread.daemon = True
             self.print_thread.start()
@@ -816,46 +847,26 @@ Evan Jones, evanjones2026@u.northwestern.edu
             if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
             if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
             if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
+            self._restore_dlp_button_states()
 
-    def cleanup_dlp_safe_state(self, caller_source="unknown"):
+    def cleanup_dlp_safe_state(self):
         """Reset DLP to safe idle state: pattern-on-the-fly mode 0x03 with LED power off."""
-        self.lifecycle_logger.log_cleanup_start(caller_source)
         try:
             if hasattr(self, 'controller'):
                 self._enter_dark_pattern_idle()
                 self.update_status_message("DLP reset to dark idle mode (0x03)")
-                self.lifecycle_logger.log_cleanup_end(caller_source, success=True)
         except Exception as e:
-            self.lifecycle_logger.log_cleanup_end(caller_source, success=False, exception=e)
             self.update_status_message(f"Error resetting DLP: {e}", error=True)
 
     def _enter_dark_pattern_idle(self):
         """Enter dark parked idle in pattern-on-the-fly mode (0x03)."""
         self._diag("Entering dark idle command sequence")
-        try:
-            self.lifecycle_logger.log_event("dlp_enter_idle_start")
-            self.controller.power(current=0)
-            self.lifecycle_logger.log_dlp_command("power", result="success")
-            self._diag("Command sent: power(0)")
-        except Exception as e:
-            self.lifecycle_logger.log_dlp_command("power", result="exception", exception=e)
-            raise
-        
-        try:
-            self.controller.stopsequence()
-            self.lifecycle_logger.log_dlp_command("stopsequence", result="success")
-            self._diag("Command sent: stopsequence()")
-        except Exception as e:
-            self.lifecycle_logger.log_dlp_command("stopsequence", result="exception", exception=e)
-            raise
-        
-        try:
-            self.controller.changemode(0x03)
-            self.lifecycle_logger.log_dlp_command("changemode", result="success")
-            self._diag("Command sent: changemode(0x03)")
-        except Exception as e:
-            self.lifecycle_logger.log_dlp_command("changemode", result="exception", exception=e)
-            raise
+        self.controller.stopsequence()
+        self._diag("Command sent: stopsequence()")
+        self.controller.power(current=0)
+        self._diag("Command sent: power(0)")
+        self.controller.changemode(0x03)
+        self._diag("Command sent: changemode(0x03)")
 
     def _diag(self, message):
         """Temporary verbose diagnostics helper (safe to remove after troubleshooting)."""
@@ -882,6 +893,63 @@ Evan Jones, evanjones2026@u.northwestern.edu
             time.sleep(0.02)
         self._diag(f"OpenCV pump end: {note}, ticks={ticks}")
 
+    def _log_dlp_status_snapshot(self, context_label):
+        """Emit a compact DLP status line to verify mode/sequence state at runtime."""
+        if not hasattr(self, 'controller') or self.controller is None:
+            self.update_status_message(f"{context_label}: DLP status unavailable (no controller)", warning=True)
+            return
+
+        if not hasattr(self.controller, 'get_status_snapshot'):
+            self.update_status_message(f"{context_label}: DLP status API unavailable", warning=True)
+            return
+
+        try:
+            snapshot = self.controller.get_status_snapshot() or {}
+            mode = snapshot.get('mode')
+            input_source = snapshot.get('input_source')
+            sequence_state = snapshot.get('sequence_state')
+            led_current = snapshot.get('led_current')
+
+            mode_txt = f"0x{int(mode):02X}" if isinstance(mode, int) else str(mode)
+            src_txt = f"0x{int(input_source):02X}" if isinstance(input_source, int) else str(input_source)
+            seq_txt = str(sequence_state)
+            led_txt = str(led_current)
+
+            self.update_status_message(
+                f"{context_label}: DLP status mode={mode_txt}, input={src_txt}, seq={seq_txt}, led={led_txt}"
+            )
+
+            # Expected mode based on selected projection mode
+            proj_mode = self.projection_mode_var.get()
+            expected_mode = 0x02 if proj_mode == "video_pattern" else 0x00
+            expected_txt = "0x02 (video-pattern)" if expected_mode == 0x02 else "0x00 (video)"
+            if mode is not None and int(mode) != expected_mode:
+                self.update_status_message(
+                    f"{context_label}: WARNING expected mode {expected_txt}, got {mode_txt}",
+                    warning=True,
+                )
+        except Exception as e:
+            self.update_status_message(f"{context_label}: DLP status query failed: {e}", warning=True)
+
+    def _arm_dlp_video_mode(self):
+        """Arm the projector in continuous HDMI video mode (mode 0x00)."""
+        with usb_coordinator.dlp_operation("rush_video_mode_arm"):
+            self.controller.stopsequence()
+            self._diag_checkpoint("Command sent: stopsequence()")
+            self.controller.power(current=0)
+            self._diag_checkpoint("Command sent: power(0)")
+            self.controller.changemode(0x03)          # park in idle first
+            self._diag_checkpoint("Command sent: changemode(0x03)")
+            self.controller.hdmi()                     # activate HDMI input
+            self._diag_checkpoint("Command sent: hdmi()")
+            self._diag_pump_opencv(duration_s=1.5, note="startup HDMI lock (video mode)")
+            self.controller.changemode(0x00)           # engage video mode
+            self._diag_checkpoint("Command sent: changemode(0x00)")
+            time.sleep(5.0)                            # match rush.py settle time
+            self.controller.power(current=int(self.silent_wake_power))
+            cv2.waitKey(1)
+            self._diag_checkpoint(f"Command sent: power({int(self.silent_wake_power)}) and cv2.waitKey(1)")
+
     def _arm_dlp_silent_wakeup(self):
         """Arm the projector in video-pattern mode while keeping the wake sequence dark."""
         with usb_coordinator.dlp_operation("rush_video_pattern_arm"):
@@ -890,8 +958,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.controller.power(current=0)
             self._diag_checkpoint("Command sent: power(0)")
             self.controller.changemode(0x00)
-            self.controller.power(current=0) # Many DLP firmwares auto-ignite the LED when mode is changed
-            self._diag_checkpoint("Command sent: changemode(0x00) and power(0)")
+            self._diag_checkpoint("Command sent: changemode(0x00)")
 
             self.controller.hdmi()
             self._diag_checkpoint("Command sent: hdmi()")
@@ -900,8 +967,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self._diag_checkpoint("HDMI mode-0 settle complete")
 
             self.controller.changemode(0x02)
-            self.controller.power(current=0) # Again, prevent auto-ignition of LED in Video Pattern Mode
-            self._diag_checkpoint("Command sent: changemode(0x02) and power(0)")
+            self._diag_checkpoint("Command sent: changemode(0x02)")
 
             self.controller.configurelut(1, 0xFFFFFFFF)
             self._diag_checkpoint("Command sent: configurelut(1, 0xFFFFFFFF)")
@@ -1062,7 +1128,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.update_status_message(f"Error during resource cleanup: {e}", error=True)
 
 
-    def print_t(self, dlp_power, step_speed_um_s, layer_pause_s, step_type_val_mms2, print_mode): # PARAM RENAMED
+    def print_t(self, dlp_power, step_speed_um_s, layer_pause_s, overstep_um_gui, step_type_val_mms2, print_mode): # PARAM RENAMED
         try:
             self._print_diag_t0 = time.perf_counter()
             self.update_status_message("Print thread started.")
@@ -1090,23 +1156,32 @@ Evan Jones, evanjones2026@u.northwestern.edu
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             cv2.imshow(self.window_name, self.black_image)
             # Pump events longer on the first print to guarantee the black frame reaches the HDMI display buffer
-            for _ in range(10):
-                cv2.waitKey(50)
+            #removed this for now. It seems that this caused issues for the first print. 
+            #for _ in range(10):
+            cv2.waitKey(50)
             self.win.update_idletasks()
             self.win.update()
             self.update_status_message("OpenCV window initialized.")
             self._diag_checkpoint("OpenCV fullscreen black frame presented")
 
-            # DLP setup for pattern projection
+            # DLP setup for projection mode
             if hasattr(self, 'controller'):
-                self.update_status_message("Arming DLP with silent wake in video-pattern mode...")
-                dlp_wakeup_start = time.time()
-                self._diag_checkpoint("DLP startup begin")
-
-                self._arm_dlp_silent_wakeup()
-
-                dlp_wakeup_elapsed = time.time() - dlp_wakeup_start
-                self.update_status_message(f"DLP armed with direct 30Hz video pattern startup, power: {dlp_power}. Startup completed in {dlp_wakeup_elapsed:.2f}s.")
+                proj_mode = self.projection_mode_var.get()
+                if proj_mode == "video_pattern":
+                    self.update_status_message("Arming DLP with silent wake in video-pattern mode...")
+                    dlp_wakeup_start = time.time()
+                    self._diag_checkpoint("DLP startup begin")
+                    self._arm_dlp_silent_wakeup()
+                    dlp_wakeup_elapsed = time.time() - dlp_wakeup_start
+                    self.update_status_message(f"DLP armed with direct 30Hz video pattern startup, power: {dlp_power}. Startup completed in {dlp_wakeup_elapsed:.2f}s.")
+                else:
+                    self.update_status_message("Arming DLP in HDMI video mode...")
+                    dlp_wakeup_start = time.time()
+                    self._diag_checkpoint("DLP startup begin")
+                    self._arm_dlp_video_mode()
+                    dlp_wakeup_elapsed = time.time() - dlp_wakeup_start
+                    self.update_status_message(f"DLP armed in HDMI video mode, power: {dlp_power}. Startup completed in {dlp_wakeup_elapsed:.2f}s.")
+                self._log_dlp_status_snapshot("Post-arm")
                 self._diag_checkpoint(f"DLP startup end ({dlp_wakeup_elapsed:.2f}s)")
             else:
                 self.update_status_message("DLP controller not available. Cannot control DLP.", error=True)
@@ -1146,7 +1221,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 current_thickness_um = self.thickness[i] if i < len(self.thickness) else 50.0 
                 actual_dlp_power = self.intensity_list[i] if i < len(self.intensity_list) else dlp_power
                 actual_step_speed_um_s = self.step_speed_list[i] if i < len(self.step_speed_list) else step_speed_um_s
-
+                
+                # Overstep is now directly in µm from GUI or file (assuming file also uses µm)
                 actual_overstep_microns = self.default_overstep_microns
                 
                 # --- Acceleration Calculation (Input is mm/s², Zaber needs µm/s²) ---
@@ -1211,6 +1287,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                 last_commanded_dlp_power = current_dlp_power
                                 cv2.waitKey(1)
                                 self.update_status_message(f"L{current_layer_num_for_display}: DLP power set to {current_dlp_power}")
+                                if current_layer_num_for_display <= 2:
+                                    self._log_dlp_status_snapshot(f"L{current_layer_num_for_display} power-set")
                                 self._diag_checkpoint(f"Exposure power set to {current_dlp_power}", layer=current_layer_num_for_display)
                             else:
                                 self._diag_checkpoint(f"Skipped power write, cache already {last_commanded_dlp_power}", layer=current_layer_num_for_display)
@@ -1273,6 +1351,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                 last_commanded_dlp_power = current_dlp_power
                                 cv2.waitKey(1)
                                 self.update_status_message(f"L{current_layer_num_for_display}: DLP power set to {current_dlp_power}")
+                                if current_layer_num_for_display <= 2:
+                                    self._log_dlp_status_snapshot(f"L{current_layer_num_for_display} power-set")
                                 self._diag_checkpoint(f"Stepped exposure power set to {current_dlp_power}", layer=current_layer_num_for_display)
                             else:
                                 self._diag_checkpoint(f"Skipped stepped power write, cache already {last_commanded_dlp_power}", layer=current_layer_num_for_display)
@@ -1739,7 +1819,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # DLP Cleanup
             if hasattr(self, 'controller'):
                 try:
-                    self.cleanup_dlp_safe_state("print_finally")
+                    self.cleanup_dlp_safe_state()
                     self.update_status_message("DLP sequence stopped, LEDs off, mode returned to 0x03.")
                 except Exception as dlp_e:
                     self.update_status_message(f"Error during DLP cleanup: {dlp_e}", error=True)
@@ -1747,11 +1827,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # OpenCV window cleanup
             if hasattr(self, 'window_name') and self.window_name: # Check if window_name is not None
                 try:
-                    if hasattr(self, 'black_image'):
-                        cv2.imshow(self.window_name, self.black_image)
-                        cv2.waitKey(1)
                     cv2.destroyWindow(self.window_name)
-                    cv2.waitKey(1)  # Pump events so Windows properly destroys the window
                     self.update_status_message("OpenCV window closed.")
                 except cv2.error as cv_err:
                     # Handle cases where the window might already be destroyed or was never properly created
@@ -1786,46 +1862,21 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     status_to_write = "stopped"
                 elif not self.flag:  # If flag is still false, it means it completed normally
                     status_to_write = "completed"
-                
-                # Show VideoPattern Logging Check popup (post-print dialog)
-                try:
-                    print_number = getattr(self, 'current_print_number', 'Unknown')
-                    logging_dialog = LoggingCheckWindow_VideoPattern(
-                        self.win,
-                        print_number,
-                        on_close_callback=None,
-                    )
-                    logging_result = logging_dialog.wait_for_result()
 
-                    if logging_result:
-                        if self.print_logging_service and hasattr(self, 'current_print_session_log_dir'):
-                            self.print_logging_service.end_print(logging_result)
-                            self.update_status_message(f"Print logged: {logging_result['status']}")
+                if self.post_print_logging_var.get():
+                    # Queue the post-print dialog for the main thread to pick up safely (thread-safe pattern)
+                    self._post_print_queue.put(status_to_write)
+                else:
+                    # Write final print status file directly if popup is disabled
+                    status_file_path = os.path.join(self.current_print_session_log_dir, "print_status.txt")
+                    try:
+                        with open(status_file_path, 'w') as sf:
+                            sf.write(status_to_write)
+                        self.update_status_message(f"Print status '{status_to_write}' written to {status_file_path}")
+                    except Exception as e_stat:
+                        self.update_status_message(f"Error writing final print status: {e_stat}")
 
-                        if logging_result.get('wait_for_qc', False):
-                            self.quality_check_gate = True
-                            self.update_status_message(f"⏸️ Print {print_number} is waiting for quality check. Next print is BLOCKED.")
-                            self.win.after(100, lambda: messagebox.showinfo(
-                                "Quality Check Gating Active",
-                                f"Print {print_number} is waiting for quality check.\n\n"
-                                f"Next print start is BLOCKED until quality check is complete."
-                            ))
-                        else:
-                            self.update_status_message(f"Print {print_number} logged successfully")
-                except Exception as logging_dialog_err:
-                    self.update_status_message(f"Error in logging dialog: {logging_dialog_err}", error=True)
-
-                status_dir = self.current_print_session_log_dir
-                
-                status_file_path = os.path.join(status_dir, "print_status.txt")
-                try:
-                    with open(status_file_path, 'w') as sf:
-                        sf.write(status_to_write)
-                    self.update_status_message(f"Print status '{status_to_write}' written to {status_file_path}")
-                except Exception as e_stat:
-                    self.update_status_message(f"Error writing final print status: {e_stat}")
-
-                # Save instruction file if work of adhesion or automated logging were enabled
+            # Save instruction file if work of adhesion or automated logging were enabled
                 try:
                     should_save_instruction_file = False
                     
@@ -1863,6 +1914,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             if hasattr(self, 'b1'): self.b1.config(state=NORMAL)
             if hasattr(self, 'b10'): self.b10.config(state=NORMAL)
             if hasattr(self, 'b4'): self.b4.config(state=DISABLED)
+            self._restore_dlp_button_states()
             self.print_thread = None
 
     def set_home(self):
@@ -1888,8 +1940,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.pause_flag = False
         if hasattr(self, 'controller'):
             try:
-                # Use standardized DLP cleanup with caller attribution
-                self.cleanup_dlp_safe_state("stop_button")
+                # Use standardized DLP cleanup
+                self.cleanup_dlp_safe_state()
             except Exception as e:
                 self.update_status_message(f"Error stopping DLP sequence: {e}")
     
@@ -1934,6 +1986,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.exposure_time,  # Corresponds to exposure_time_list
                 self.thickness,      # Corresponds to thickness_list
                 self.step_speed_list,
+                self.overstep_distance_list,
                 self.step_type_list,  # This will hold the 'Acceleration' values from the file
                 self.pause_list,
                 self.intensity_list,
@@ -1964,6 +2017,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.exposure_time = []
             self.thickness = []
             self.step_speed_list = []
+            self.overstep_distance_list = []
             self.step_type_list = []
             self.pause_list = []
             self.intensity_list = []
@@ -1977,22 +2031,35 @@ Evan Jones, evanjones2026@u.northwestern.edu
             traceback.print_exc()
 
     def moveup(self):
-        self.axis.move_relative(position=float(self.t9.get())*-1, unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False,velocity=10,
-                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        try:
+            val = float(self.t9.get())
+            self.axis.move_relative(position=val*-1, unit=Units.LENGTH_MILLIMETRES,
+                                    wait_until_idle=False, velocity=10,
+                                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        except ValueError:
+            self.update_status_message("Invalid Move distance(mm) value.", error=True)
+        except Exception as e:
+            self.update_status_message(f"Move up failed: {e}", error=True)
 
     def movedown(self):
-        self.axis.move_relative(position=float(self.t9.get()), unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False,velocity=5,
-                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        try:
+            val = float(self.t9.get())
+            self.axis.move_relative(position=val, unit=Units.LENGTH_MILLIMETRES,
+                                    wait_until_idle=False, velocity=5,
+                                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        except ValueError:
+            self.update_status_message("Invalid Move distance(mm) value.", error=True)
+        except Exception as e:
+            self.update_status_message(f"Move down failed: {e}", error=True)
 
     def simple_txt(self):
         path = str(self.t1.get())
         thickness = str(self.t10.get())
         base = str(self.t11_2.get())
-        speed_um_s = str(self.t11.get())
+        time_val = str(self.t11.get())
         intensity = str(self.t14.get())
         step_speed = str(self.t16.get())
+        overstep_distance = str(self.default_overstep_microns)
         acceleration_val = str(self.t21.get())
         pause = str(self.t17.get())
         sandwich_speed = "0"
@@ -2001,53 +2068,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
             path=path, 
             thickness=thickness, 
             base=base, 
-            time=speed_um_s,
+            time=time_val, 
             intensity=intensity, 
             step_speed=step_speed, 
+            overstep_distance=overstep_distance, 
             step_type=acceleration_val, 
             pause=pause,
             sandwich_speed=sandwich_speed
         )
-
-        self._copy_print_params_to_calculator()
-        self._update_dosage_calculator()
         
         # Automatically load the generated instruction file
         self.input_directory()
-
-    @staticmethod
-    def _calibrated_power_from_speed(speed_um_s):
-        x = float(speed_um_s)
-        y = (-1.939507e-6 * x * x) + (4.869025e-3 * x) + 7.617950e-3
-        return y * 2.72
-
-    def _copy_print_params_to_calculator(self):
-        if not hasattr(self, 'calc_thickness_entry') or not hasattr(self, 'calc_speed_entry'):
-            return
-        self.calc_thickness_entry.delete(0, END)
-        self.calc_speed_entry.delete(0, END)
-        self.calc_thickness_entry.insert(END, self.t10.get().strip() if hasattr(self, 't10') else "")
-        self.calc_speed_entry.insert(END, self.t11.get().strip() if hasattr(self, 't11') else "")
-
-    def _update_dosage_calculator(self):
-        if not hasattr(self, 'calc_power_var') or not hasattr(self, 'calc_dosage_var'):
-            return
-
-        try:
-            speed_um_s = float(self.calc_speed_entry.get().strip())
-            if speed_um_s <= 1e-9:
-                raise ValueError("Speed must be greater than 0")
-
-            # Thickness is shown for context, but dosage remains thickness-invariant.
-            _ = float(self.calc_thickness_entry.get().strip())
-
-            power_mj = self._calibrated_power_from_speed(speed_um_s)
-            dosage_mj_per_um = power_mj / speed_um_s
-            self.calc_power_var.set(f"Power: {power_mj:.4f} mJ")
-            self.calc_dosage_var.set(f"Dosage: {dosage_mj_per_um:.6f} mJ/um")
-        except Exception:
-            self.calc_power_var.set("Power: -- mJ")
-            self.calc_dosage_var.set("Dosage: -- mJ/um")
     
     def _on_sandwich_mode_change(self):
         """Ensure only one sandwich mode is selected at a time."""
@@ -2163,6 +2194,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         self._sync_sensor_panel_button_states()
 
                 self.sensor_data_window_instance.sensor_window.protocol("WM_DELETE_WINDOW", _close_logging_panel)
+                self._on_projection_mode_change()
             else:
                 self.update_status_message("Error: stage not initialized. Cannot open sensor panel.", error=True)
         else:
@@ -2193,6 +2225,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         self._sync_sensor_panel_button_states()
 
                 self.sensor_monitoring_window_instance.sensor_window.protocol("WM_DELETE_WINDOW", _close_monitoring_panel)
+                self._on_projection_mode_change()
             else:
                 self.update_status_message("Error: stage not initialized. Cannot open monitoring panel.", error=True)
         else:
@@ -2226,22 +2259,30 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         self.exp_conditions_window = Toplevel(self.win)
         self.exp_conditions_window.title("Experimental Conditions")
-        self.exp_conditions_window.geometry("500x270")
+        self.exp_conditions_window.geometry("500x310")
 
-        Label(self.exp_conditions_window, text="User:").grid(row=0, column=0, padx=10, pady=8, sticky='w')
-        Label(self.exp_conditions_window, text="Membrane Type:").grid(row=1, column=0, padx=10, pady=8, sticky='w')
-        Label(self.exp_conditions_window, text="Resin:").grid(row=2, column=0, padx=10, pady=8, sticky='w')
-        Label(self.exp_conditions_window, text="Pre-print Notes:").grid(row=3, column=0, padx=10, pady=8, sticky='w')
+        # Toggle for post-print logging
+        self.chk_post_print = Checkbutton(
+            self.exp_conditions_window,
+            text="Enable Post-Print Logging & Survey",
+            variable=self.post_print_logging_var
+        )
+        self.chk_post_print.grid(row=0, column=0, columnspan=2, padx=10, pady=8, sticky='w')
+
+        Label(self.exp_conditions_window, text="User:").grid(row=1, column=0, padx=10, pady=8, sticky='w')
+        Label(self.exp_conditions_window, text="Membrane Type:").grid(row=2, column=0, padx=10, pady=8, sticky='w')
+        Label(self.exp_conditions_window, text="Resin:").grid(row=3, column=0, padx=10, pady=8, sticky='w')
+        Label(self.exp_conditions_window, text="Pre-print Notes:").grid(row=4, column=0, padx=10, pady=8, sticky='w')
 
         self.exp_user_entry = Entry(self.exp_conditions_window, width=40)
         self.exp_membrane_entry = Entry(self.exp_conditions_window, width=40)
         self.exp_resin_entry = Entry(self.exp_conditions_window, width=40)
         self.exp_notes_entry = Entry(self.exp_conditions_window, width=40)
 
-        self.exp_user_entry.grid(row=0, column=1, padx=10, pady=8)
-        self.exp_membrane_entry.grid(row=1, column=1, padx=10, pady=8)
-        self.exp_resin_entry.grid(row=2, column=1, padx=10, pady=8)
-        self.exp_notes_entry.grid(row=3, column=1, padx=10, pady=8)
+        self.exp_user_entry.grid(row=1, column=1, padx=10, pady=8)
+        self.exp_membrane_entry.grid(row=2, column=1, padx=10, pady=8)
+        self.exp_resin_entry.grid(row=3, column=1, padx=10, pady=8)
+        self.exp_notes_entry.grid(row=4, column=1, padx=10, pady=8)
 
         self.exp_user_entry.insert(0, self.experimental_conditions.get('user', 'N/A'))
         self.exp_membrane_entry.insert(0, self.experimental_conditions.get('membrane', 'N/A'))
@@ -2258,8 +2299,89 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.update_status_message("Experimental conditions saved")
             self.exp_conditions_window.destroy()
 
-        Button(self.exp_conditions_window, text="Save", command=_save_and_close).grid(row=4, column=0, padx=10, pady=15, sticky='w')
-        Button(self.exp_conditions_window, text="Close", command=self.exp_conditions_window.destroy).grid(row=4, column=1, padx=10, pady=15, sticky='e')
+        Button(self.exp_conditions_window, text="Save", command=_save_and_close).grid(row=5, column=0, padx=10, pady=15, sticky='w')
+        Button(self.exp_conditions_window, text="Close", command=self.exp_conditions_window.destroy).grid(row=5, column=1, padx=10, pady=15, sticky='e')
+
+    def _poll_post_print_queue(self):
+        """Called once on main thread startup; polls the queue for completed prints."""
+        try:
+            status_to_write = self._post_print_queue.get_nowait()
+            self._open_post_print_dialog(status_to_write)
+        except Exception:
+            pass
+        # Reschedule poll every 500ms for the lifetime of the app
+        self.win.after(500, self._poll_post_print_queue)
+
+    def show_post_print_dialog(self, status_to_write):
+        """Compatibility shim - no longer called from background thread."""
+        self._open_post_print_dialog(status_to_write)
+
+    def _open_post_print_dialog(self, status_to_write):
+        """Displays the post-print dialog. Must be called from the main GUI thread."""
+        try:
+            print_number = getattr(self, 'current_print_number', 'Unknown')
+            logging_dialog = LoggingCheckWindow_VideoPattern(
+                self.win,
+                print_number,
+                on_close_callback=None
+            )
+            # Bind window destruction event to handle saving the result
+            def on_destroy(event):
+                if event.widget == logging_dialog.window:
+                    self.on_post_print_dialog_closed(logging_dialog.result, status_to_write)
+
+            logging_dialog.window.bind("<Destroy>", on_destroy)
+            self.update_status_message(f"Post-print logging dialog opened for Print {print_number}")
+        except Exception as e:
+            self.update_status_message(f"Error showing logging dialog: {e}", error=True)
+
+    def on_post_print_dialog_closed(self, logging_result, status_to_write):
+        """Callback executed on the main GUI thread after the logging dialog is closed."""
+        try:
+            print_number = getattr(self, 'current_print_number', 'Unknown')
+            if logging_result:
+                if self.print_logging_service and hasattr(self, 'current_print_session_log_dir') and self.current_print_session_log_dir:
+                    self.print_logging_service.end_print(logging_result)
+                    self.update_status_message(f"Print logged: {logging_result['status']}")
+
+                if logging_result.get('wait_for_qc', False):
+                    self.quality_check_gate = True
+                    self.update_status_message(f"?? Print {print_number} is waiting for quality check. Next print is BLOCKED.")
+                    messagebox.showinfo(
+                        "Quality Check Gating Active",
+                        f"Print {print_number} is waiting for quality check.\n\n"
+                        f"Next print start is BLOCKED until quality check is complete."
+                    )
+                else:
+                    self.update_status_message(f"Print {print_number} logged successfully")
+            else:
+                self.update_status_message("Post-print dialog closed without logging data.")
+
+            # Write final print status file
+            if hasattr(self, 'current_print_session_log_dir') and self.current_print_session_log_dir:
+                status_file_path = os.path.join(self.current_print_session_log_dir, "print_status.txt")
+                try:
+                    with open(status_file_path, 'w') as sf:
+                        sf.write(status_to_write)
+                    self.update_status_message(f"Print status '{status_to_write}' written to {status_file_path}")
+                except Exception as e_stat:
+                    self.update_status_message(f"Error writing final print status: {e_stat}", error=True)
+
+        except Exception as e:
+            self.update_status_message(f"Error handling post-print dialog close: {e}", error=True)
+
+    def open_ramped_cylinder_window(self):
+        """Open or show the Ramped Cylinder Generator window."""
+        from support_modules.image_modification.ramped_cylinder import RampedCylinderWindow
+        if (not hasattr(self, 'ramped_cylinder_window_instance') or
+                self.ramped_cylinder_window_instance is None or
+                not (hasattr(self.ramped_cylinder_window_instance, 'window') and
+                     self.ramped_cylinder_window_instance.window.winfo_exists())):
+            self.ramped_cylinder_window_instance = RampedCylinderWindow(
+                self.win, self.update_status_message, self)
+            self.update_status_message("Ramped Cylinder Generator window opened")
+        else:
+            self.ramped_cylinder_window_instance.window.lift()
 
     def open_image_modification_window(self):
         """Open or show the Image Modification window."""
@@ -2291,26 +2413,126 @@ Evan Jones, evanjones2026@u.northwestern.edu
         else:
             messagebox.showerror("Sandwich Failed", message)
         
+    def _on_projection_mode_change(self):
+        mode = self.projection_mode_var.get()
+        if mode == "video_pattern":
+            self.lbl_warning_pm.pack_forget()
+            # Apply Dark Theme
+            win_bg = "#1A1B26"
+            panel_bg = "#2E1C1C" # Dark red panel bg to show we are in different mode
+            fg_color = "#E2E8F0"
+            entry_bg = "#24283B"
+            entry_fg = "#C0CAF5"
+        else:
+            self.lbl_warning_pm.pack(anchor=W, padx=10, pady=2)
+            # Apply Light Theme
+            win_bg = self.default_win_bg
+            panel_bg = "#FFB3B3" # Default pastel red
+            fg_color = "black"
+            entry_bg = "white"
+            entry_fg = "black"
+
+        self.win.configure(bg=win_bg)
+        self.panel_bg = panel_bg
+
+        # Target specific canvas background colors
+        if hasattr(self, 'canvas1'):
+            self.canvas1.configure(bg=panel_bg)
+        if hasattr(self, 'canvas2'):
+            self.canvas2.configure(bg=panel_bg)
+
+        # Helper to update colors of various tk and ttk widgets
+        def update_widget(widget):
+            try:
+                w_class = widget.winfo_class()
+                # Special cases
+                if widget == getattr(self, 't8', None):
+                    widget.configure(background=entry_bg, foreground=entry_fg)
+                elif widget == getattr(self, 'lbl0', None):
+                    widget.configure(bg=win_bg)
+                elif widget == getattr(self, 'lbl_warning_pm', None):
+                    widget.configure(bg=win_bg)
+                elif widget in [
+                    getattr(self, 'lbl10', None),
+                    getattr(self, 'lbl11', None),
+                    getattr(self, 'lbl11_2', None),
+                    getattr(self, 'lbl16', None),
+                    getattr(self, 'lbl17', None),
+                    getattr(self, 'lbl21', None)
+                ]:
+                    if w_class.startswith('T'):
+                        widget.configure(background=panel_bg, foreground=fg_color)
+                    else:
+                        widget.configure(bg=panel_bg, fg=fg_color)
+                else:
+                    if w_class in ['Label', 'tk.Label', 'TLabel']:
+                        if w_class.startswith('T'):
+                            widget.configure(background=win_bg, foreground=fg_color)
+                        else:
+                            widget.configure(bg=win_bg, fg=fg_color)
+                    elif w_class in ['Entry', 'TEntry']:
+                        if not w_class.startswith('T'):
+                            widget.configure(bg=entry_bg, fg=entry_fg, insertbackground=fg_color)
+                    elif w_class in ['Canvas']:
+                        widget.configure(bg=panel_bg)
+                    elif w_class in ['Labelframe', 'TLabelframe', 'LabelFrame']:
+                        if not w_class.startswith('T'):
+                            widget.configure(bg=win_bg, fg=fg_color)
+                    elif w_class in ['Radiobutton', 'TRadiobutton']:
+                        if not w_class.startswith('T'):
+                            widget.configure(bg=win_bg, fg=fg_color, selectcolor=win_bg, activebackground=win_bg, activeforeground=fg_color)
+                    elif w_class in ['Checkbutton', 'TCheckbutton']:
+                        if not w_class.startswith('T'):
+                            widget.configure(bg=win_bg, fg=fg_color, selectcolor=win_bg, activebackground=win_bg, activeforeground=fg_color)
+            except Exception:
+                pass
+
+            for child in widget.winfo_children():
+                update_widget(child)
+
+        update_widget(self.win)
+
+    def _restore_dlp_button_states(self):
+        if hasattr(self, 'chk_proj_mode'): self.chk_proj_mode.config(state=NORMAL)
+        if hasattr(self, 'b_disconnect_dlp') and hasattr(self, 'b_reconnect_dlp'):
+            if hasattr(self, 'controller') and self.controller is not None:
+                self.b_disconnect_dlp.config(state=NORMAL)
+                self.b_reconnect_dlp.config(state=DISABLED)
+            else:
+                self.b_disconnect_dlp.config(state=DISABLED)
+                self.b_reconnect_dlp.config(state=NORMAL)
+
+    def disconnect_dlp(self):
+        """Disconnect DLP for power cycling."""
+        try:
+            if hasattr(self, 'controller') and self.controller is not None:
+                self.cleanup_dlp_safe_state()
+                # Do not call standby() to avoid lockup!
+                del self.controller
+                self.update_status_message("DLP disconnected. You can now power cycle the light engine.")
+                self._restore_dlp_button_states()
+            else:
+                self.update_status_message("DLP not connected", error=True)
+        except Exception as e:
+            self.update_status_message(f"Error disconnecting DLP: {e}", error=True)
+
+    def reconnect_dlp(self):
+        """Reconnect to DLP after power cycling."""
+        try:
+            self.controller = pycrafter9000.dmd()
+            self._enter_dark_pattern_idle()
+            self.update_status_message("DLP reconnected: dark idle mode (0x03, power=0)")
+            self._restore_dlp_button_states()
+        except Exception as e:
+            self.update_status_message(f"Error reconnecting DLP: {e}", error=True)
+
     def on_closing(self):
-        self.lifecycle_logger.log_gui_close_start()
-        
         if self.sandwich_thread and self.sandwich_thread.is_alive():
             self.update_status_message("Attempting to stop Sandwich routine...")
             self.sandwich_thread.stop()
             self.sandwich_thread.join(timeout=2.0)
             if self.sandwich_thread.is_alive():
                 print("Warning: Sandwich thread did not terminate cleanly.")
-
-        # Attempt to join print thread before final cleanup
-        if hasattr(self, 'print_thread') and self.print_thread and self.print_thread.is_alive():
-            self.lifecycle_logger.log_print_thread_join_attempt(timeout_sec=5.0)
-            self.flag = True  # Signal thread to stop
-            self.print_thread.join(timeout=5.0)
-            if self.print_thread.is_alive():
-                self.lifecycle_logger.log_print_thread_join_result(success=False, timeout_sec=5.0)
-                self.update_status_message("Warning: Print thread did not terminate cleanly.")
-            else:
-                self.lifecycle_logger.log_print_thread_join_result(success=True, timeout_sec=5.0)
 
         if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
             self.sensor_data_window_instance.on_sensor_window_close()
@@ -2320,46 +2542,19 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         if hasattr(self, 'axis') and self.axis:
             try:
-                self.lifecycle_logger.log_event("stage_stop_start")
                 self.axis.stop()
-                self.lifecycle_logger.log_stage_command("stop", result="success")
-            except Exception as e:
-                self.lifecycle_logger.log_stage_command("stop", result="exception", exception=e)
-                print(f"Error stopping A3200 connection: {e}")
-            
-            try:
-                self.lifecycle_logger.log_event("stage_disconnect_start")
                 self.axis.disconnect()
-                self.lifecycle_logger.log_stage_command("disconnect", result="success")
             except Exception as e:
-                self.lifecycle_logger.log_stage_command("disconnect", result="exception", exception=e)
-                print(f"Error closing A3200 connection: {e}")
+                print(f"Error stopping/closing A3200 connection: {e}")
         
-        if hasattr(self, 'controller'):
+        if hasattr(self, 'controller') and self.controller is not None:
             try:
-                self.cleanup_dlp_safe_state("on_closing")
-                self.controller.standby()
-                self.lifecycle_logger.log_dlp_command("standby", result="success")
+                self.cleanup_dlp_safe_state()
+                # Do not call standby() to avoid lockup!
+                del self.controller
             except Exception as e:
-                self.lifecycle_logger.log_dlp_command("standby", result="exception", exception=e)
                 print(f"Error shutting down DLP: {e}")
 
-        # Export lifecycle log before closing
-        try:
-            log_path = self.lifecycle_logger.export_session_log()
-            summary = self.lifecycle_logger.get_summary()
-            print(f"\n[Shutdown] Lifecycle log exported to: {log_path}")
-            print(f"[Shutdown] Summary: {summary}")
-        except Exception as e:
-            print(f"[Shutdown] Failed to export lifecycle log: {e}")
-            
-        # Ensure any residual OpenCV windows are fully destroyed before the main GUI exits
-        try:
-            cv2.destroyAllWindows()
-            cv2.waitKey(1)
-        except Exception:
-            pass
-        
         self.win.destroy()
 
     def _trigger_post_print_analysis(self):
@@ -2425,4 +2620,6 @@ if __name__ == '__main__':
     if hasattr(mywin, 'default_window_geometry'):
         window.geometry(mywin.default_window_geometry)
     window.protocol("WM_DELETE_WINDOW", mywin.on_closing)
+    # Start the thread-safe post-print dialog queue poller on the main thread
+    mywin._poll_post_print_queue()
     window.mainloop()
