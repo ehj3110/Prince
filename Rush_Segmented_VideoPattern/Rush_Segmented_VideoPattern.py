@@ -1876,23 +1876,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     except Exception as e_stat:
                         self.update_status_message(f"Error writing final print status: {e_stat}")
 
-            # Save instruction file if work of adhesion or automated logging were enabled
+            # Save instruction file unconditionally if a log directory exists (meaning any logging was enabled)
+            if hasattr(self, 'current_print_session_log_dir') and self.current_print_session_log_dir:
                 try:
-                    should_save_instruction_file = False
-                    
-                    # Check if work of adhesion recording was enabled
-                    if (hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance and 
-                        hasattr(self.sensor_data_window_instance, 'record_work_var') and 
-                        self.sensor_data_window_instance.record_work_var.get()):
-                        should_save_instruction_file = True
-                    
-                    # Check if automated logging was enabled
-                    if (hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance and
-                        hasattr(self.sensor_data_window_instance, 'auto_log_enabled_var') and
-                        self.sensor_data_window_instance.auto_log_enabled_var.get()):
-                        should_save_instruction_file = True
-                    
-                    if should_save_instruction_file and hasattr(self, 'active_instruction_file_path') and self.active_instruction_file_path:
+                    if hasattr(self, 'active_instruction_file_path') and self.active_instruction_file_path:
                         if os.path.exists(self.active_instruction_file_path):
                             instruction_filename = os.path.basename(self.active_instruction_file_path)
                             saved_instruction_path = os.path.join(self.current_print_session_log_dir, instruction_filename)
@@ -1900,7 +1887,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             self.update_status_message(f"Instruction file saved: {instruction_filename}")
                         else:
                             self.update_status_message("Warning: Active instruction file not found, could not save copy.")
-                    
                 except Exception as e_instr:
                     self.update_status_message(f"Error saving instruction file: {e_instr}")
             
