@@ -46,7 +46,7 @@ except ImportError:
 PREVIEW_MAX_SIZE = (640, 400)  # Full image downscaled to fit; preserves aspect ratio
 CONE_OUTPUT_WIDTH = 2560
 CONE_OUTPUT_HEIGHT = 1600
-CONE_UM_PER_PIXEL = 7.607
+CONE_UM_PER_PIXEL = 4.005
 
 
 process_single_for_preview = _im_processor.process_single_for_preview

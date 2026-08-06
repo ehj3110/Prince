@@ -9,7 +9,7 @@ Complete verification of all new logging functions added yesterday to ensure the
 
 ### 1. Cross-Sectional Area Calculation ✅ PASS
 **Functionality:** Calculate cross-sectional area from PNG layer images  
-**Method:** Count white pixels (≥250 threshold) and multiply by pixel area (0.007607mm)²  
+**Method:** Count white pixels (≥250 threshold) and multiply by pixel area (0.004005mm)²  
 **Results:**
 - Layer 1 (70px radius): 0.8896mm² - **Perfect match**
 - Layer 2 (90px radius): 1.4724mm² - **Perfect match**
@@ -279,7 +279,7 @@ def start_monitoring_for_layer(self, layer_number, z_peel_peak=None, z_return_po
 **Check:**
 1. Image resolution is 2560×1600 (DLP9000 native)
 2. Images are binary (0 or 255)
-3. Pixel size constant is correct (0.007607mm = 7.607µm)
+3. Pixel size constant is correct (0.004005mm = 4.005µm)
 
 **Debug:**
 ```python

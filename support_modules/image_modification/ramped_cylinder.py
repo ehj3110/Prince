@@ -18,7 +18,7 @@ import numpy as np
 # Resolution and calibration parameters matching the system
 CONE_OUTPUT_WIDTH = 2560
 CONE_OUTPUT_HEIGHT = 1600
-CONE_UM_PER_PIXEL = 7.607
+CONE_UM_PER_PIXEL = 4.005
 
 # Color Palette (Tokyo Night Theme)
 COLOR_BG = "#1A1B26"

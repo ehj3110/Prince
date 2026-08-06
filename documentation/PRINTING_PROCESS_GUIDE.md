@@ -1106,7 +1106,7 @@ image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
 white_pixel_count = np.sum(image == 255)
 
 # Calculate area
-PIXEL_SIZE_MM = 0.007607  # mm per pixel (calibrated)
+PIXEL_SIZE_MM = 0.004005  # mm per pixel (calibrated)
 PIXEL_AREA_MM2 = PIXEL_SIZE_MM ** 2
 area_mm2 = white_pixel_count * PIXEL_AREA_MM2
 ```

@@ -7,15 +7,15 @@ Added automatic cross-sectional area calculation and logging to the work of adhe
 November 11, 2025
 
 ## Hardware Specifications
-- **Pixel Size**: 0.007607 mm × 0.007607 mm (square pixels)
-- **Pixel Area**: 0.00005786 mm² per pixel
+- **Pixel Size**: 0.004005 mm × 0.004005 mm (square pixels)
+- **Pixel Area**: 0.00001604 mm² per pixel
 - **Location**: Hardcoded in `PeakForceLogger.py` as class constants
 
 ## Changes Made
 
 ### 1. PeakForceLogger.py
 **Additions:**
-- `PIXEL_SIZE_MM = 0.007607` - Hardware-specific pixel dimension
+- `PIXEL_SIZE_MM = 0.004005` - Hardware-specific pixel dimension
 - `PIXEL_AREA_MM2 = PIXEL_SIZE_MM ** 2` - Area of one pixel
 - `current_cross_sectional_area_mm2` - Instance variable to track area per layer
 - `_calculate_cross_sectional_area(image_path)` - Method to count white pixels and calculate area

@@ -36,7 +36,7 @@ def create_test_png_images(temp_dir, num_layers=5):
     areas_mm2 = []
     
     # Pixel size from PeakForceLogger
-    PIXEL_SIZE_MM = 0.007607
+    PIXEL_SIZE_MM = 0.004005
     PIXEL_AREA_MM2 = PIXEL_SIZE_MM ** 2
     
     for i in range(1, num_layers + 1):

@@ -1542,8 +1542,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                                     white_pixel_count = np.sum(img >= 250)
                                                     
                                                     if white_pixel_count > 0:
-                                                        # Calculate area using 7.607µm pixel size (matches PeakForceLogger)
-                                                        PIXEL_SIZE_MM = 0.007607  # 7.607µm = 0.007607mm
+                                                        # Calculate area using 4.005µm pixel size (matches PeakForceLogger)
+                                                        PIXEL_SIZE_MM = 0.004005  # 4.005µm = 0.004005mm
                                                         PIXEL_AREA_MM2 = PIXEL_SIZE_MM ** 2
                                                         current_area_mm2 = white_pixel_count * PIXEL_AREA_MM2
                                                         self.update_status_message(f"L{current_layer_num_for_display}: Area calculated from image: {current_area_mm2:.2f} mm²")
