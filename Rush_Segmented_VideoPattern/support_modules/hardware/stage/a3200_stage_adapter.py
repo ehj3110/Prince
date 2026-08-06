@@ -2,6 +2,7 @@
 
 import logging
 import socket
+import threading
 import time
 from typing import Optional
 
@@ -17,11 +18,15 @@ class A3200StageAdapter:
         self.axis_name = axis_name
         self._socket: Optional[socket.socket] = None
         self._connected = False
+        # Shared socket must be serialized across print thread and live-readout thread.
+        self._io_lock = threading.RLock()
 
     def connect(self) -> None:
         if self._connected:
             return
         self._socket = socket.create_connection((self.host, self.port), timeout=10.0)
+        # Keep a generous read timeout for long controller responses while waiting-idle.
+        self._socket.settimeout(30.0)
         self._connected = True
         self._prime_controller()
         logging.info("A3200 stage connected on %s:%s", self.host, self.port)
@@ -109,8 +114,18 @@ class A3200StageAdapter:
     def wait_until_idle(self) -> None:
         if not self._connected:
             return
+        timeout_retries = 0
         while True:
-            status = self._write_read(f"AXISSTATUS({self.axis_name}, DATAITEM_AxisStatus)")
+            try:
+                status = self._write_read(f"AXISSTATUS({self.axis_name}, DATAITEM_AxisStatus)")
+                timeout_retries = 0
+            except TimeoutError:
+                timeout_retries += 1
+                # Transient timeouts can happen under heavy concurrent polling; retry a few times.
+                if timeout_retries <= 3:
+                    logging.warning("A3200 wait_until_idle timeout (%s/3), retrying", timeout_retries)
+                    continue
+                raise
             if status == self.IDLE_STATUS_CODE:
                 return
             time.sleep(0.01)
@@ -170,8 +185,9 @@ class A3200StageAdapter:
             raise RuntimeError("A3200 stage is not connected.")
         if not command.endswith("\n"):
             command = f"{command}\n"
-        self._socket.sendall(command.encode("ascii"))
-        response = self._socket.recv(4096).decode("ascii", errors="ignore").strip()
+        with self._io_lock:
+            self._socket.sendall(command.encode("ascii"))
+            response = self._socket.recv(4096).decode("ascii", errors="ignore").strip()
         if not response:
             return ""
         code = response[0]

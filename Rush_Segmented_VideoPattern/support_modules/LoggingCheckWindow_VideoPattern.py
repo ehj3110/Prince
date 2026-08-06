@@ -45,7 +45,7 @@ class LoggingCheckWindow_VideoPattern:
         # Create top-level window
         self.window = tk.Toplevel(parent_window)
         self.window.title(f"Print - {print_number}")
-        self.window.geometry("500x400")
+        self.window.geometry("500x390")
         self.window.protocol("WM_DELETE_WINDOW", self._on_close_request)
         
         # Make modal - grab focus
@@ -113,22 +113,18 @@ class LoggingCheckWindow_VideoPattern:
         scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
         self.notes_text.config(yscrollcommand=scrollbar.set)
         
-        # Wait for quality check checkbox
-        qc_frame = ttk.LabelFrame(main_frame, text="Quality Check", padding="10")
-        qc_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        qc_check = ttk.Checkbutton(qc_frame, text="Wait for Quality Check (blocks next print)",
-                                   variable=self.wait_for_qc_var)
-        qc_check.grid(row=0, column=0, sticky=tk.W)
-        
         # Buttons
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=6, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
-        
-        save_button = ttk.Button(button_frame, text="Close and Save", 
+        button_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
+
+        save_button = ttk.Button(button_frame, text="Save Log",
                                 command=self._on_save)
         save_button.pack(side=tk.LEFT, padx=5)
-        
+
+        cancel_button = ttk.Button(button_frame, text="Cancel",
+                                  command=self._on_cancel)
+        cancel_button.pack(side=tk.LEFT, padx=5)
+
         # Bind Enter key to close
         self.window.bind('<Return>', lambda e: self._on_save())
     
@@ -160,14 +156,18 @@ class LoggingCheckWindow_VideoPattern:
         # Close window
         self.window.destroy()
     
+    def _on_cancel(self):
+        """Handle cancel button click."""
+        self.result = None
+        self.window.destroy()
+
     def _on_close_request(self):
         """Handle window close request."""
-        # Don't allow closing without saving
         import tkinter.messagebox as messagebox
-        if messagebox.askyesno("Close Without Saving?", 
+        if messagebox.askyesno("Close Without Saving?",
                               "Close without saving logging data?"):
-            self.window.destroy()
-    
+            self._on_cancel()
+
     def wait_for_result(self):
         """
         Wait for user to complete the dialog and return result.

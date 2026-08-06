@@ -102,6 +102,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.lbl_current_force = Label(readout_content_frame, text="Force: --- N", font=readout_font)
         self.lbl_current_force.pack(side=LEFT, padx=(20, 0))
 
+        self._perf_status_var = StringVar(value="Perf: idle")
+        self.lbl_perf_status = Label(outer_readout_frame, textvariable=self._perf_status_var, anchor=W, font=control_box_font)
+        self.lbl_perf_status.pack(side=TOP, fill=X, pady=(5, 0))
+
         # --- Plot Setup ---
         self.figure = Figure(figsize=(6, 3), dpi=100)
         self.ax = self.figure.add_subplot(111)
@@ -265,6 +269,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.is_manual_recording_active = False # Specifically for manual button state
         self.plot_start_time = None
         self.last_y_rescale_time = 0
+        self._last_plot_draw_time = 0
+        self._min_plot_draw_interval_s = 0.08
+        self._last_queue_warning_time = 0
+        self._perf_last_report_time = time.time()
+        self._perf_frame_count = 0
+        self._perf_target_report_interval_s = 0.5
 
         self.date_specific_log_dir_for_windows_file = None # ADDED: To store the YYYY-MM-DD log path
         self.current_logging_windows_file = None # Ensure this is also initialized, though summary says it was
@@ -277,7 +287,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         # --- For Persistent Readouts ---
         self.persistent_readout_active = False
-        self.persistent_readout_update_interval_ms = 500 # Update every 500ms
+        self.persistent_readout_update_interval_ms = 150 # Update every 150ms
+        self._latest_position_mm = None
+        self._position_poll_interval_s = 0.08
+        self._position_poll_stop_event = threading.Event()
+        self._position_poll_thread = None
 
         # --- Automated Logging Setup ---
         self.automated_layer_logger = None
@@ -355,8 +369,13 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 # Create automated PeakForceLogger for this specific print session
                 automated_csv_path = os.path.join(log_directory, "automated_work_of_adhesion.csv")
 
-                # Create the automated logger with unified corrected calculator
-                if PeakForceLogger is not None:
+                # Create the automated logger with unified corrected calculator if not continuous print
+                is_continuous = False
+                ref = self.prince_main_app_ref
+                if ref and hasattr(ref, 'print_mode') and ref.print_mode == 'continuous':
+                    is_continuous = True
+
+                if not is_continuous and PeakForceLogger is not None:
                     self.automated_peak_force_logger = PeakForceLogger(
                         output_csv_filepath=automated_csv_path,
                         is_manual_log=False,  # This is automated logging
@@ -366,11 +385,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     self.update_main_status(f"Automated work of adhesion logging configured. Output: {automated_csv_path}")
                 else:
                     self.automated_peak_force_logger = None
-                    missing_reason = str(PEAK_FORCE_IMPORT_ERROR) if PEAK_FORCE_IMPORT_ERROR else "unknown error"
-                    self.update_main_status(
-                        f"Automated work of adhesion logging unavailable: {missing_reason}",
-                        warning=True
-                    )
+                    if is_continuous:
+                        self.update_main_status("Continuous print mode: peak force/adhesion metrics post-processing is disabled (logging raw data only).")
+                    else:
+                        missing_reason = str(PEAK_FORCE_IMPORT_ERROR) if PEAK_FORCE_IMPORT_ERROR else "unknown error"
+                        self.update_main_status(
+                            f"Automated work of adhesion logging unavailable: {missing_reason}",
+                            warning=True
+                        )
                 
                 # Note: Monitoring will start automatically when the first layer begins in the print loop
                 # No need to pre-start monitoring here to avoid duplicate layer 1 entries
@@ -655,7 +677,21 @@ Evan Jones, evanjones2026@u.northwestern.edu
         """Starts a loop to update non-plot readouts like current position/force labels."""
         if not hasattr(self, 'persistent_readout_active') or not self.persistent_readout_active:
             self.persistent_readout_active = True
+            self._position_poll_stop_event.clear()
+            if self._position_poll_thread is None or not self._position_poll_thread.is_alive():
+                self._position_poll_thread = threading.Thread(target=self._position_poll_loop, daemon=True)
+                self._position_poll_thread.start()
             self._update_persistent_readouts() # Start the update loop
+
+    def _position_poll_loop(self):
+        """Poll stage position in a background thread so Tk's event loop never blocks on hardware I/O."""
+        while not self._position_poll_stop_event.is_set():
+            try:
+                if hasattr(self, 'zaber_axis') and self.zaber_axis:
+                    self._latest_position_mm = self.zaber_axis.get_position(Units.LENGTH_MILLIMETRES)
+            except Exception as e:
+                print(f"Error polling position in background: {e}")
+            self._position_poll_stop_event.wait(self._position_poll_interval_s)
 
     def _update_persistent_readouts(self):
         """Periodically updates the non-plot display elements (current position, force)."""
@@ -663,11 +699,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
             return # Stop if flag is false or window is destroyed
 
         try:
-            # Update position readout
-            if hasattr(self, 'zaber_axis') and self.zaber_axis:
-                current_pos_mm = self.zaber_axis.get_position(Units.LENGTH_MILLIMETRES)
-                if hasattr(self, 'lbl_current_position'):
-                    self.lbl_current_position.config(text=f"Position: {current_pos_mm:.4f} mm")
+            current_pos_mm = self._latest_position_mm
+            if isinstance(current_pos_mm, (int, float)) and hasattr(self, 'lbl_current_position'):
+                self.lbl_current_position.config(text=f"Position: {current_pos_mm:.4f} mm")
             
             # Force readout is updated by ForceGaugeManager's own loop via lbl_current_force
 
@@ -681,6 +715,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
     def _stop_persistent_readouts(self):
         """Stops the loop that updates non-plot readouts."""
         self.persistent_readout_active = False
+        self._position_poll_stop_event.set()
+        if self._position_poll_thread and self._position_poll_thread.is_alive():
+            self._position_poll_thread.join(timeout=0.5)
         self.update_main_status("Persistent readouts stopped.")
 
 
@@ -883,7 +920,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
     def update_calibration_status_for_main_app(self, status):
         """Called by ForceGaugeManager to update calibration status."""
         self.force_gauge_is_calibrated = status
-        if self.prince_main_app_ref:
+        if self.prince_main_app_ref and hasattr(self.prince_main_app_ref, 'update_auto_home_button_state'):
             self.prince_main_app_ref.update_auto_home_button_state()
 
     def is_force_gauge_calibrated_internally(self):
@@ -980,28 +1017,35 @@ Evan Jones, evanjones2026@u.northwestern.edu
         print("Live readout stopped.")
 
     def update_plot(self):
+        plot_loop_start = time.perf_counter()
         try:
             new_data_processed = False
+            rendered_points = 0
             # Absolute timestamps from the queue
             current_queue_timestamps = []
             current_queue_positions = []
             current_queue_forces = []
 
             # Limit queue processing to prevent GUI blocking
-            MAX_QUEUE_ITEMS_PER_CYCLE = 100
+            MAX_QUEUE_ITEMS_PER_CYCLE = 450
             items_processed = 0
             
             # Check queue size and warn if it's growing too large
             queue_size = self.position_plot_queue.qsize()
             if queue_size > 1000:
-                print(f"Warning: Position plot queue is large ({queue_size} items). GUI may slow down.")
+                now = time.time()
+                if now - self._last_queue_warning_time > 1.0:
+                    print(f"Warning: Position plot queue is large ({queue_size} items). GUI may slow down.")
+                    self._last_queue_warning_time = now
                 # Aggressively drain if queue is very large
                 if queue_size > 5000:
                     drained = 0
                     while not self.position_plot_queue.empty() and drained < queue_size - 1000:
                         self.position_plot_queue.get_nowait()
                         drained += 1
-                    print(f"Drained {drained} old data points from queue to prevent freeze.")
+                    if now - self._last_queue_warning_time > 1.0:
+                        print(f"Drained {drained} old data points from queue to prevent freeze.")
+                        self._last_queue_warning_time = now
 
             while not self.position_plot_queue.empty() and items_processed < MAX_QUEUE_ITEMS_PER_CYCLE:
                 time_stamp, position, force = self.position_plot_queue.get_nowait()
@@ -1034,15 +1078,26 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 current_plot_y_pos = self.plot_data_y_position[-min_len:] if min_len > 0 else []
                 current_plot_y_force = self.plot_data_y_force[-min_len:] if min_len > 0 else []
 
+                if min_len > 3000:
+                    keep_tail = 1200
+                    head_end = max(0, min_len - keep_tail)
+                    if head_end > 0:
+                        stride = max(2, head_end // 1800)
+                        current_plot_x = current_plot_x[:head_end:stride] + current_plot_x[head_end:]
+                        current_plot_y_pos = current_plot_y_pos[:head_end:stride] + current_plot_y_pos[head_end:]
+                        current_plot_y_force = current_plot_y_force[:head_end:stride] + current_plot_y_force[head_end:]
+
+                rendered_points = len(current_plot_x)
+
                 self.line_position.set_data(current_plot_x, current_plot_y_pos)
                 self.line_force.set_data(current_plot_x, current_plot_y_force)
 
                 self.ax.relim()
                 self.ax2.relim()
 
-                # Full autoscale every 100ms (10 times per second)
+                # Full autoscale at a moderate cadence to reduce redraw overhead.
                 current_time_for_rescale = time.time()
-                if current_time_for_rescale - self.last_y_rescale_time >= 0.1: 
+                if current_time_for_rescale - self.last_y_rescale_time >= 0.5:
                     self.ax.autoscale_view(True, True, True) # Full rescale X and Y
                     self.ax2.autoscale_view(True, True, True) # Full rescale for force axis too
                     self.last_y_rescale_time = current_time_for_rescale # Reset timer
@@ -1056,7 +1111,22 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     coll.remove() # Correctly remove the collection
                 self._shading.clear()
 
-                self.canvas.draw_idle() # Use draw_idle for better performance
+                draw_due = (current_time_for_rescale - self._last_plot_draw_time) >= self._min_plot_draw_interval_s
+                if draw_due or queue_size > 1000:
+                    self.canvas.draw_idle() # Use draw_idle for better performance
+                    self._last_plot_draw_time = current_time_for_rescale
+
+                self._perf_frame_count += 1
+                report_elapsed = current_time_for_rescale - self._perf_last_report_time
+                if report_elapsed >= self._perf_target_report_interval_s:
+                    fps = self._perf_frame_count / report_elapsed if report_elapsed > 0 else 0.0
+                    loop_ms = (time.perf_counter() - plot_loop_start) * 1000.0
+                    if hasattr(self, 'lbl_perf_status') and self.lbl_perf_status.winfo_exists():
+                        self._perf_status_var.set(
+                            f"Perf: q={queue_size} proc={items_processed} render={rendered_points} loop={loop_ms:.1f}ms fps={fps:.1f}"
+                        )
+                    self._perf_last_report_time = current_time_for_rescale
+                    self._perf_frame_count = 0
 
         except queue.Empty:
             pass # It's normal for the queue to be empty sometimes
@@ -1070,7 +1140,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     sampling_rate = self._get_sampling_rate_ms()
                 except ValueError:
                     sampling_rate = 10
-                self.sensor_window.after(max(50, sampling_rate // 2), self.update_plot) # Dynamic update rate, min 50ms for GUI
+                self.sensor_window.after(max(30, sampling_rate // 3), self.update_plot) # Dynamic update rate, min 30ms for smoother GUI
     
     def on_record_work_checkbox(self):
         """Handles the 'Record Work of Adhesion' checkbox state change."""

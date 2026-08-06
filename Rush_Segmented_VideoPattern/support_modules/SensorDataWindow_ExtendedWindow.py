@@ -72,6 +72,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.lbl_current_force = Label(readout_content_frame, text="Force: --- N", font=readout_font)
         self.lbl_current_force.pack(side=LEFT, padx=(20, 0))
 
+        self._perf_status_var = StringVar(value="Perf: idle")
+        self.lbl_perf_status = Label(outer_readout_frame, textvariable=self._perf_status_var, anchor=W, font=control_box_font)
+        self.lbl_perf_status.pack(side=TOP, fill=X, pady=(5, 0))
+
         self.figure = Figure(figsize=(6, 3), dpi=100)
         self.ax = self.figure.add_subplot(111)
         self.ax2 = self.ax.twinx()
@@ -161,6 +165,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.is_live_readout_enabled = False
         self.plot_start_time = None
         self.last_y_rescale_time = 0
+        self._last_plot_draw_time = 0
+        self._min_plot_draw_interval_s = 0.08
+        self._last_queue_warning_time = 0
+        self._perf_last_report_time = time.time()
+        self._perf_frame_count = 0
+        self._perf_target_report_interval_s = 0.5
 
         self.position_plot_queue = queue.Queue()
         self.stop_event = threading.Event()
@@ -169,7 +179,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self._shading = []
 
         self.persistent_readout_active = False
-        self.persistent_readout_update_interval_ms = 500
+        self.persistent_readout_update_interval_ms = 150
+        self._latest_position_mm = None
+        self._position_poll_interval_s = 0.08
+        self._position_poll_stop_event = threading.Event()
+        self._position_poll_thread = None
 
         self.sensor_window.protocol("WM_DELETE_WINDOW", self.on_sensor_window_close)
 
@@ -197,15 +211,28 @@ Evan Jones, evanjones2026@u.northwestern.edu
     def _start_persistent_readouts(self):
         if not self.persistent_readout_active:
             self.persistent_readout_active = True
+            self._position_poll_stop_event.clear()
+            if self._position_poll_thread is None or not self._position_poll_thread.is_alive():
+                self._position_poll_thread = threading.Thread(target=self._position_poll_loop, daemon=True)
+                self._position_poll_thread.start()
             self._update_persistent_readouts()
+
+    def _position_poll_loop(self):
+        while not self._position_poll_stop_event.is_set():
+            try:
+                if self.zaber_axis:
+                    self._latest_position_mm = self.zaber_axis.get_position(Units.LENGTH_MILLIMETRES)
+            except Exception as e:
+                print(f"Error polling position in background: {e}")
+            self._position_poll_stop_event.wait(self._position_poll_interval_s)
 
     def _update_persistent_readouts(self):
         if not self.persistent_readout_active or not self.sensor_window.winfo_exists():
             return
 
         try:
-            if self.zaber_axis:
-                current_pos_mm = self.zaber_axis.get_position(Units.LENGTH_MILLIMETRES)
+            current_pos_mm = self._latest_position_mm
+            if isinstance(current_pos_mm, (int, float)):
                 self.lbl_current_position.config(text=f"Position: {current_pos_mm:.4f} mm")
         except Exception as e:
             print(f"Error in _update_persistent_readouts: {e}")
@@ -215,6 +242,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
     def _stop_persistent_readouts(self):
         self.persistent_readout_active = False
+        self._position_poll_stop_event.set()
+        if self._position_poll_thread and self._position_poll_thread.is_alive():
+            self._position_poll_thread.join(timeout=0.5)
         self.update_main_status("Persistent readouts stopped.")
 
     def clear_plot_data(self):
@@ -250,7 +280,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
     def update_calibration_status_for_main_app(self, status):
         self.force_gauge_is_calibrated = status
-        if self.prince_main_app_ref:
+        if self.prince_main_app_ref and hasattr(self.prince_main_app_ref, 'update_auto_home_button_state'):
             self.prince_main_app_ref.update_auto_home_button_state()
 
     def is_force_gauge_calibrated_internally(self):
@@ -339,21 +369,28 @@ Evan Jones, evanjones2026@u.northwestern.edu
         print("Live readout stopped.")
 
     def update_plot(self):
+        plot_loop_start = time.perf_counter()
         try:
             new_data_processed = False
+            rendered_points = 0
 
-            max_queue_items_per_cycle = 100
+            max_queue_items_per_cycle = 350
             items_processed = 0
 
             queue_size = self.position_plot_queue.qsize()
             if queue_size > 1000:
-                print(f"Warning: Position plot queue is large ({queue_size} items). GUI may slow down.")
+                now = time.time()
+                if now - self._last_queue_warning_time > 1.0:
+                    print(f"Warning: Position plot queue is large ({queue_size} items). GUI may slow down.")
+                    self._last_queue_warning_time = now
                 if queue_size > 5000:
                     drained = 0
                     while not self.position_plot_queue.empty() and drained < queue_size - 1000:
                         self.position_plot_queue.get_nowait()
                         drained += 1
-                    print(f"Drained {drained} old data points from queue to prevent freeze.")
+                    if now - self._last_queue_warning_time > 1.0:
+                        print(f"Drained {drained} old data points from queue to prevent freeze.")
+                        self._last_queue_warning_time = now
 
             while not self.position_plot_queue.empty() and items_processed < max_queue_items_per_cycle:
                 time_stamp, position, force = self.position_plot_queue.get_nowait()
@@ -381,54 +418,17 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 current_plot_y_pos = self.plot_data_y_position[-min_len:] if min_len > 0 else []
                 current_plot_y_force = self.plot_data_y_force[-min_len:] if min_len > 0 else []
 
-                # Age-based decimation for long windows: newest data is denser,
-                # oldest data is sparser to preserve shape while keeping UI responsive.
-                if min_len > 5000:
-                    dec_x = []
-                    dec_y_pos = []
-                    dec_y_force = []
+                # Decimate older points more aggressively while keeping recent detail.
+                if min_len > 4000:
+                    keep_tail = 1500
+                    head_end = max(0, min_len - keep_tail)
+                    if head_end > 0:
+                        stride = max(2, head_end // 2200)
+                        current_plot_x = current_plot_x[:head_end:stride] + current_plot_x[head_end:]
+                        current_plot_y_pos = current_plot_y_pos[:head_end:stride] + current_plot_y_pos[head_end:]
+                        current_plot_y_force = current_plot_y_force[:head_end:stride] + current_plot_y_force[head_end:]
 
-                    newest_end = min_len
-
-                    # Region A (newest): last 5,000 points -> 1x
-                    r_a_start = max(0, newest_end - 5000)
-                    r_a_end = newest_end
-
-                    # Region B: 5,000 to 10,000 points old -> 2x
-                    r_b_start = max(0, newest_end - 10000)
-                    r_b_end = r_a_start
-
-                    # Region C: 10,000 to 15,000 points old -> 4x
-                    r_c_start = max(0, newest_end - 15000)
-                    r_c_end = r_b_start
-
-                    # Region D (oldest): 15,000+ points old -> 8x
-                    r_d_start = 0
-                    r_d_end = r_c_start
-
-                    for idx in range(r_d_start, r_d_end, 8):
-                        dec_x.append(current_plot_x[idx])
-                        dec_y_pos.append(current_plot_y_pos[idx])
-                        dec_y_force.append(current_plot_y_force[idx])
-
-                    for idx in range(r_c_start, r_c_end, 4):
-                        dec_x.append(current_plot_x[idx])
-                        dec_y_pos.append(current_plot_y_pos[idx])
-                        dec_y_force.append(current_plot_y_force[idx])
-
-                    for idx in range(r_b_start, r_b_end, 2):
-                        dec_x.append(current_plot_x[idx])
-                        dec_y_pos.append(current_plot_y_pos[idx])
-                        dec_y_force.append(current_plot_y_force[idx])
-
-                    for idx in range(r_a_start, r_a_end):
-                        dec_x.append(current_plot_x[idx])
-                        dec_y_pos.append(current_plot_y_pos[idx])
-                        dec_y_force.append(current_plot_y_force[idx])
-
-                    current_plot_x = dec_x
-                    current_plot_y_pos = dec_y_pos
-                    current_plot_y_force = dec_y_force
+                rendered_points = len(current_plot_x)
 
                 self.line_position.set_data(current_plot_x, current_plot_y_pos)
                 self.line_force.set_data(current_plot_x, current_plot_y_force)
@@ -437,7 +437,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.ax2.relim()
 
                 current_time_for_rescale = time.time()
-                if current_time_for_rescale - self.last_y_rescale_time >= 0.1:
+                if current_time_for_rescale - self.last_y_rescale_time >= 0.5:
                     self.ax.autoscale_view(True, True, True)
                     self.ax2.autoscale_view(True, True, True)
                     self.last_y_rescale_time = current_time_for_rescale
@@ -449,7 +449,22 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     coll.remove()
                 self._shading.clear()
 
-                self.canvas.draw_idle()
+                draw_due = (current_time_for_rescale - self._last_plot_draw_time) >= self._min_plot_draw_interval_s
+                if draw_due or queue_size > 1000:
+                    self.canvas.draw_idle()
+                    self._last_plot_draw_time = current_time_for_rescale
+
+                self._perf_frame_count += 1
+                report_elapsed = current_time_for_rescale - self._perf_last_report_time
+                if report_elapsed >= self._perf_target_report_interval_s:
+                    fps = self._perf_frame_count / report_elapsed if report_elapsed > 0 else 0.0
+                    loop_ms = (time.perf_counter() - plot_loop_start) * 1000.0
+                    if hasattr(self, 'lbl_perf_status') and self.lbl_perf_status.winfo_exists():
+                        self._perf_status_var.set(
+                            f"Perf: q={queue_size} proc={items_processed} render={rendered_points} loop={loop_ms:.1f}ms fps={fps:.1f}"
+                        )
+                    self._perf_last_report_time = current_time_for_rescale
+                    self._perf_frame_count = 0
 
         except queue.Empty:
             pass
@@ -462,7 +477,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     sampling_rate = self._get_sampling_rate_ms()
                 except ValueError:
                     sampling_rate = 10
-                self.sensor_window.after(max(50, sampling_rate // 2), self.update_plot)
+                self.sensor_window.after(max(30, sampling_rate // 3), self.update_plot)
 
     # Compatibility stubs for stripped logging features.
     def configure_automated_layer_logging(self, *args, **kwargs):
