@@ -113,39 +113,39 @@ pip install vimba pillow
 
 **Critical:** Use `opencv-contrib-python` (not `opencv-python`) for ChArUco/ArUco marker detection!
 
-### Allied Vision Vimba SDK
+### Allied Vision Vimba X (Camera View)
 
-**Only required if using camera calibration:**
+**Only required if using the Camera View popup:**
 
-1. Download Vimba SDK from https://www.alliedvision.com/en/products/vimba-sdk/
-2. Run installer as Administrator
-3. Install all components (SDK, drivers, viewer)
-4. **Restart computer** (required for drivers)
-5. Test with "Vimba Viewer" application
+1. Download **Vimba X** from https://www.alliedvision.com/en/products/software/vimba-x-sdk/
+2. Run installer as Administrator (SDK, drivers, Vimba Viewer)
+3. Restart if prompted
+4. Confirm the Alvium streams in Vimba Viewer
+5. Install Python bindings: `pip install -r calibration_modules/camera_requirements.txt`
 
 **Verify Installation:**
 ```powershell
-python -c "from vimba import Vimba; print('Vimba SDK installed')"
-python -c "import cv2; print('ArUco available:', hasattr(cv2, 'aruco'))"
+.\.conda\python.exe -c "from vmbpy import VmbSystem; print('vmbpy OK')"
+.\.conda\python.exe calibration_modules\stream_smoke_test_vmbpy.py
 ```
+
+Do **not** use the legacy `vimba` package.
 
 ### File Structure
 
 ```
-Prince_Segmented_20250926/
+Prince_CurrentWorkingVersion/
 ├── Prince_Segmented.py          # Main application - START HERE
 ├── support_modules/             # Core system modules
-│   ├── ForceGaugeManager.py          # Force gauge interface
-│   ├── SensorDataWindow.py           # Sensor monitoring GUI
-│   ├── pycrafter9000.py              # DLP control
-│   ├── AutoHomeRoutine.py            # Auto-homing sequence
-│   ├── PositionLogger.py             # Data logging
-│   ├── PeakForceLogger.py            # Adhesion metrics
-│   └── USBCoordinator.py             # USB management
-├── calibration_modules/         # Camera calibration (optional)
-│   ├── AlliedVisionCameraManager.py  # Camera interface
-│   ├── CameraViewWindow.py           # Camera GUI
-│   └── ChArucoCalibrator.py          # Focus/tilt detection
+│   ├── ForceGaugeManager.py
+│   ├── SensorDataWindow.py
+│   ├── pycrafter9000.py
+│   └── ...
+├── calibration_modules/         # Allied Vision live preview (optional)
+│   ├── CameraViewWindow.py      # Camera GUI (also from Prince "Camera View")
+│   ├── vmb_camera_worker.py
+│   ├── zoom_pan_canvas.py
+│   └── stream_smoke_test_vmbpy.py
 └── documentation/               # All guides and docs
 ```
 
@@ -250,170 +250,36 @@ These are saved with print data for analysis tracking.
 
 ---
 
-## Camera Calibration System
+## Camera View (Allied Vision / Vimba X)
 
 ### Overview
 
-The camera calibration system uses **ChArUco patterns** (Checkerboard + ArUco markers) to measure:
-
-1. **Focus Quality** - Laplacian variance (sharpness metric)
-2. **Tank Tilt** - Pose estimation from markers (X/Y angles)
-
-This ensures the resin tank is properly positioned and level before printing.
+Phase 1 provides a live Alvium preview for resin-tank alignment (pan/zoom,
+exposure/gain, display filters, snapshot). Automated ChArUco focus/tilt
+calibration is not included.
 
 ### Quick Start
 
-#### 1. Open Camera Window
+1. Ensure Vimba X + `vmbpy` are installed (see above).
+2. In `Prince_Segmented`, click **Camera View**.
+3. Stream starts automatically when a physical camera is found.
+4. Scroll to zoom, drag to pan, use **Fit View** / **1:1**.
+5. Adjust **Exposure** / **Gain**; optional display contrast/brightness/gamma.
+6. **Save Snapshot** writes the raw camera frame.
 
-From main GUI:
+Standalone:
+
+```powershell
+.\.conda\python.exe -m calibration_modules.CameraViewWindow
+.\.conda\python.exe calibration_modules\stream_smoke_test_vmbpy.py
 ```
-Tools → Camera View
-```
 
-Or programmatically:
-```python
-from calibration_modules import CameraViewWindow
-camera_window = CameraViewWindow(parent=main_gui)
-```
+### Typical starting settings
 
-#### 2. Connect Camera
-
-1. Click **"Connect Camera"** button
-2. Wait for status: "Camera connected"
-3. Click **"Start Streaming"** for live video
-
-#### 3. Adjust Camera Settings
-
-**For Pattern Detection:**
-- **Exposure:** 10000 µs (10 ms)
-- **Gain:** 5 dB
-- Click **"Set Exposure"** and **"Set Gain"**
-
-**For Focus Measurement:**
-- **Exposure:** 5000 µs (5 ms) - faster, reduces blur
-- **Gain:** 0 dB
-
-### Automated Calibration Workflow
-
-**Recommended: Use automated workflow for daily calibration**
-
-#### Workflow Steps
-
-1. **Start Calibration**
-   - Click "Camera" → "Start Calibration"
-   - System automatically:
-     - Connects camera
-     - Projects ChArUco pattern (DLP power = 10)
-     - Optimizes camera exposure/gain
-     - Starts real-time measurement
-
-2. **Follow Real-Time Guidance**
-   
-   System displays actionable instructions:
-   
-   **Focus Guidance:**
-   - `❌ FOCUS: Very poor` → Major adjustment needed
-   - `⚙️ FOCUS: Fair` → Move stage DOWN (closer to camera)
-   - `✓ FOCUS: Good` → Acceptable
-   - `✓✓ FOCUS: Excellent` → Optimal
-   
-   **Tilt Guidance (X-axis):**
-   - `❌ TILT X: Tip tank FORWARD` → Large correction
-   - `⚙️ TILT X: Tip tank forward slightly` → Small correction
-   - `✓ TILT X: Good` → Acceptable
-   
-   **Tilt Guidance (Y-axis):**
-   - `❌ TILT Y: Tilt tank LEFT` → Large correction
-   - `⚙️ TILT Y: Tilt tank left slightly` → Small correction
-   - `✓ TILT Y: Good` → Acceptable
-
-3. **Adjust Hardware**
-   - Follow guidance while watching real-time feedback
-   - Adjustments update 10 times per second
-   - System shows "Getting better..." when improving
-
-4. **Accept Calibration**
-   - When `🎯 CALIBRATION OPTIMAL` appears
-   - Click **"Accept Calibration"**
-   - System saves calibration data
-   - DLP returns to normal operation
-
-#### Calibration Targets
-
-**Optimal Values:**
-- **Focus Score:** >1000 (excellent), >500 (good)
-- **Tilt X:** <1° (excellent), <3° (good)
-- **Tilt Y:** <1° (excellent), <3° (good)
-
-**Poor Values Requiring Adjustment:**
-- **Focus Score:** <100 (critical)
-- **Tilt Angles:** >5° (critical)
-
-### Manual Calibration
-
-If automated workflow is unavailable, use manual mode:
-
-#### 1. Generate ChArUco Pattern
-
-1. In Camera Window: Click **"Generate ChArUco Pattern"**
-2. Enter projector resolution: `1920×1080`
-3. Save pattern as PNG
-4. Project pattern onto tank (DLP power = 10-20)
-
-#### 2. Optimize Camera
-
-**Manual Optimization:**
-- Start: Exposure 10000 µs, Gain 0 dB
-- Capture image, count markers detected
-- Adjust exposure: Try 5000, 15000, 20000 µs
-- If <4 markers: Increase gain (5, 10, 15 dB)
-- Select settings with maximum marker count
-
-#### 3. Measure Focus
-
-1. Click **"Calculate Focus"**
-2. Review score in status bar
-3. Adjust stage Z-position
-4. Re-measure until score maximized
-
-#### 4. Measure Tilt
-
-1. Click **"Calculate Tilt"**
-2. Review X and Y angles
-3. Adjust tank leveling screws
-4. Re-measure until angles minimized
-
-#### 5. Combined Analysis
-
-Click **"Analyze Frame (Both)"** for simultaneous measurement of focus and tilt from single image.
-
-### Camera Settings by Use Case
-
-| Use Case | Exposure | Gain | Purpose |
-|----------|----------|------|---------|
-| **Pattern Detection** | 10000 µs | 5 dB | Initial marker visibility |
-| **Focus Optimization** | 5000 µs | 0 dB | Sharp edge detection |
-| **Tilt Measurement** | 10000 µs | 5 dB | Stable marker pose |
-| **Dark Conditions** | 20000 µs | 10 dB | Low light visibility |
-
-### ChArUco Technical Details
-
-**Pattern Specifications:**
-- 8×6 checkerboard grid
-- ArUco marker dictionary: DICT_4X4_50
-- ~24 unique markers embedded in checkerboard
-- Black/white squares for focus detection
-- Unique IDs for pose estimation
-
-**Analysis Method:**
-- **Focus:** Laplacian variance on center 50% ROI (avoids vignetting)
-- **Tilt:** Marker corner detection → pose estimation → surface normal
-- **ROI:** Inner 50% analyzed (camera vignetting at edges)
-
-**Requirements:**
-- Minimum 4 markers detected for tilt calculation
-- Typical detection: 8-12 markers
-- Camera intrinsics optional (relative measurements without)
+| Use case | Exposure | Gain |
+|----------|----------|------|
+| Bright tank / alignment | 5000–20000 µs | 0 dB |
+| Dark / low light | 20000–50000 µs | 5–10 dB |
 
 ---
 

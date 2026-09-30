@@ -139,6 +139,9 @@ class SessionManager:
                 # Sensor data window settings (if window exists)
                 'sensor_settings': {}
             }
+
+            if hasattr(self.parent, 'projection_mode_var'):
+                state['projection_mode'] = self.parent.projection_mode_var.get()
             
             # Save sensor window settings if window is open
             if self.parent.sensor_data_window_instance and self.parent.sensor_data_window_instance.sensor_window.winfo_exists():
@@ -177,13 +180,22 @@ class SessionManager:
             
             # Restore file paths
             if 'directory' in state and state['directory']:
+                dir_path = state['directory']
                 self.parent.t1.delete(0, END)
-                self.parent.t1.insert(0, state['directory'])
-                # Try to load the directory
-                try:
-                    self.parent.input_directory()
-                except:
-                    pass
+                self.parent.t1.insert(0, dir_path)
+                # Try to load the directory safely if valid
+                if os.path.isdir(dir_path):
+                    folder_name = os.path.basename(os.path.normpath(dir_path))
+                    inst_path = os.path.join(dir_path, f"{folder_name}.txt")
+                    if os.path.exists(inst_path):
+                        try:
+                            self.parent.input_directory()
+                        except Exception as e:
+                            self.parent.update_status_message(f"Could not load instruction file from {dir_path}: {e}")
+                    else:
+                        self.parent.update_status_message(f"Instruction file '{folder_name}.txt' not found in saved directory '{dir_path}'.")
+                else:
+                    self.parent.update_status_message(f"Saved directory not found: {dir_path}")
             
             if 'reference' in state:
                 self.parent.reference = state['reference']
@@ -230,6 +242,15 @@ class SessionManager:
             if 'max_area_force' in state and hasattr(self.parent, 't_max_area_force'):
                 self.parent.t_max_area_force.delete(0, END)
                 self.parent.t_max_area_force.insert(0, state['max_area_force'])
+
+            # Restore projection mode if supported by parent
+            if 'projection_mode' in state and hasattr(self.parent, 'projection_mode_var'):
+                self.parent.projection_mode_var.set(state['projection_mode'])
+                if hasattr(self.parent, '_on_projection_mode_change'):
+                    try:
+                        self.parent._on_projection_mode_change()
+                    except Exception:
+                        pass
             
             # Restore window states
             if state.get('sensor_window_open', False):

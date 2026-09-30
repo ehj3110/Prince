@@ -198,6 +198,80 @@ class TestRampedCylinder(unittest.TestCase):
             self.assertEqual(cols[8], "0.5")
             self.assertEqual(cols[9], "600")
 
+    def test_power_ramped_cylinder_with_normal_exposure_time(self):
+        # Verify that normal layers use normal_exposure_time while base layer uses exposure_time_val
+        diameter_um = 2000.0
+        start_val = 100.0
+        end_val = 50.0
+        layer_height = 5.0
+        points = 3
+        replicates = 2
+        base_exposure_time = 15.0
+        normal_exposure_time = 2.0
+
+        folder_path, warnings = generate_ramped_cylinder_workflow(
+            output_base_folder=self.test_dir,
+            diameter_um=diameter_um,
+            start_val=start_val,
+            end_val=end_val,
+            layer_height=layer_height,
+            points=points,
+            replicates=replicates,
+            led_current=1.0,
+            step_speed=800.0,
+            overstep=400.0,
+            acceleration=6.0,
+            pause=0.5,
+            sandwich_speed=600.0,
+            ramp_mode="power",
+            exposure_time_val=base_exposure_time,
+            normal_exposure_time=normal_exposure_time,
+        )
+
+        self.assertTrue(os.path.isdir(folder_path))
+        folder_name = os.path.basename(folder_path)
+        txt_path = os.path.join(folder_path, f"{folder_name}.txt")
+        self.assertTrue(os.path.isfile(txt_path))
+
+        with open(txt_path, "r") as f:
+            lines = f.readlines()
+
+        total_expected_layers = 1 + points * replicates
+        self.assertEqual(len(lines) - 1, total_expected_layers)
+
+        # Layer 1: Base layer must use base_exposure_time
+        base_cols = lines[1].strip().split("\t")
+        self.assertEqual(base_cols[0], "1")
+        self.assertAlmostEqual(float(base_cols[3]), base_exposure_time, places=5)
+
+        # Layers 2..N: Normal layers must use normal_exposure_time
+        for idx in range(2, total_expected_layers + 1):
+            cols = lines[idx].strip().split("\t")
+            self.assertEqual(cols[0], str(idx))
+            self.assertAlmostEqual(float(cols[3]), normal_exposure_time, places=5)
+
+    def test_validation_invalid_normal_exposure_time(self):
+        # Validation error for negative/zero normal exposure time in power ramp mode
+        with self.assertRaises(ValueError):
+            generate_ramped_cylinder_workflow(
+                output_base_folder=self.test_dir,
+                diameter_um=2000.0,
+                start_val=50.0,
+                end_val=100.0,
+                layer_height=5.0,
+                points=3,
+                replicates=1,
+                led_current=1.0,
+                step_speed=800.0,
+                overstep=400.0,
+                acceleration=6.0,
+                pause=0.5,
+                sandwich_speed=600.0,
+                ramp_mode="power",
+                exposure_time_val=10.0,
+                normal_exposure_time=0.0,
+            )
+
     def test_validation_invalid_diameter(self):
         # Validation error for negative/zero diameter or diameter too large
         with self.assertRaises(ValueError):
@@ -335,11 +409,12 @@ class TestRampedCylinder(unittest.TestCase):
         with patch("tkinter.messagebox.showinfo"):
             gui._on_generate()
 
-        # 2. Test Parameter Ramp (Cylinder) mode with empty ending diameter
+        # 2. Test Parameter Ramp (Cylinder) mode with empty ending diameter & empty normal exposure time (speed mode)
         gui.var_workflow_mode.set("cylinder_ramp")
         gui.var_ramp_mode.set("speed")
         gui.var_diameter.set("2000.0")
         gui.var_ending_diameter.set("")     # Grayed out: MUST NOT throw error
+        gui.var_normal_exposure_time.set("") # Grayed out in speed mode: MUST NOT throw error
         gui.var_start_val.set("10.0")
         gui.var_end_val.set("50.0")
         gui.var_control_speed.set("")       # Grayed out: MUST NOT throw error
@@ -349,6 +424,26 @@ class TestRampedCylinder(unittest.TestCase):
 
         with patch("tkinter.messagebox.showinfo"):
             gui._on_generate()
+
+        # 3. Test Parameter Ramp (Power mode) with valid normal exposure time
+        gui.var_workflow_mode.set("cylinder_ramp")
+        gui.var_ramp_mode.set("power")
+        gui.var_diameter.set("2000.0")
+        gui.var_start_val.set("100.0")
+        gui.var_end_val.set("50.0")
+        gui.var_exposure_time.set("12.0")
+        gui.var_normal_exposure_time.set("1.8")
+        gui.var_points.set("3")
+        gui.var_replicates.set("1")
+
+        with patch("tkinter.messagebox.showinfo"):
+            gui._on_generate()
+
+        # 4. Test Parameter Ramp (Power mode) with empty normal exposure time raises error
+        gui.var_normal_exposure_time.set("")
+        with patch("tkinter.messagebox.showerror") as mock_err:
+            gui._on_generate()
+            mock_err.assert_called_once()
 
         root.destroy()
 

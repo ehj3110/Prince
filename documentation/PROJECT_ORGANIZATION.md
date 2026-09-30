@@ -73,9 +73,10 @@ python batch_processors\batch_process_universal.py "path\to\data"
 **Purpose**: Camera-based calibration and alignment (resin tank focus and tilt)
 
 **Key Components:**
-- `AlliedVisionCameraManager.py` - Allied Vision camera interface (Vimba SDK)
-- `CameraViewWindow.py` - Live camera view and ChArUco calibration GUI
-- `ChArucoCalibrator.py` - ChArUco pattern focus/tilt detection
+- `CameraViewWindow.py` - Live Allied Vision preview (Vimba X / vmbpy): pan/zoom, exposure/gain, snapshot
+- `vmb_camera_worker.py` - Threaded vmbpy acquisition + frame queue
+- `zoom_pan_canvas.py` - Interactive ROI-first viewport canvas
+- CLI: `stream_smoke_test_vmbpy.py`, `vmb_worker_harness.py`, `hardware_connection_test_vmbpy.py`
 - `README.md` - Calibration setup and usage
 
 ### `/tests/`

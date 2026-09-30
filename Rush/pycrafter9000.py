@@ -1,3 +1,9 @@
+try:
+    import hid
+    HAS_HIDAPI = True
+except ImportError:
+    HAS_HIDAPI = False
+
 import usb.core
 import usb.util
 import numpy
@@ -210,74 +216,115 @@ def encode(image):
 
 class dmd():
     def __init__(self):
-        self.dev=usb.core.find(idVendor=0x0451 ,idProduct=0xc900 )
+        self.use_hidapi = False
+        self.hid_dev = None
+        self.dev = None
 
-        self.dev.set_configuration()
+        if HAS_HIDAPI:
+            try:
+                # DLPC900 is a composite HID device: Interface 0 is the primary command interface (DLPC900)
+                matched_path = None
+                for d in hid.enumerate(0x0451, 0xc900):
+                    if d.get('interface_number', 0) == 0:
+                        matched_path = d.get('path')
+                        break
 
-        self.ans=[]
+                device = hid.device()
+                if matched_path:
+                    device.open_path(matched_path)
+                else:
+                    device.open(0x0451, 0xc900)
+
+                self.hid_dev = device
+                self.use_hidapi = True
+            except Exception:
+                self.hid_dev = None
+                self.use_hidapi = False
+
+        if not self.use_hidapi:
+            self.dev = usb.core.find(idVendor=0x0451, idProduct=0xc900)
+            if self.dev is None:
+                raise RuntimeError("Texas Instruments DLPC900 device not found (VID: 0x0451, PID: 0xc900).")
+            self.dev.set_configuration()
+
+        self.ans = []
+
+    def close(self):
+        """Close HID device connection cleanly."""
+        if self.use_hidapi and self.hid_dev is not None:
+            try:
+                self.hid_dev.close()
+            except Exception:
+                pass
+            self.hid_dev = None
+
+    def __del__(self):
+        self.close()
 
 ## standard usb command function
 
-    def command(self,mode,sequencebyte,com1,com2,data=None):
+    def command(self, mode, sequencebyte, com1, com2, data=None):
+        if data is None:
+            data = []
         buffer = []
 
-        flagstring=''
-        if mode=='r':
-            flagstring+='1'
+        flagstring = ''
+        if mode == 'r':
+            flagstring += '1'
         else:
-            flagstring+='0'        
-        flagstring+='1000000'
+            flagstring += '0'        
+        flagstring += '1000000'
         buffer.append(bitstobytes(flagstring)[0])
         buffer.append(sequencebyte)
-        temp=bitstobytes(convlen(len(data)+2,16))
+        temp = bitstobytes(convlen(len(data)+2, 16))
         buffer.append(temp[0])
         buffer.append(temp[1])
         buffer.append(com2)
         buffer.append(com1)
 
-        if len(buffer)+len(data)<65:
-        
+        def _write_packet(pkt):
+            if self.use_hidapi:
+                # Windows HID requires prepending Report ID (0x00 for unnumbered reports)
+                self.hid_dev.write([0x00] + pkt)
+            else:
+                self.dev.write(1, pkt)
+
+        if len(buffer) + len(data) < 65:
             for i in range(len(data)):
                 buffer.append(data[i])
 
-            for i in range(64-len(buffer)):
+            for i in range(64 - len(buffer)):
                 buffer.append(0x00)
 
-
-            self.dev.write(1, buffer)
+            _write_packet(buffer)
 
         else:
-            for i in range(64-len(buffer)):
+            for i in range(64 - len(buffer)):
                 buffer.append(data[i])
 
-            self.dev.write(1, buffer)
+            _write_packet(buffer)
 
             buffer = []
 
-            j=0
-            while j<len(data)-58:
+            j = 0
+            while j < len(data) - 58:
                 buffer.append(data[j+58])
-                j=j+1
-                if j%64==0:
-                    self.dev.write(1, buffer)
-
+                j = j + 1
+                if j % 64 == 0:
+                    _write_packet(buffer)
                     buffer = []
 
-            if j%64!=0:
-
-                while j%64!=0:
+            if j % 64 != 0:
+                while j % 64 != 0:
                     buffer.append(0x00)
-                    j=j+1
+                    j = j + 1
+                _write_packet(buffer)                
 
-
-                self.dev.write(1, buffer)                
-                
-
-
-
-
-
-        self.ans=self.dev.read(0x81,64)
+        if self.use_hidapi:
+            raw = self.hid_dev.read(64, timeout_ms=1000)
+            self.ans = list(raw)
+        else:
+            self.ans = self.dev.read(0x81, 64)
 
 ## functions for checking error reports in the dlp answer
 

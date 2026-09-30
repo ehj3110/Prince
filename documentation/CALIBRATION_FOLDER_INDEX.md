@@ -2,100 +2,70 @@
 
 ## Purpose
 
-The calibration_modules folder contains the camera-based setup and alignment workflow for the resin tank and projector system.
-It covers live camera viewing, focus and tilt analysis, ChArUco pattern generation, and automated calibration orchestration.
+Live Allied Vision camera preview for resin-tank alignment in Prince.
+Phase 1 uses **Vimba X** (`vmbpy`) with a Tk popup (pan/zoom, exposure/gain,
+display filters, snapshot). Focus/tilt / ChArUco workflows were removed
+(never validated).
 
 ## What This Folder Owns
 
-1. Allied Vision camera connection and streaming.
-2. ChArUco-based focus and tilt analysis.
-3. Calibration GUI windows and operator controls.
-4. Pattern generation and projector display tests.
-5. Hardware bring-up validation scripts.
+1. Allied Vision camera connection and streaming (`vmbpy`).
+2. Interactive preview GUI (`CameraViewWindow` + `ZoomPanCanvas`).
+3. CLI hardware bring-up scripts (smoke test, worker harness).
 
 ## Core Functional Path
 
-1. Connect to the camera.
-2. Stream frames and inspect focus/tilt.
-3. Project a ChArUco pattern.
-4. Adjust camera exposure and gain if needed.
-5. Save calibration state and restore DLP output.
+1. Install Vimba X + `vmbpy` on the printer PC.
+2. Run `stream_smoke_test_vmbpy.py` (or open **Camera View** in Prince).
+3. Adjust exposure/gain; pan/zoom for alignment.
+4. Optionally save a raw snapshot.
 
 ## Major Modules
 
-### `AlliedVisionCameraManager.py`
+### `vmb_camera_worker.py`
 
-Camera interface and streaming manager.
-It owns camera connection, frame callbacks, exposure and gain control, and ChArUco-calibration hookups.
+Threaded acquisition: `get_frame_generator`, drop-oldest queue, pending
+exposure/gain applied on the camera thread, joinable stop.
 
-### `ChArucoCalibrator.py`
+### `zoom_pan_canvas.py`
 
-The core focus/tilt analysis engine.
-It generates patterns, computes focus scores, estimates tilt, and can render detection overlays.
+Tk canvas with cursor-anchored zoom, pan, Fit / 1:1, crosshair, and
+ROI-first contrast/brightness/gamma.
 
 ### `CameraViewWindow.py`
 
-GUI front end for camera view, capture, and calibration operations.
+Operator popup; also launched from `Prince_Segmented` via **Camera View**.
 
-### `CalibrationWorkflow.py`
+### `stream_smoke_test_vmbpy.py`
 
-Automated calibration orchestration.
-It handles pattern preparation, projection, camera optimization, live guidance, and DLP restore behavior.
+CLI stream smoke test (FPS, PNG, clean release).
 
-### `test_camera.py`
+### `vmb_worker_harness.py`
 
-Basic camera connection and capture validation.
+CLI harness for worker + mid-stream exposure/gain + unlock proof.
 
-### `test_pattern_generation.py`
+### `hardware_connection_test_vmbpy.py`
 
-Verifies ChArUco pattern generation.
-
-### `test_dlp_pattern_display.py`
-
-Checks projector display behavior for calibration patterns.
-
-### `live_stream_test.py`
-
-Interactive camera live-stream test that combines streaming and calibration analysis.
-
-### `hardware_connection_test_vmbpy.py` and `hardware_connection_test_vimbax.py`
-
-Minimal vendor SDK connection tests for Allied Vision hardware paths.
+Minimal single-frame connection test.
 
 ### `__init__.py`
 
-Package export layer for the calibration module set.
+Exports `CameraViewWindow`, `VmbCameraWorker`, `ZoomPanCanvas`, `VMBPY_AVAILABLE`.
 
 ## Inputs
 
-1. Allied Vision camera hardware.
-2. ChArUco projector patterns.
-3. Camera intrinsics when absolute tilt is desired.
-4. Projector/DLP state during calibration.
+1. Allied Vision Alvium (USB3) + Vimba X drivers.
+2. Optional static PNG for offline canvas demo.
 
 ## Outputs
 
-1. Focus scores.
-2. Relative or absolute tilt estimates.
-3. Calibration data snapshots.
-4. Pattern image files and validation logs.
+1. Live preview for alignment.
+2. Snapshot images (raw frames).
+3. Smoke-test PNG / FPS logs.
 
-## Dependencies
+## Related Docs
 
-1. `opencv-contrib-python`
-2. `numpy`
-3. Allied Vision Vimba SDK or Vimba X tooling, depending on script path
-4. `tkinter`
-5. `support_modules.DebugSupport` and shared DLP coordination paths where integrated
-
-## Failure Modes
-
-1. Camera SDK not installed or wrong package variant.
-2. No camera detected or wrong camera selected.
-3. Projection path mismatch during calibration display.
-4. Stale documentation or UI labels not matching implemented behavior.
-
-## Documentation Notes
-
-The calibration folder already has a substantial README and technical docs.
-This round-2 index is the folder-level guide for codebase documentation and should be kept aligned with the current implemented workflow.
+- `calibration_modules/README.md`
+- `calibration_modules/SETUP_ON_PRINTER_COMPUTER.md`
+- `calibration_modules/QUICK_REFERENCE.md`
+- `documentation/CAMERA_VIEWER_POPUP_SPEC.md`

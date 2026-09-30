@@ -14,7 +14,9 @@ The application provides a graphical user interface (GUI) built with Tkinter tha
 ## Core Components
 
 ### Main Application
-- **`Prince_Segmented.py`**: The main entry point of the application. It builds and runs the Tkinter GUI, handles user input, and orchestrates the overall printing and data logging workflow.
+- **`Prince_Segmented_Unified.py`** *(Recommended)*: The unified printer control GUI featuring the dual-mode Projection Mode Switcher (standard 60 Hz HDMI video projection and 30 Hz HDMI Video Pattern LUT projection), dynamic Light/Dark theming, modern uncluttered interface, and thread-safe post-print survey logging. See [documentation/PRINCE_UNIFIED_GUI.md](documentation/PRINCE_UNIFIED_GUI.md).
+- **`Prince_Segmented.py`**: Legacy application for standard 60 Hz video projection.
+- **`Prince_Segmented_VideoPattern.py`**: Legacy application for 30 Hz video pattern projection.
 
 ### Support Modules (`/support_modules`)
 - **Hardware Control:**
@@ -38,9 +40,14 @@ The application provides a graphical user interface (GUI) built with Tkinter tha
     - `libs.py` & `Libs_Evan.py`: Contain helper classes and functions, primarily for parsing print instruction files (`.txt`) and generating image sequences.
 
 ### How to Run the Application
-To run the software, execute the main file from the command line:
+To run the recommended unified application, execute:
 ```bash
-python Prince_Segmented.py
+python Prince_Segmented_Unified.py
+```
+Or to run the legacy single-mode applications:
+```bash
+python Prince_Segmented.py               # Standard HDMI video mode
+python Prince_Segmented_VideoPattern.py   # Video pattern LUT mode
 ```
 Ensure all required libraries (Tkinter, OpenCV, Zaber-Motion, Phidget22, etc.) are installed in your Python environment.
 

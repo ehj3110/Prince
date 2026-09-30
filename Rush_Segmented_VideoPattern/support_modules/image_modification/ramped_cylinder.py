@@ -71,6 +71,8 @@ def generate_ramped_cylinder_workflow(
     # Spacing options
     param_spacing="linear",   # "linear" or "log"
     diameter_spacing="linear", # "linear" or "log"
+    normal_exposure_time=None, # If provided, sets normal layer exposure time for power ramp mode. Defaults to exposure_time_val.
+    base_exposure_time=None,   # Optional explicit base layer exposure time. Defaults to exposure_time_val.
     status_callback=None,
     progress_callback=None,
 ):
@@ -116,11 +118,17 @@ def generate_ramped_cylinder_workflow(
         if diameter_um <= 0 or ending_diameter_um <= 0:
             raise ValueError("Starting and ending diameters must be greater than zero for logarithmic diameter spacing.")
 
+    base_exp = base_exposure_time if base_exposure_time is not None else exposure_time_val
+    normal_exp = normal_exposure_time if normal_exposure_time is not None else base_exp
+
+    if base_exp <= 0:
+        raise ValueError("Base exposure time must be greater than zero.")
+
     if ramp_mode == "power":
         if start_val < 1 or start_val > 255 or end_val < 1 or end_val > 255:
             raise ValueError("Power values must be whole numbers between 1 and 255.")
-        if exposure_time_val <= 0:
-            raise ValueError("Exposure time must be greater than zero for power ramping.")
+        if normal_exp <= 0:
+            raise ValueError("Normal exposure time must be greater than zero for power ramping.")
     elif ramp_mode == "dosage_coupled":
         if control_speed is None or control_power is None:
             raise ValueError(
@@ -134,9 +142,6 @@ def generate_ramped_cylinder_workflow(
     else:  # speed
         if led_current < 1 or led_current > 255:
             raise ValueError("LED Current / Intensity must be between 1 and 255.")
-
-    if exposure_time_val <= 0:
-        raise ValueError("Base exposure time must be greater than zero.")
 
     # Validate all diameters fit printable area
     max_diameter_um = max(diameter_um, base_diameter_um)
@@ -270,7 +275,7 @@ def generate_ramped_cylinder_workflow(
             base_intensity = int(max(1, min(255, round(led_current))))
 
         base_line = (
-            f"1\t1.png\t{layer_height:g}\t{exposure_time_val:.6f}\t"
+            f"1\t1.png\t{layer_height:g}\t{base_exp:.6f}\t"
             f"{base_intensity}\t{step_speed:g}\t{overstep:g}\t"
             f"{acceleration:g}\t{pause:g}\t{sandwich_speed:g}\n"
         )
@@ -282,7 +287,7 @@ def generate_ramped_cylinder_workflow(
             ramp_val = layer_ramp_vals[ramp_idx - 1]
 
             if ramp_mode == "power":
-                exposure_time = exposure_time_val
+                exposure_time = normal_exp
                 intensity = int(max(1, min(255, round(ramp_val))))
                 row_step_speed = step_speed
 
@@ -367,7 +372,9 @@ class RampedCylinderWindow:
         
         self.var_layer_height = tk.StringVar(value=self.defaults["layer_height"])
         self.var_led_current = tk.StringVar(value=self.defaults["led_current"])
-        self.var_exposure_time = tk.StringVar(value=self.defaults["exposure_time"])
+        self.var_exposure_time = tk.StringVar(value=self.defaults.get("base_exposure_time", self.defaults["exposure_time"]))
+        self.var_base_exposure_time = self.var_exposure_time
+        self.var_normal_exposure_time = tk.StringVar(value=self.defaults.get("normal_exposure_time", "2.0"))
         
         # Hidden variables (used invisibly to populate instructions)
         self.var_step_speed = tk.StringVar(value=self.defaults["step_speed"])
@@ -389,6 +396,8 @@ class RampedCylinderWindow:
             "layer_height": "5.0",
             "led_current": "1.0",
             "exposure_time": "2.0",
+            "base_exposure_time": "2.0",
+            "normal_exposure_time": "2.0",
             "step_speed": "1000.0",
             "overstep": "500.0",
             "acceleration": "5.0",
@@ -404,11 +413,18 @@ class RampedCylinderWindow:
                     defaults["layer_height"] = ref.t10.get().strip()
                 if hasattr(ref, "t14") and ref.t14.get():
                     defaults["led_current"] = ref.t14.get().strip()
-                # Check base exposure time (t11_2) first, fallback to t11 if unavailable
+                # Base exposure time (t11_2), fallback to t11 if unavailable
                 if hasattr(ref, "t11_2") and ref.t11_2.get():
+                    defaults["base_exposure_time"] = ref.t11_2.get().strip()
                     defaults["exposure_time"] = ref.t11_2.get().strip()
                 elif hasattr(ref, "t11") and ref.t11.get():
+                    defaults["base_exposure_time"] = ref.t11.get().strip()
                     defaults["exposure_time"] = ref.t11.get().strip()
+                # Normal exposure time (t11), fallback to t11_2 if unavailable
+                if hasattr(ref, "t11") and ref.t11.get():
+                    defaults["normal_exposure_time"] = ref.t11.get().strip()
+                elif hasattr(ref, "t11_2") and ref.t11_2.get():
+                    defaults["normal_exposure_time"] = ref.t11_2.get().strip()
                 if hasattr(ref, "t16") and ref.t16.get():
                     defaults["step_speed"] = ref.t16.get().strip()
                 if hasattr(ref, "t19") and ref.t19.get():
@@ -845,6 +861,9 @@ class RampedCylinderWindow:
         self.lbl_layer_height, self.ent_layer_height, _ = self._add_entry_row(constants_frame, "Layer Height (μm):", self.var_layer_height)
         self.lbl_led_current, self.ent_led_current, _ = self._add_entry_row(constants_frame, "LED Current / Intensity (1-255):", self.var_led_current)
         self.lbl_exposure_time, self.ent_exposure_time, _ = self._add_entry_row(constants_frame, "Base Exposure Time (s):", self.var_exposure_time)
+        self.lbl_normal_exposure_time, self.ent_normal_exposure_time, self.row_normal_exposure_time = self._add_entry_row(
+            constants_frame, "Normal Exposure Time (s):", self.var_normal_exposure_time
+        )
         self.lbl_acceleration, self.ent_acceleration, _ = self._add_entry_row(constants_frame, "Acceleration (mm/s²):", self.var_acceleration)
 
         # 3E. Live Status / Console Log Card (Embedded neatly in right column)
@@ -985,6 +1004,8 @@ class RampedCylinderWindow:
         if hasattr(self, "ramp_frame"):
             if not is_ramped_params:
                 self.ramp_frame.pack_forget()
+                if hasattr(self, "lbl_normal_exposure_time"):
+                    self._set_entry_enabled(self.lbl_normal_exposure_time, self.ent_normal_exposure_time, False)
             else:
                 self.ramp_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 0))
 
@@ -992,16 +1013,22 @@ class RampedCylinderWindow:
                     self.lbl_start.configure(text="Starting Power (1-255):")
                     self.lbl_end.configure(text="Ending Power (1-255):")
                     self._set_entry_enabled(self.lbl_led_current, self.ent_led_current, False)
+                    if hasattr(self, "lbl_normal_exposure_time"):
+                        self._set_entry_enabled(self.lbl_normal_exposure_time, self.ent_normal_exposure_time, True)
                     self.dosage_anchor_frame.pack_forget()
                 elif ramp_mode == "dosage_coupled":
                     self.lbl_start.configure(text="Starting Speed (μm/s):")
                     self.lbl_end.configure(text="Ending Speed (μm/s):")
                     self._set_entry_enabled(self.lbl_led_current, self.ent_led_current, False)
+                    if hasattr(self, "lbl_normal_exposure_time"):
+                        self._set_entry_enabled(self.lbl_normal_exposure_time, self.ent_normal_exposure_time, False)
                     self.dosage_anchor_frame.pack(fill=tk.X, pady=(6, 0))
                 else:  # speed
                     self.lbl_start.configure(text="Starting Speed (μm/s):")
                     self.lbl_end.configure(text="Ending Speed (μm/s):")
                     self._set_entry_enabled(self.lbl_led_current, self.ent_led_current, True)
+                    if hasattr(self, "lbl_normal_exposure_time"):
+                        self._set_entry_enabled(self.lbl_normal_exposure_time, self.ent_normal_exposure_time, False)
                     self.dosage_anchor_frame.pack_forget()
 
     def _on_browse(self):
@@ -1077,7 +1104,13 @@ class RampedCylinderWindow:
             layer_height = float(lh_str)
 
             exp_str = self.var_exposure_time.get().strip()
-            exposure_time_val = float(exp_str) if exp_str else float(self.defaults.get("exposure_time", 2.0))
+            exposure_time_val = float(exp_str) if exp_str else float(self.defaults.get("base_exposure_time", self.defaults.get("exposure_time", 2.0)))
+
+            normal_exp_str = self.var_normal_exposure_time.get().strip()
+            if normal_exp_str:
+                normal_exposure_time_val = float(normal_exp_str)
+            else:
+                normal_exposure_time_val = float(self.defaults.get("normal_exposure_time", exposure_time_val))
 
             # --- 3. Print Parameters (Mode-Scoped) ---
             if wf == "cone_constant":
@@ -1108,6 +1141,8 @@ class RampedCylinderWindow:
                         raise ValueError("Starting Power must not be empty.")
                     if not end_val_str:
                         raise ValueError("Ending Power must not be empty.")
+                    if not normal_exp_str:
+                        raise ValueError("Normal Exposure Time must not be empty for power ramping.")
                     start_val = float(start_val_str)
                     end_val = float(end_val_str)
                     led_current = 1.0
@@ -1171,6 +1206,7 @@ class RampedCylinderWindow:
                 sandwich_speed=sandwich_speed,
                 ramp_mode=ramp_mode,
                 exposure_time_val=exposure_time_val,
+                normal_exposure_time=normal_exposure_time_val,
                 control_speed=control_speed,
                 control_power=control_power,
                 ending_diameter_um=ending_diameter_um,

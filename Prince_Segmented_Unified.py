@@ -32,6 +32,7 @@ import queue
 import traceback
 from tkinter import messagebox
 from SensorDataWindow import SensorDataWindow
+from support_modules.SensorDataWindow_ExtendedWindow import SensorDataWindow as SensorDataWindowMonitoring
 from AutoHomeRoutine import AutoHomer
 from support_modules.ExperimentalConditionsWindow_VideoPattern import ExperimentalConditionsWindow_VideoPattern
 from support_modules.LoggingCheckWindow_VideoPattern import LoggingCheckWindow_VideoPattern
@@ -50,11 +51,23 @@ from support_modules.StageSequencer import StageSequencer
 from support_modules.ProjectionFrameManager import ProjectionFrameManager
 from support_modules.print_engine.print_orchestrator import PrintOrchestrator, PrintOrchestratorDeps
 
+# ==============================================================================
+# UPCOMING INTEGRATION NOTE: In-Situ Viscosity & Solvent Evaporation Drift Monitoring
+# ==============================================================================
+# The in-situ squeeze-flow viscosity and relative solvent evaporation drift monitoring
+# module has been implemented and validated in Prince_Segmented.py (using ViscosityMonitorWindow,
+# ViscosityAnalyzer, and pre-print descent sampling).
+# TODO: Port ViscosityMonitorWindow hooks, 'Scan Viscosity at Start' toggle, and
+# daily baseline evaporation tracking into Prince_Segmented_Unified.py during next unification milestone.
+# ==============================================================================
+
 
 class MyWindow:
     def __init__(self, win):
         instruction = '''Check list:
 1) Ensure DLP is on, not on standby, and on "pattern on the fly". Close the Lightcrafter GUI.
+    2) Close the Zaber GUI.
+    3) Do not open any windows on the second screen.
 2) Close the Zaber GUI
 3) Do not open any windows on the second screen.'''
         credit = '''
@@ -148,36 +161,74 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # --- Define status_message_var and related label (t8) EARLY ---
         self.status_message_var = StringVar() 
         self.status_message_var.set("System Initializing...") 
-
-        self.b_open_sensor_window = Button(win, text="Open Sensor Panel", command=self.open_sensor_panel)
-        self.b_open_sensor_window.place(x=800, y=60) # Above Directory of Images (y=150)
-        
-        self.b_exp_conditions = Button(win, text="Exp. Conditions", command=self.open_exp_conditions_window)
-        self.b_exp_conditions.place(x=935, y=60) # Next to sensor panel button
-
         self.b_image_modification = Button(win, text="Image Modification", command=self.open_image_modification_window)
-        self.b_image_modification.place(x=1070, y=60) # Next to Exp. Conditions
+        self.b_image_modification.place(x=800, y=80)
+
+        self.b_exp_conditions = Button(win, text="Experimental Conditions", command=self.open_exp_conditions_window)
+        self.b_exp_conditions.place(x=950, y=80)
         
-        self.b_reload_script = Button(win, text="Reload Script", command=self.reload_script_modules)
-        self.b_reload_script.place(x=800, y=95) # Below sensor panel button
+        self.b_open_sensor_window = Button(win, text="Sensor Panel (Logging)", command=self.open_sensor_panel)
+        self.b_open_sensor_window.place(x=800, y=115)
+        
+        self.b_open_sensor_window_monitoring = Button(
+            win,
+            text="Sensor Panel (Monitoring)",
+            command=self.open_sensor_panel_monitoring,
+        )
+        self.b_open_sensor_window_monitoring.place(x=950, y=115)
         
         self.b_disconnect_dlp = Button(win, text="Disconnect DLP", command=self.disconnect_dlp)
-        self.b_disconnect_dlp.place(x=925, y=95) # Side by side with reload, 125px gap (button width + spacing)
+        self.b_disconnect_dlp.place(x=800, y=150)
         
         self.b_reconnect_dlp = Button(win, text="Reconnect DLP", command=self.reconnect_dlp, state=DISABLED)
-        self.b_reconnect_dlp.place(x=1050, y=95) # Side by side with disconnect, 125px gap
-        
-        # State save/load buttons
-        self.b_save_state = Button(win, text="Save State", command=self.save_gui_state)
-        self.b_save_state.place(x=800, y=130) # Below reload script button
-        
-        self.b_load_state = Button(win, text="Load State", command=self.load_gui_state)
-        self.b_load_state.place(x=925, y=130) # Side by side with save state
+        self.b_reconnect_dlp.place(x=950, y=150)
 
         self.b_ramped_cylinder = Button(win, text="Ramped Cylinder", command=self.open_ramped_cylinder_window)
-        self.b_ramped_cylinder.place(x=1050, y=130) # Below reconnect DLP
+        self.b_ramped_cylinder.place(x=800, y=185)
+
+        # Retain references to state save/load/reload in case needed programmatically, without placing on GUI
+        self.b_save_state = Button(win, text="Save State", command=self.save_gui_state)
+        self.b_load_state = Button(win, text="Load State", command=self.load_gui_state)
+        self.b_reload_script = Button(win, text="Reload Script", command=self.reload_script_modules)
+
+        # --- Store default window bg and initialize Projection Mode variables ---
+        self.default_win_bg = win.cget('bg')
+        self.panel_bg = "#FFB3B3"  # Default pastel red
+        self.projection_mode_var = StringVar(value="video")
+        self.post_print_logging_var = BooleanVar(value=True)
+        self._post_print_queue = queue.Queue()  # Thread-safe queue for post-print dialog scheduling
+
+        # --- Projection Mode Panel ---
+        self.frame_proj_mode = tk.LabelFrame(
+            win,
+            text=' Projection Mode ',
+            font=('Segoe UI', 9, 'bold'),
+            bd=1,
+            relief=tk.SOLID
+        )
+        self.frame_proj_mode.place(x=800, y=225, width=350, height=95)
+
+        self.chk_proj_mode = tk.Checkbutton(
+            self.frame_proj_mode,
+            text='Enable Video Pattern Mode (Newer)',
+            variable=self.projection_mode_var,
+            onvalue='video_pattern',
+            offvalue='video',
+            command=self._on_projection_mode_change,
+            font=('Segoe UI', 9)
+        )
+        self.chk_proj_mode.pack(anchor=W, padx=10, pady=5)
+
+        self.lbl_warning_pm = tk.Label(
+            self.frame_proj_mode,
+            text='⚠️ Power calibration differs between modes!',
+            foreground='#FF5555',
+            font=('Segoe UI', 8, 'bold')
+        )
+        self.lbl_warning_pm.pack_forget()
         
         self.sensor_data_window_instance = None
+        self.sensor_monitoring_window_instance = None
         self.exp_conditions_window = None
         self.image_modification_window = None
         self.ramped_cylinder_window = None
@@ -190,17 +241,45 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.cache_clear_layer = 100000
         self.time1 = 1000
 
-        # --- Existing Canvases and Labels (adjust placement if they conflict with new frames) ---
-        self.canvas1 = Canvas(win, height=200, width=270, bg="#FFEFD5")
+        # --- Existing Canvases and Labels ---
+        self.canvas1 = Canvas(win, height=200, width=270, bg=self.panel_bg)
         self.canvas1.place(x=70, y=390)
         
-        self.canvas2 = Canvas(win, height=200, width=500, bg="#FFEFD5")
+        self.canvas2 = Canvas(win, height=200, width=360, bg=self.panel_bg)
         self.canvas2.place(x=370, y=390)
 
-        # Prince header with purple background box
-        self.header_frame = tk.Frame(win, bg='#834bd0', relief='solid', borderwidth=3, highlightbackground='#834bd0', highlightthickness=0)
-        self.header_frame.place(x=450, y=35, width=300, height=95)
-        self.lbl0 = tk.Label(self.header_frame, text='Prince', font='Helvetica 50 bold', bg='#834bd0', fg='white')
+        # Prince header logo or title text (centered, no bounding box)
+        self.lbl0 = tk.Label(
+            win,
+            bg=win.cget('bg'),
+            borderwidth=0,
+            highlightthickness=0,
+            padx=0,
+            pady=0,
+        )
+        self.header_logo_image = None
+        header_max_width = 468
+        header_max_height = 120
+
+        logo_path = os.path.join(os.path.dirname(__file__), 'Prince_Logo.png')
+        if not os.path.exists(logo_path):
+            logo_path = os.path.join(os.path.dirname(__file__), 'Prince_logo.png')
+
+        try:
+            if os.path.exists(logo_path):
+                raw_logo = tk.PhotoImage(file=logo_path)
+                candidate_logo = raw_logo.zoom(5, 5).subsample(4, 4)
+                clamp_x = max(1, (candidate_logo.width() + header_max_width - 1) // header_max_width)
+                clamp_y = max(1, (candidate_logo.height() + header_max_height - 1) // header_max_height)
+                clamp = max(clamp_x, clamp_y)
+                self.header_logo_image = candidate_logo.subsample(clamp, clamp)
+                self.lbl0.config(image=self.header_logo_image)
+                self.lbl0.place_configure(width=self.header_logo_image.width(), height=self.header_logo_image.height())
+            else:
+                self.lbl0.config(text='Prince', font='Helvetica 50 bold', fg='#834bd0')
+        except Exception:
+            self.lbl0.config(text='Prince', font='Helvetica 50 bold', fg='#834bd0')
+
         self.lbl1 = Label(win, text='Directory of Images')
         self.lbl4 = Label(win, text='Z Axis Position')
         self.lbl5 = Label(win, text=instruction, font='Helvetica 8', foreground='purple', justify=LEFT)
@@ -210,161 +289,97 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # Define self.t8 (the status display Label) here, tied to status_message_var
         self.t8 = Label(win, textvariable=self.status_message_var, width=50, relief="sunken", anchor="w", justify=LEFT)
         self.lbl9 = Label(win, text='Move distance(mm)')
-        self.lbl10 = Label(win, text='Layer thickness(um)', background="#FFEFD5")
-        self.lbl11 = Label(win, text='Exposure time(s)', background="#FFEFD5")
-        self.lbl11_2 = Label(win, text='Base curing time(s)', background="#FFEFD5")
+        self.lbl10 = Label(win, text='Layer thickness(um)', background=self.panel_bg)
+        self.lbl11 = Label(win, text='Exposure time(s)', background=self.panel_bg)
+        self.lbl11_2 = Label(win, text='Base curing time(s)', background=self.panel_bg)
         self.lbl12 = Label(win, text='Stage Control', font='Helvetica 12 bold')
         self.lbl13 = Label(win, text='Print Parameters', font='Helvetica 12 bold')
         self.lbl14 = Label(win, text='LED Current(0-255)')
         self.lbl15 = Label(win, text='Estimate Time: ∞ min') # Old label, now replaced by lbl15_inside
-        
-        # REMOVE Redundant progress bar and its label from old file
-        # self.progress = Progressbar(win, orient=HORIZONTAL, length=500, mode='determinate')
-        # self.progress.place(x=50, y=430)
-        # self.lbl7 = Label(win, text='Printing Progress')
-        # self.lbl7.place(x=250, y=400)
 
+        self.lbl16 = Label(win, text='Step Speed (um/s)', background=self.panel_bg) 
+        self.lbl17 = Label(win, text='Pause (s)', background=self.panel_bg) 
+        self.lbl21 = Label(win, text='Acceleration (mm/s²)', background=self.panel_bg)  # UNIT CHANGED to mm/s²
 
-        self.lbl16 = Label(win, text='Step Speed (um/s)', background="#FFEFD5") 
-        self.lbl17 = Label(win, text='Pause (s)', background="#FFEFD5") 
-        self.lbl19 = Label(win, text='Overstep (µm)', background="#FFEFD5")
-        self.lbl21 = Label(win, text='Acceleration (mm/s²)', background="#FFEFD5")  # UNIT CHANGED to mm/s²
-
-        # COLUMN 2: Step Speed, Overstep, Pause
+        # COLUMN 2: Step Speed, Pause, Acceleration
         column2_x = 550
         self.lbl16.place(x=column2_x, y=420)
         self.t16 = Entry(win)
         self.t16.place(x=column2_x, y=440)
         self.t16.insert(END, "1000.0") # Default Step Speed
         
-        self.lbl19.place(x=column2_x, y=460)
+        self.default_overstep_microns = 0.0
         self.t19 = Entry(win)
-        self.t19.place(x=column2_x, y=480)
-        self.t19.insert(END, "500") # Default Overstep in µm
+        self.t19.insert(END, "0.0")
         
-        self.lbl17.place(x=column2_x, y=500)
+        self.lbl17.place(x=column2_x, y=460)
         self.t17 = Entry(win)
-        self.t17.place(x=column2_x, y=520)
+        self.t17.place(x=column2_x, y=480)
         self.t17.insert(END, "0.0") # Default Pause
         
-        # COLUMN 3: Acceleration only
-        column3_x = 700
-        self.lbl21.place(x=column3_x, y=420)
+        # Acceleration
+        self.lbl21.place(x=column2_x, y=500)
         self.t21 = Entry(win)
-        self.t21.place(x=column3_x, y=440)
-        self.t21.insert(END, "5.0") # Default Acceleration in mm/s²
+        self.t21.place(x=column2_x, y=520)
+        self.t21.insert(END, "100") # Default Acceleration in mm/s²
 
-        # --- Auto-Home Control Box ---
-        frame_auto_home_y_start = 590 # Positioned above sandwich controls
-        frame_auto_home_width = 750 # Define width for re-use
+        control_frame_width = 750
+
+        # Auto-Home controls initialized for background/state compatibility, hidden from GUI
+        frame_auto_home_y_start = 590
         self.frame_auto_home = LabelFrame(win, text="Auto-Home Control", padding=(10, 10))
-        self.frame_auto_home.place(x=50, y=frame_auto_home_y_start, width=frame_auto_home_width) # Adjust width as needed
-
         self.lbl_auto_home_guess = Label(self.frame_auto_home, text='Guess (mm):')
-        self.lbl_auto_home_guess.grid(row=0, column=0, padx=2, pady=2, sticky=W)
         self.t_auto_home_guess = Entry(self.frame_auto_home, width=8)
-        self.t_auto_home_guess.grid(row=0, column=1, padx=2, pady=2)
-        self.t_auto_home_guess.insert(END, "10.0") # Default initial guess is 10.0 mm
-
+        self.t_auto_home_guess.insert(END, "10.0")
         self.lbl_contact_threshold_abs = Label(self.frame_auto_home, text='Abs. Force (N):')
-        self.lbl_contact_threshold_abs.grid(row=0, column=2, padx=2, pady=2, sticky=W)
         self.t_contact_threshold_abs = Entry(self.frame_auto_home, width=8)
-        self.t_contact_threshold_abs.grid(row=0, column=3, padx=2, pady=2)
         self.t_contact_threshold_abs.insert(END, "0.1")
-
         self.lbl_contact_threshold_delta = Label(self.frame_auto_home, text='Delta Force (N):')
-        self.lbl_contact_threshold_delta.grid(row=0, column=4, padx=2, pady=2, sticky=W)
         self.t_contact_threshold_delta = Entry(self.frame_auto_home, width=8)
-        self.t_contact_threshold_delta.grid(row=0, column=5, padx=2, pady=2)
         self.t_contact_threshold_delta.insert(END, "0.02")
-
         self.b_auto_home = Button(self.frame_auto_home, text="Auto-Home Surface", command=self.start_auto_home_sequence, state=DISABLED)
-        self.b_auto_home.grid(row=0, column=6, padx=10, pady=2)
+        for widget in self.frame_auto_home.winfo_children():
+            widget.configure(state=DISABLED)
+        self.frame_auto_home.place_forget()
 
-        # --- Sandwich Control Box ---
-        frame_sandwich_y_start = 660  # Below the Auto-Home frame (70px gap for auto-home height)
+        # Sandwich controls initialized for background/state compatibility, hidden from GUI (Rush style)
+        frame_sandwich_y_start = 660
         self.frame_sandwich = LabelFrame(win, text="Sandwich Routine (Glass Contact)", padding=(10, 10))
-        self.frame_sandwich.place(x=50, y=frame_sandwich_y_start, width=frame_auto_home_width)
-
-        # Row 0: Pre-calibration parameters
         self.lbl_sandwich_gap = Label(self.frame_sandwich, text='Gap Estimate (mm):')
-        self.lbl_sandwich_gap.grid(row=0, column=0, padx=2, pady=2, sticky=W)
         self.t_sandwich_gap = Entry(self.frame_sandwich, width=8)
-        self.t_sandwich_gap.grid(row=0, column=1, padx=2, pady=2)
-        self.t_sandwich_gap.insert(END, "0.5")  # Default gap estimate for pre-calibration
-        
+        self.t_sandwich_gap.insert(END, "0.5")
         self.lbl_sandwich_force = Label(self.frame_sandwich, text='Target Pressure (Pa):')
-        self.lbl_sandwich_force.grid(row=0, column=2, padx=2, pady=2, sticky=W)
         self.t_sandwich_force = Entry(self.frame_sandwich, width=8)
-        self.t_sandwich_force.grid(row=0, column=3, padx=2, pady=2)
-        self.t_sandwich_force.insert(END, "15790")  # Default: 0.5N / 31.67mm² = 15790 Pa for Ø6.35mm platform
-        
+        self.t_sandwich_force.insert(END, "15790")
         self.lbl_sandwich_speed = Label(self.frame_sandwich, text='Print Speed (µm/s):')
-        self.lbl_sandwich_speed.grid(row=0, column=4, padx=2, pady=2, sticky=W)
         self.t_sandwich_speed = Entry(self.frame_sandwich, width=8)
-        self.t_sandwich_speed.grid(row=0, column=5, padx=2, pady=2)
-        self.t_sandwich_speed.insert(END, "500")  # Default sandwich speed for printing
-
-        # Row 1: Enable checkbox
-        self.enable_sandwich_precalib = BooleanVar(value=True)  # Default enabled
-        self.chk_sandwich_precalib = Checkbutton(
-            self.frame_sandwich, 
-            text='Enable Sandwich Routine',
-            variable=self.enable_sandwich_precalib
-        )
-        self.chk_sandwich_precalib.grid(row=1, column=0, columnspan=3, padx=2, pady=5, sticky=W)
-        
-        # Adaptive sandwich checkbox (next to enable checkbox)
-        self.enable_adaptive_sandwich = BooleanVar(value=False)  # Default disabled (use classic)
-        self.chk_adaptive_sandwich = Checkbutton(
-            self.frame_sandwich,
-            text='Use Adaptive Sandwich (Force-Responsive)',
-            variable=self.enable_adaptive_sandwich,
-            command=self._on_sandwich_mode_change
-        )
-        self.chk_adaptive_sandwich.grid(row=1, column=3, columnspan=3, padx=2, pady=5, sticky=W)
-        
-        # Row 2: Force at Max Area input (for bidirectional sandwich)
+        self.t_sandwich_speed.insert(END, "500")
+        self.enable_sandwich_precalib = BooleanVar(value=False)
+        self.chk_sandwich_precalib = Checkbutton(self.frame_sandwich, text='Enable Sandwich Routine', variable=self.enable_sandwich_precalib)
+        self.enable_adaptive_sandwich = BooleanVar(value=False)
+        self.chk_adaptive_sandwich = Checkbutton(self.frame_sandwich, text='Use Adaptive Sandwich', variable=self.enable_adaptive_sandwich, command=self._on_sandwich_mode_change)
         self.lbl_max_area_force = Label(self.frame_sandwich, text='Force at Max Area (N):')
-        self.lbl_max_area_force.grid(row=2, column=0, padx=2, pady=2, sticky=W)
         self.t_max_area_force = Entry(self.frame_sandwich, width=8)
-        self.t_max_area_force.grid(row=2, column=1, padx=2, pady=2)
-        self.t_max_area_force.insert(END, "-2.0")  # Default: -2.0N at 100mm²
-        
-        # Linear area-scaled force sandwich checkbox (row 2, right side)
-        self.enable_scaled_force_sandwich = BooleanVar(value=False)  # Linear area-scaled force method
-        self.chk_scaled_force_sandwich = Checkbutton(
-            self.frame_sandwich,
-            text='Use Linear Area-Scaled Sandwich (Bidirectional Correction)',
-            variable=self.enable_scaled_force_sandwich,
-            command=self._on_sandwich_mode_change
-        )
-        self.chk_scaled_force_sandwich.grid(row=2, column=3, columnspan=3, padx=2, pady=5, sticky=W)
+        self.t_max_area_force.insert(END, "-2.0")
+        self.enable_scaled_force_sandwich = BooleanVar(value=False)
+        self.chk_scaled_force_sandwich = Checkbutton(self.frame_sandwich, text='Use Linear Area-Scaled Sandwich', variable=self.enable_scaled_force_sandwich, command=self._on_sandwich_mode_change)
+        for widget in self.frame_sandwich.winfo_children():
+            widget.configure(state=DISABLED)
+        self.frame_sandwich.place_forget()
 
-        self.sandwich_thread = None  # Track sandwich routine thread
-        
-        # Variables to store pre-calibration results
-        self.measured_gap_mm = None  # Measured gap distance from pre-calibration
-        self.measured_derivative_threshold = None  # Measured force derivative threshold
-        
-        # Variables for linear area-scaled force sandwich
-        self.scaled_force_max_area = 100.0  # mm² - maximum area for scaling
-        # scaled_force_at_max_area will be read from UI field (t_max_area_force)
-        self.scaled_force_calibration_force = -0.6  # N - calibration force for gap measurement
-        self.scaled_force_safety_limit = -4.0  # N - absolute safety limit
-        self.scaled_force_base_flatness_threshold = 0.05  # N - base flatness threshold (calibrated on first layer)
-        self.scaled_force_max_iterations = 3  # Maximum correction iterations (reduced from 5)
-        
-        # Unified sandwich routine manager (initialized later after axis/force gauge are available)
+        self.sandwich_thread = None
+        self.measured_gap_mm = None
+        self.measured_derivative_threshold = None
+        self.scaled_force_max_area = 100.0
+        self.scaled_force_calibration_force = -0.6
+        self.scaled_force_safety_limit = -4.0
+        self.scaled_force_base_flatness_threshold = 0.05
+        self.scaled_force_max_iterations = 3
         self.sandwich_manager = None
 
-
-        # --- Existing Layer Logger instantiation removed ---
-        
         # --- Define Entry Widgets (including t1) ---
-        self.t1 = Entry(width=160)
+        self.t1 = Entry(width=85)
         self.t4 = Entry()
-        # self.t8 = Entry() # This comment is now misleading as t8 is a Label. Can be removed.
         self.t9 = Entry()
         self.t10 = Entry()
         self.t11 = Entry()
@@ -372,18 +387,16 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.t14 = Entry()
 
         # --- Place Entry Widgets and Labels ---
-        self.lbl0.pack(expand=True, fill='both', padx=5, pady=5)  # Pack with padding to show full border
+        self.lbl0.place(x=620, y=0, anchor='n')
         self.lbl1.place(x=50, y=150)
-        self.t1.place(x=180, y=150) # t1 is now defined before _check_default_logging_windows_file
+        self.t1.place(x=180, y=150)
 
-        self.lbl4.place(x=50, y=230) # Moved up from 260
-        self.t4.place(x=50, y=250) # Moved up from 280
-        self.lbl5.place(x=710, y=180)
+        self.lbl4.place(x=50, y=230)
+        self.t4.place(x=50, y=250)
+        self.lbl5.place(x=710, y=330)
         self.lbl6.place(x=950, y=0)
-        # self.t8.place(x=500, y=280) # This line will now work as self.t8 is defined
-        self.lbl8.place(x=50, y=40) # "System Message:" - aligned slightly above system box
-        # System message display box at top, shortened to avoid header overlap
-        self.t8.place(x=50, y=60) # Place the actual status message display, aligned with Open Sensor Panel
+        self.lbl8.place(x=50, y=40)
+        self.t8.place(x=50, y=60)
         self.t9.place(x=140, y=450)
         self.lbl9.place(x=140, y=430)
         self.t10.place(x=400, y=440)
@@ -394,19 +407,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.lbl11_2.place(x=400, y=500)
         self.lbl12.place(x=150, y=370)
         self.lbl13.place(x=410, y=370)
-        self.t14.place(x=250, y=250) # Closer to Z-axis position
-        self.lbl14.place(x=250, y=230) # Closer to Z-axis position
-        # self.lbl15.place(x=250, y=460) # Removed - now inside progress bar as lbl15_inside
-
-        # self.lbl_current_layer_display = Label(win, textvariable=self.current_layer_num_var, font='Helvetica 10')
-        # self.lbl_current_layer_display.place(x=400, y=400) # This was a duplicate, ensure it's removed or commented
-
-        # self.progress = Progressbar(win, orient=HORIZONTAL, length=500, mode='determinate') # This is already commented out
-        # self.progress.place(x=50, y=430) # This is already commented out
+        self.t14.place(x=250, y=250)
+        self.lbl14.place(x=250, y=230)
 
         self.b1 = Button(win, text='Run-Cont.', command=self.run_Continuous)
         self.b10 = Button(win, text='Run-Step', command=self.run_Stepped)
-        self.b_set_dir = Button(win, text='Set Direct.', command=self.input_directory)
         self.b4 = Button(win, text='Stop', command=self.stop)
         self.b2 = Button(win, text='Set Home', command=self.set_home)
         self.b3 = Button(win, text='Get Position', command=self.get_position)
@@ -414,11 +419,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.b6 = Button(win, text='Move Up', command=self.moveup)
         self.b7 = Button(win, text='Simple input txt generator', command=self.simple_txt)
 
-        # Run buttons and Stop button aligned with right side buttons at y=95
+        # Run buttons and Stop button aligned at y=95
         self.b1.place(x=50, y=95)
         self.b10.place(x=140, y=95)
-        self.b_set_dir.place(x=230, y=95)
-        self.b4.place(x=330, y=95)
+        self.b4.place(x=230, y=95)
         
         # Z-Axis controls back at original position
         self.b2.place(x=50, y=200)
@@ -429,7 +433,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.b6.place(x=200, y=500)
         self.b7.place(x=400, y=550)
         
-        # Smooth motion checkboxes next to Simple input txt generator button
+        # Smooth motion variables initialized for compatibility without placing on GUI
         self.smoother_retraction_var = tk.IntVar(value=0)
         self.chk_smoother_retraction = tk.Checkbutton(
             win, 
@@ -437,7 +441,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
             variable=self.smoother_retraction_var,
             command=self.toggle_smoother_retraction
         )
-        self.chk_smoother_retraction.place(x=580, y=550)
         
         self.smooth_lifting_var = tk.IntVar(value=0)
         self.chk_smooth_lifting = tk.Checkbutton(
@@ -446,7 +449,6 @@ Evan Jones, evanjones2026@u.northwestern.edu
             variable=self.smooth_lifting_var,
             command=self.toggle_smooth_lifting
         )
-        self.chk_smooth_lifting.place(x=720, y=550)
 
         # --- Initialize active_logging_windows_filepath AFTER t1 and status_message_var are created ---
         # self.active_logging_windows_filepath = None
@@ -569,7 +571,38 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         # Try to auto-load state on startup
         self.win.after(100, self._try_autoload_state)
-    
+
+        # Start post-print queue polling and initialize theme
+        self.win.after(500, self._poll_post_print_queue)
+        self._on_projection_mode_change()
+        self._sync_sensor_panel_button_states()
+        self._apply_recommended_window_geometry()
+
+    def _apply_recommended_window_geometry(self):
+        """Apply a compact default height while keeping balanced top/bottom breathing room."""
+        self.win.update_idletasks()
+
+        default_width = 1200
+        baseline_height = 800
+        reduced_height = int(baseline_height * 0.85)  # 15% shorter than previous default.
+        balanced_padding = 24
+
+        placed_widgets = [
+            widget for widget in self.win.winfo_children()
+            if widget.winfo_manager() == 'place' and widget.winfo_ismapped()
+        ]
+
+        if placed_widgets:
+            top = min(widget.winfo_y() for widget in placed_widgets)
+            bottom = max(widget.winfo_y() + widget.winfo_height() for widget in placed_widgets)
+            content_height = max(0, bottom - top)
+            target_height = max(reduced_height, content_height + (2 * balanced_padding))
+        else:
+            target_height = reduced_height
+
+        self.default_window_geometry = f"{default_width}x{target_height}+10+10"
+        self.win.geometry(self.default_window_geometry)
+
     def _update_gui_progress(self, progress_value, total_layers, current_layer_index):
         """Updates the progress bar and layer count display."""
         if hasattr(self, 'p1'):
@@ -986,10 +1019,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
     def _enter_dark_pattern_idle(self):
         """Enter dark parked idle in pattern-on-the-fly mode (0x03)."""
         self._diag("Entering dark idle command sequence")
-        self.controller.power(current=0)
-        self._diag("Command sent: power(0)")
         self.controller.stopsequence()
         self._diag("Command sent: stopsequence()")
+        self.controller.power(current=0)
+        self._diag("Command sent: power(0)")
         self.controller.changemode(0x03)
         self._diag("Command sent: changemode(0x03)")
 
@@ -1017,6 +1050,25 @@ Evan Jones, evanjones2026@u.northwestern.edu
             ticks += 1
             time.sleep(0.02)
         self._diag(f"OpenCV pump end: {note}, ticks={ticks}")
+
+    def _arm_dlp_video_mode(self):
+        """Arm the projector in continuous HDMI video mode (mode 0x00)."""
+        with usb_coordinator.dlp_operation("prince_video_mode_arm"):
+            self.controller.stopsequence()
+            self._diag_checkpoint("Command sent: stopsequence()")
+            self.controller.power(current=0)
+            self._diag_checkpoint("Command sent: power(0)")
+            self.controller.changemode(0x03)          # park in idle first
+            self._diag_checkpoint("Command sent: changemode(0x03)")
+            self.controller.hdmi()                     # activate HDMI input
+            self._diag_checkpoint("Command sent: hdmi()")
+            self._diag_pump_opencv(duration_s=1.5, note="startup HDMI lock (video mode)")
+            self.controller.changemode(0x00)           # engage video mode
+            self._diag_checkpoint("Command sent: changemode(0x00)")
+            time.sleep(3.0)                            # settle time for video mode
+            self.controller.power(current=int(self.silent_wake_power))
+            cv2.waitKey(1)
+            self._diag_checkpoint(f"Command sent: power({int(self.silent_wake_power)}) and cv2.waitKey(1)")
 
     def _arm_dlp_silent_wakeup(self):
         """Arm the projector in video-pattern mode while keeping the wake sequence dark."""
@@ -1270,14 +1322,21 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
             # DLP setup for pattern projection
             if hasattr(self, 'controller'):
-                self.update_status_message("Arming DLP with silent wake in video-pattern mode...")
-                dlp_wakeup_start = time.time()
-                self._diag_checkpoint("DLP startup begin")
-
-                self._arm_dlp_silent_wakeup()
-
-                dlp_wakeup_elapsed = time.time() - dlp_wakeup_start
-                self.update_status_message(f"DLP armed with direct 30Hz video pattern startup, power: {dlp_power}. Startup completed in {dlp_wakeup_elapsed:.2f}s.")
+                proj_mode = self.projection_mode_var.get()
+                if proj_mode == "video_pattern":
+                    self.update_status_message("Arming DLP with silent wake in video-pattern mode...")
+                    dlp_wakeup_start = time.time()
+                    self._diag_checkpoint("DLP startup begin")
+                    self._arm_dlp_silent_wakeup()
+                    dlp_wakeup_elapsed = time.time() - dlp_wakeup_start
+                    self.update_status_message(f"DLP armed with direct 30Hz video pattern startup, power: {dlp_power}. Startup completed in {dlp_wakeup_elapsed:.2f}s.")
+                else:
+                    self.update_status_message("Arming DLP in HDMI video mode...")
+                    dlp_wakeup_start = time.time()
+                    self._diag_checkpoint("DLP startup begin (video mode)")
+                    self._arm_dlp_video_mode()
+                    dlp_wakeup_elapsed = time.time() - dlp_wakeup_start
+                    self.update_status_message(f"DLP armed in HDMI video mode, power: {dlp_power}. Startup completed in {dlp_wakeup_elapsed:.2f}s.")
                 self._diag_checkpoint(f"DLP startup end ({dlp_wakeup_elapsed:.2f}s)")
             else:
                 self.update_status_message("DLP controller not available. Cannot control DLP.", error=True)
@@ -2056,36 +2115,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         self.exp_conditions_window.end_print(success=success)
                         self.update_status_message(f"Experimental conditions finalized: {status_to_write}")
                         
-                        # Show VideoPattern Logging Check popup (post-print dialog)
-                        try:
-                            print_number = getattr(self, 'current_print_number', 'Unknown')
-                            logging_dialog = LoggingCheckWindow_VideoPattern(
-                                self.win,
-                                print_number,
-                                on_close_callback=None  # We'll capture result directly
-                            )
-                            logging_result = logging_dialog.wait_for_result()
-                            
-                            if logging_result:
-                                # Update logging service with final result
-                                if self.print_logging_service and hasattr(self, 'current_print_session_log_dir'):
-                                    self.print_logging_service.end_print(logging_result)
-                                    self.update_status_message(f"Print logged: {logging_result['status']}")
-                                
-                                # Quality check gating:
-                                # If user selected "Wait for quality check", set gate to block next print
-                                if logging_result.get('wait_for_qc', False):
-                                    self.quality_check_gate = True
-                                    self.update_status_message(f"⏸️ Print {print_number} is waiting for quality check. Next print is BLOCKED.")
-                                    self.win.after(100, lambda: messagebox.showinfo(
-                                        "Quality Check Gating Active",
-                                        f"Print {print_number} is waiting for quality check.\n\n"
-                                        f"Next print start is BLOCKED until quality check is complete."
-                                    ))
-                                else:
-                                    self.update_status_message(f"Print {print_number} logged successfully")
-                        except Exception as logging_dialog_err:
-                            self.update_status_message(f"Error in logging dialog: {logging_dialog_err}", error=True)
+                        # Dispatch post-print dialog thread-safely via main-thread queue
+                        self._post_print_queue.put(status_to_write)
                             
                     except Exception as exp_err:
                         self.update_status_message(f"Error finalizing experimental conditions: {exp_err}", error=True)
@@ -2153,22 +2184,198 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.print_thread = None
 
     def set_home(self):
-        self.reference = float(self.t4.get())
-        # Update the Z-axis position display to show home position (0.0)
-        self.t4.delete(0, 'end')
-        self.t4.insert(END, "0.0")
-        self.update_status_message("Home Set") # Use update_status_message instead of direct t8 manipulation
+        """Set the position value in the Z axis position box as the reference (home) for printing."""
+        try:
+            self.reference = float(self.t4.get())
+            self.update_status_message(f"Print Home Set to {self.reference} mm (Absolute)")
+        except Exception as e:
+            self.update_status_message(f"Error setting home: {e}", error=True)
 
     def get_position(self):
-        self.t4.delete(0, 'end')
-        # Get absolute position and subtract reference to show position relative to home
-        absolute_position = self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)
-        relative_position = absolute_position - self.reference
-        self.t4.insert(END, str(relative_position))
+        """Display current absolute Z-axis position from the hardware."""
+        try:
+            self.t4.delete(0, 'end')
+            absolute_position = self.axis.get_position(unit=Units.LENGTH_MILLIMETRES)
+            self.t4.insert(END, str(absolute_position))
+        except Exception as e:
+            self.update_status_message(f"Error getting position: {e}", error=True)
 
     def goto_position(self):
-        self.axis.move_absolute(position=float(self.t4.get()), unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False)
+        """Move exactly to the absolute position specified in t4 with boundary recovery."""
+        try:
+            target_abs_pos = float(self.t4.get())
+            self.axis.move_absolute(position=target_abs_pos, unit=Units.LENGTH_MILLIMETRES,
+                                    wait_until_idle=False)
+        except MovementFailedException:
+            self.update_status_message("Position out of range! Returning to hardware physical zero...")
+            try:
+                self.axis.move_absolute(position=0, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                self.update_status_message("Returned to hardware physical zero")
+                self.get_position()
+            except Exception as e:
+                self.update_status_message(f"Error returning to zero: {e}", error=True)
+        except Exception as e:
+            self.update_status_message(f"Move error: {e}", error=True)
+
+    def _poll_post_print_queue(self):
+        """Periodically polls the queue for completed prints on the main thread."""
+        try:
+            status_to_write = self._post_print_queue.get_nowait()
+            self._open_post_print_dialog(status_to_write)
+        except Exception:
+            pass
+        self.win.after(500, self._poll_post_print_queue)
+
+    def _open_post_print_dialog(self, status_to_write):
+        """Displays the post-print dialog safely on the main GUI thread."""
+        try:
+            print_number = getattr(self, 'current_print_number', 'Unknown')
+            handled = [False]
+            def on_dialog_callback(res):
+                if not handled[0]:
+                    handled[0] = True
+                    self.on_post_print_dialog_closed(res, status_to_write)
+
+            logging_dialog = LoggingCheckWindow_VideoPattern(
+                self.win,
+                print_number,
+                on_close_callback=on_dialog_callback
+            )
+            def on_destroy(event):
+                if event.widget == logging_dialog.window:
+                    if not handled[0]:
+                        handled[0] = True
+                        self.on_post_print_dialog_closed(logging_dialog.result, status_to_write)
+
+            logging_dialog.window.bind("<Destroy>", on_destroy)
+            self.update_status_message(f"Post-print logging dialog opened for Print {print_number}")
+        except Exception as e:
+            self.update_status_message(f"Error showing logging dialog: {e}", error=True)
+
+    def on_post_print_dialog_closed(self, logging_result, status_to_write):
+        """Callback executed on the main GUI thread after the logging dialog is closed."""
+        try:
+            print_number = getattr(self, 'current_print_number', 'Unknown')
+            if logging_result:
+                if self.print_logging_service and hasattr(self, 'current_print_session_log_dir') and self.current_print_session_log_dir:
+                    self.print_logging_service.end_print(logging_result)
+                    self.update_status_message(f"Print logged: {logging_result.get('status', 'Finished')}")
+
+                if logging_result.get('wait_for_qc', False):
+                    self.quality_check_gate = True
+                    self.update_status_message(f"⏸️ Print {print_number} is waiting for quality check. Next print is BLOCKED.")
+                    messagebox.showinfo(
+                        "Quality Check Gating Active",
+                        f"Print {print_number} is waiting for quality check.\n\n"
+                        f"Next print start is BLOCKED until quality check is complete."
+                    )
+                else:
+                    self.update_status_message(f"Print {print_number} logged successfully")
+            else:
+                self.update_status_message("Post-print dialog closed without logging data.")
+
+            # Write final print status file
+            if hasattr(self, 'current_print_session_log_dir') and self.current_print_session_log_dir:
+                status_file_path = os.path.join(self.current_print_session_log_dir, "print_status.txt")
+                try:
+                    with open(status_file_path, 'w') as sf:
+                        sf.write(status_to_write)
+                    self.update_status_message(f"Print status '{status_to_write}' written to {status_file_path}")
+                except Exception as e_stat:
+                    self.update_status_message(f"Error writing final print status: {e_stat}", error=True)
+
+        except Exception as e:
+            self.update_status_message(f"Error handling post-print dialog close: {e}", error=True)
+
+    def _on_projection_mode_change(self):
+        """Switch GUI theming dynamically based on selected projection mode."""
+        mode = self.projection_mode_var.get()
+        if mode == "video_pattern":
+            if hasattr(self, 'lbl_warning_pm'):
+                self.lbl_warning_pm.pack_forget()
+            # Apply Dark Theme
+            win_bg = "#1A1B26"
+            panel_bg = "#2E1C1C" # Dark red panel bg for video-pattern mode
+            fg_color = "#E2E8F0"
+            entry_bg = "#24283B"
+            entry_fg = "#C0CAF5"
+        else:
+            if hasattr(self, 'lbl_warning_pm'):
+                self.lbl_warning_pm.pack(anchor=W, padx=10, pady=2)
+            # Apply Light Theme
+            win_bg = self.default_win_bg
+            panel_bg = "#FFB3B3" # Default pastel red
+            fg_color = "black"
+            entry_bg = "white"
+            entry_fg = "black"
+
+        self.win.configure(bg=win_bg)
+        self.panel_bg = panel_bg
+
+        if hasattr(self, 'canvas1'):
+            self.canvas1.configure(bg=panel_bg)
+        if hasattr(self, 'canvas2'):
+            self.canvas2.configure(bg=panel_bg)
+
+        def update_widget(widget):
+            try:
+                w_class = widget.winfo_class()
+                # Protect child Toplevel windows from being themed over
+                if w_class == 'Toplevel':
+                    return
+                        
+                if widget == getattr(self, 't8', None):
+                    widget.configure(background=entry_bg, foreground=entry_fg)
+                elif widget == getattr(self, 'lbl0', None):
+                    if getattr(self, 'header_logo_image', None) is None:
+                        widget.configure(bg=win_bg, fg='#834bd0' if mode == 'video' else '#B794F4')
+                    else:
+                        widget.configure(bg=win_bg)
+                elif widget == getattr(self, 'lbl_warning_pm', None):
+                    widget.configure(bg=win_bg)
+                elif widget in [
+                    getattr(self, 'lbl10', None),
+                    getattr(self, 'lbl11', None),
+                    getattr(self, 'lbl11_2', None),
+                    getattr(self, 'lbl16', None),
+                    getattr(self, 'lbl17', None),
+                    getattr(self, 'lbl21', None)
+                ]:
+                    if w_class.startswith('T'):
+                        widget.configure(background=panel_bg, foreground=fg_color)
+                    else:
+                        widget.configure(bg=panel_bg, fg=fg_color)
+                else:
+                    if w_class in ['Label', 'tk.Label', 'TLabel']:
+                        if w_class.startswith('T'):
+                            widget.configure(background=win_bg, foreground=fg_color)
+                        else:
+                            widget.configure(bg=win_bg, fg=fg_color)
+                    elif w_class in ['Entry', 'TEntry']:
+                        if not w_class.startswith('T'):
+                            widget.configure(bg=entry_bg, fg=entry_fg, insertbackground=fg_color)
+                    elif w_class in ['Canvas']:
+                        widget.configure(bg=panel_bg)
+                    elif w_class in ['Labelframe', 'TLabelframe', 'LabelFrame']:
+                        if not w_class.startswith('T'):
+                            widget.configure(bg=win_bg, fg=fg_color)
+                    elif w_class in ['Radiobutton', 'TRadiobutton']:
+                        if not w_class.startswith('T'):
+                            widget.configure(bg=win_bg, fg=fg_color, selectcolor=win_bg, activebackground=win_bg, activeforeground=fg_color)
+                    elif w_class in ['Checkbutton', 'TCheckbutton']:
+                        if not w_class.startswith('T'):
+                            widget.configure(bg=win_bg, fg=fg_color, selectcolor=win_bg, activebackground=win_bg, activeforeground=fg_color)
+                    elif w_class in ['Frame', 'TFrame']:
+                        if not w_class.startswith('T'):
+                            widget.configure(bg=win_bg)
+
+                for child in widget.winfo_children():
+                    update_widget(child)
+            except Exception:
+                pass
+
+        for child in self.win.winfo_children():
+            update_widget(child)
 
     def stop(self):
         self.update_status_message("Stop signal received...")
@@ -2268,14 +2475,40 @@ Evan Jones, evanjones2026@u.northwestern.edu
             traceback.print_exc()
 
     def moveup(self):
-        self.axis.move_relative(position=float(self.t9.get())*-1, unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False,velocity=10,
-                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        """Move stage upward by distance in t9 with boundary recovery."""
+        try:
+            move_distance = float(self.t9.get()) * -1  # Negative for up
+            self.axis.move_relative(position=move_distance, unit=Units.LENGTH_MILLIMETRES,
+                                    wait_until_idle=False, velocity=10,
+                                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        except MovementFailedException:
+            self.update_status_message("Move out of range! Returning to zero (home)...")
+            try:
+                self.axis.move_absolute(position=0, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                self.update_status_message("Returned to home position (zero)")
+                self.get_position()
+            except Exception as e:
+                self.update_status_message(f"Error returning to home: {e}", error=True)
+        except Exception as e:
+            self.update_status_message(f"Move error: {e}", error=True)
 
     def movedown(self):
-        self.axis.move_relative(position=float(self.t9.get()), unit=Units.LENGTH_MILLIMETRES,
-                                wait_until_idle=False,velocity=5,
-                                velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        """Move stage downward by distance in t9 with boundary recovery."""
+        try:
+            move_distance = float(self.t9.get())  # Positive for down
+            self.axis.move_relative(position=move_distance, unit=Units.LENGTH_MILLIMETRES,
+                                    wait_until_idle=False, velocity=5,
+                                    velocity_unit=Units.VELOCITY_MILLIMETRES_PER_SECOND)
+        except MovementFailedException:
+            self.update_status_message("Move out of range! Returning to zero (home)...")
+            try:
+                self.axis.move_absolute(position=0, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                self.update_status_message("Returned to home position (zero)")
+                self.get_position()
+            except Exception as e:
+                self.update_status_message(f"Error returning to home: {e}", error=True)
+        except Exception as e:
+            self.update_status_message(f"Move error: {e}", error=True)
 
     def simple_txt(self):
         path = str(self.t1.get())
@@ -2407,18 +2640,88 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.b_auto_home.config(state=DISABLED)
 
     def open_sensor_panel(self):
+        if self._is_sensor_window_open(self.sensor_monitoring_window_instance):
+            self.update_status_message("Close Sensor Panel (Monitoring) before opening Sensor Panel (Logging).")
+            return
+
         if self.sensor_data_window_instance is None or not self.sensor_data_window_instance.sensor_window.winfo_exists():
             if hasattr(self, 'axis') and self.axis:
-                # Pass 'self' (MyWindow instance) to SensorDataWindow
                 self.sensor_data_window_instance = SensorDataWindow(self.win, self.axis, self.update_status_message, self)
+                original_close = self.sensor_data_window_instance.on_sensor_window_close
+
+                def _close_logging_panel():
+                    try:
+                        original_close()
+                    finally:
+                        self.sensor_data_window_instance = None
+                        self._sync_sensor_panel_button_states()
+
+                self.sensor_data_window_instance.on_sensor_window_close = _close_logging_panel
+                self.sensor_data_window_instance.sensor_window.protocol(
+                    "WM_DELETE_WINDOW",
+                    _close_logging_panel,
+                )
                 self.update_auto_home_button_state()
             else:
-                # self.t8.delete(0, 'end') # self.t8 is a Label
-                # self.t8.insert(END, "Error: Zaber axis not initialized. Cannot open sensor panel.")
                 self.update_status_message("Error: Zaber axis not initialized. Cannot open sensor panel.", error=True)
         else:
             self.sensor_data_window_instance.sensor_window.lift()
             self.update_auto_home_button_state()
+        self._sync_sensor_panel_button_states()
+
+    def open_sensor_panel_monitoring(self):
+        if self._is_sensor_window_open(self.sensor_data_window_instance):
+            self.update_status_message("Close Sensor Panel (Logging) before opening Sensor Panel (Monitoring).")
+            return
+
+        if (self.sensor_monitoring_window_instance is None or
+                not self.sensor_monitoring_window_instance.sensor_window.winfo_exists()):
+            if hasattr(self, 'axis') and self.axis:
+                self.sensor_monitoring_window_instance = SensorDataWindowMonitoring(
+                    self.win,
+                    self.axis,
+                    self.update_status_message,
+                    self,
+                )
+                original_close = self.sensor_monitoring_window_instance.on_sensor_window_close
+
+                def _close_monitoring_panel():
+                    try:
+                        original_close()
+                    finally:
+                        self.sensor_monitoring_window_instance = None
+                        self._sync_sensor_panel_button_states()
+
+                self.sensor_monitoring_window_instance.on_sensor_window_close = _close_monitoring_panel
+                self.sensor_monitoring_window_instance.sensor_window.protocol(
+                    "WM_DELETE_WINDOW",
+                    _close_monitoring_panel,
+                )
+            else:
+                self.update_status_message("Error: Zaber axis not initialized. Cannot open monitoring panel.", error=True)
+        else:
+            self.sensor_monitoring_window_instance.sensor_window.lift()
+        self._sync_sensor_panel_button_states()
+
+    def _is_sensor_window_open(self, instance):
+        return bool(instance and hasattr(instance, 'sensor_window') and instance.sensor_window.winfo_exists())
+
+    def _sync_sensor_panel_button_states(self):
+        if not hasattr(self, 'b_open_sensor_window') or not hasattr(self, 'b_open_sensor_window_monitoring'):
+            return
+
+        logging_open = self._is_sensor_window_open(self.sensor_data_window_instance)
+        monitoring_open = self._is_sensor_window_open(self.sensor_monitoring_window_instance)
+
+        if logging_open:
+            self.b_open_sensor_window.config(state=NORMAL)
+            self.b_open_sensor_window_monitoring.config(state=DISABLED)
+        elif monitoring_open:
+            self.b_open_sensor_window.config(state=DISABLED)
+            self.b_open_sensor_window_monitoring.config(state=NORMAL)
+        else:
+            self.b_open_sensor_window.config(state=NORMAL)
+            self.b_open_sensor_window_monitoring.config(state=NORMAL)
     
     def open_exp_conditions_window(self):
         """Open or show the experimental conditions window (VideoPattern version)."""
@@ -2637,6 +2940,9 @@ if __name__ == '__main__':
     window = Tk()
     mywin = MyWindow(window)
     window.title('Prince - Main Window')
-    window.geometry("1200x800+10+10")
+    if hasattr(mywin, 'default_window_geometry'):
+        window.geometry(mywin.default_window_geometry)
+    else:
+        window.geometry("1200x800+10+10")
     window.protocol("WM_DELETE_WINDOW", mywin.on_closing)
     window.mainloop()

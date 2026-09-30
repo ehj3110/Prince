@@ -2,33 +2,29 @@
 Calibration Modules
 ===================
 
-Modules for camera-based calibration and alignment of resin tank.
+Allied Vision (Vimba X / vmbpy) live preview for resin-tank alignment.
 
-Components:
-- AlliedVisionCameraManager: Allied Vision USB camera interface
-- CameraViewWindow: Real-time camera viewing window
-- ChArucoCalibrator: ChArUco-based focus and tilt detection
+Phase 1 delivers:
+- VmbCameraWorker: threaded acquisition with drop-oldest frame queue
+- ZoomPanCanvas: interactive pan/zoom viewport with ROI-first filters
+- CameraViewWindow: Tk popup (also opened from Prince_Segmented)
 
-Method: Foveated ChArUco Projection
-- Single pattern performs "double duty" for focus AND tilt
-- Works with limited FOV (inner 50% due to vignetting)
-- Laplacian variance for focus (MTF proxy)
-- Marker pose estimation for tilt/tip
-
-Author: Cheng Sun Lab Team
-Date: November 28, 2025
+ChArUco / legacy vimba calibration code was removed (never validated / non-working).
 """
 
-from .AlliedVisionCameraManager import AlliedVisionCameraManager, list_available_cameras
 from .CameraViewWindow import CameraViewWindow
-from .ChArucoCalibrator import ChArucoCalibrator, generate_calibration_pattern
-from .CalibrationWorkflow import CalibrationWorkflow
+from .vmb_camera_worker import VMBPY_AVAILABLE, VmbCameraWorker
+from .zoom_pan_canvas import ZoomPanCanvas
+from .SeekThermalViewerWindow import SeekThermalViewerWindow
+from .seek_thermal_worker import SeekThermalWorker
+from .seek_thermal_canvas import SeekThermalCanvas
 
 __all__ = [
-    'AlliedVisionCameraManager',
-    'CameraViewWindow',
-    'ChArucoCalibrator',
-    'CalibrationWorkflow',
-    'list_available_cameras',
-    'generate_calibration_pattern'
+    "CameraViewWindow",
+    "VmbCameraWorker",
+    "ZoomPanCanvas",
+    "VMBPY_AVAILABLE",
+    "SeekThermalViewerWindow",
+    "SeekThermalWorker",
+    "SeekThermalCanvas",
 ]

@@ -1,5 +1,40 @@
 # Changelog - Prince 3D Printer Control Software
 
+## [2026-09-23] - Allied Vision Camera View (Phase 1, Vimba X / vmbpy)
+
+### Live camera preview in `Prince_Segmented.py`
+- Added **Camera View** button (second control row) opening a non-blocking Tk popup for the Alvium 1800 U-511m.
+- New stack under `calibration_modules/`: `vmb_camera_worker.py`, `zoom_pan_canvas.py`, rewritten `CameraViewWindow.py`.
+- Features: live stream, pan/zoom, exposure/gain (debounced), display contrast/brightness/gamma, center crosshair, raw snapshot.
+- CLI bring-up: `stream_smoke_test_vmbpy.py`, `vmb_worker_harness.py`.
+- Main-window shutdown joins the camera worker so the device unlocks for Vimba Viewer.
+
+### Cleanup
+- Removed non-working legacy `vimba` manager and unvalidated ChArUco / calibration-workflow modules and related docs.
+- `camera_requirements.txt` now targets `vmbpy` (Vimba X), not legacy `vimba`.
+
+## [2026-09-06] - Prince Unified GUI (Projection Mode Switcher & Rush-Aligned Clean Interface)
+
+### Unified Dual Projection Mode Architecture (`Prince_Segmented_Unified.py`)
+- Created unified Prince control script porting the dual-mode architecture from Rush to Prince.
+- Added **Projection Mode** frame (`x=800, y=225`) allowing seamless toggling between:
+  - **Video Mode (`video`)**: 60 Hz HDMI video projection with Light UI theme (pastel red accent `#FFB3B3`, Prince purple `#834bd0` header).
+  - **Video Pattern Mode (`video_pattern`)**: 30 Hz HDMI Video Pattern LUT projection with Dark UI theme (`#1A1B26` background, `#2E1C1C` dark red panel accent, `#B794F4` soft purple header).
+- Preserved existing scripts (`Prince_Segmented.py` and `Prince_Segmented_VideoPattern.py`) intact without modifications.
+
+### Clean Layout & Visual Overhaul (Aligned with Rush Redesign)
+- **Header**: Centered unboxed header at `x=620, y=0, anchor='n'`, dynamically themed with Prince purple (`#834bd0` / `#B794F4`) and automatic `Prince_Logo.png` fallback.
+- **Checklist Repositioning**: Moved `lbl5` to `x=710, y=330` below the Projection Mode frame, eliminating the previous layout overlap.
+- **Clutter Removal**: Hidden Sandwich routine box and Auto-Home box via `place_forget()` (retaining background variables for full session compatibility); removed smooth motion checkboxes and redundant save/load/reload buttons.
+- **Compact Window Sizing**: Integrated `_apply_recommended_window_geometry()` to dynamically size the window height to `1200x680` with balanced padding.
+- **Dual Sensor Panels**: Added `Sensor Panel (Logging)` and `Sensor Panel (Monitoring)` with mutual exclusion enforcement.
+
+### Hardware Alignment & Stability Fixes
+- **Zaber Acceleration Readback**: Adjusted quantization tolerance to `max(100.0, 0.01 * desired)` across `Prince_Segmented_Unified.py`, `Prince_Segmented_VideoPattern.py`, and `Prince_Segmented.py`, eliminating false readback warnings caused by discrete microstep math.
+- **Physical Absolute Coordinates**: Enforced strict physical stage coordinates in `t4` (`get_position`, `set_home`, `goto_position`, `moveup`, `movedown`), resolving the relative-offset discrepancy.
+- **Thread-Safe Post-Print Survey**: Implemented `_post_print_queue` and main-thread poller (`_poll_post_print_queue`) to safely schedule post-print survey dialogs without cross-thread Tkinter crashes.
+- **State Persistence**: Updated `support_modules/SessionManager.py` to persist `projection_mode` and validate directory paths on autoload to prevent modal error popups on startup.
+
 ## [2026-06-11] - Image Modification Helpers: Cone Generator + Instruction Ramping
 
 ### Cone Generator (Image Modification Window)

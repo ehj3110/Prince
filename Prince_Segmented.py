@@ -122,6 +122,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         self.b_image_modification = Button(win, text="Image Modification", command=self.open_image_modification_window)
         self.b_image_modification.place(x=1070, y=60) # Next to Exp. Conditions
+
+        self.b_viscosity_monitor = Button(win, text="Viscosity Monitor", command=self.open_viscosity_monitor_window)
+        self.b_viscosity_monitor.place(x=1205, y=60) # Next to Image Modification
         
         self.b_reload_script = Button(win, text="Reload Script", command=self.reload_script_modules)
         self.b_reload_script.place(x=800, y=95) # Below sensor panel button
@@ -131,6 +134,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         self.b_reconnect_dlp = Button(win, text="Reconnect DLP", command=self.reconnect_dlp, state=DISABLED)
         self.b_reconnect_dlp.place(x=1050, y=95) # Side by side with disconnect, 125px gap
+
+        self.b_camera_view = Button(win, text="Camera View", command=self.open_camera_view_window)
+        self.b_camera_view.place(x=1175, y=95)  # Next to Reconnect DLP (on-screen within ~1200-wide layout)
         
         # State save/load buttons
         self.b_save_state = Button(win, text="Save State", command=self.save_gui_state)
@@ -146,6 +152,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.exp_conditions_window = None
         self.image_modification_window = None
         self.ramped_cylinder_window = None
+        self.viscosity_monitor_window = None
+        self.camera_view_window = None
+        self.measured_preprint_viscosity_cp = None
         self.auto_home_thread = None
         self.current_print_session_log_dir = None
         self.current_print_number = None
@@ -249,6 +258,14 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         self.b_auto_home = Button(self.frame_auto_home, text="Auto-Home Surface", command=self.start_auto_home_sequence, state=DISABLED)
         self.b_auto_home.grid(row=0, column=6, padx=10, pady=2)
+
+        self.enable_preprint_viscosity = BooleanVar(value=True)
+        self.chk_preprint_viscosity = Checkbutton(
+            self.frame_auto_home,
+            text='Scan Viscosity at Start',
+            variable=self.enable_preprint_viscosity
+        )
+        self.chk_preprint_viscosity.grid(row=0, column=7, padx=8, pady=2)
 
         # --- Sandwich Control Box ---
         frame_sandwich_y_start = 660  # Below the Auto-Home frame (70px gap for auto-home height)
@@ -458,7 +475,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             current_accel_val_after = self.axis.settings.get("accel", unit=Units.ACCELERATION_MICROMETRES_PER_SECOND_SQUARED)
             self.update_status_message(f"Default stage acceleration SET to: {desired_startup_accel_physical_ums2} µm/s². READ BACK as: {current_accel_val_after} µm/s².")
 
-            if abs(current_accel_val_after - desired_startup_accel_physical_ums2) > 1: # Allow for small rounding
+            if abs(current_accel_val_after - desired_startup_accel_physical_ums2) > max(100.0, 0.01 * desired_startup_accel_physical_ums2): # Allow for controller discrete microstep quantization
                  self.update_status_message(f"WARNING: Readback acceleration {current_accel_val_after} µm/s² differs from desired {desired_startup_accel_physical_ums2} µm/s².", error=True)
 
         except Exception as e:
@@ -1045,9 +1062,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.b1.config(state=DISABLED)
             self.b10.config(state=DISABLED)
             self.b4.config(state=NORMAL)
-
-            self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
-            self.update_status_message(f"Moved to reference: {self.reference} mm")
+            if hasattr(self, 'enable_preprint_viscosity') and self.enable_preprint_viscosity.get():
+                self._perform_preprint_viscosity_measurement()
+            else:
+                self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                self.update_status_message(f"Moved to reference: {self.reference} mm")
 
             cv2.namedWindow(self.window_name, cv2.WND_PROP_FULLSCREEN)
             cv2.moveWindow(self.window_name, self.screen.x + 1439, self.screen.y - 1) 
@@ -2244,6 +2263,166 @@ Evan Jones, evanjones2026@u.northwestern.edu
         else:
             self.ramped_cylinder_window.window.lift()
 
+    def open_viscosity_monitor_window(self):
+        """Open or show the dedicated In-Situ Viscosity & Rheology Monitor window."""
+        try:
+            from support_modules.ViscosityMonitorWindow import ViscosityMonitorWindow
+            if (self.viscosity_monitor_window is None or
+                    not (hasattr(self.viscosity_monitor_window, 'window') and
+                         self.viscosity_monitor_window.window.winfo_exists())):
+                axis_ref = getattr(self, 'axis', None)
+                force_gauge_ref = None
+                if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                    force_gauge_ref = getattr(self.sensor_data_window_instance, 'force_gauge_manager', None)
+                self.viscosity_monitor_window = ViscosityMonitorWindow(
+                    self.win, axis=axis_ref, force_gauge=force_gauge_ref,
+                    update_status_callback=self.update_status_message, prince_main_app_ref=self
+                )
+                self.update_status_message("Viscosity Monitor window opened")
+            else:
+                self.viscosity_monitor_window.window.lift()
+        except Exception as e:
+            self.update_status_message(f"Error opening Viscosity Monitor window: {e}", error=True)
+            traceback.print_exc()
+
+    def open_camera_view_window(self):
+        """Open or focus the Allied Vision Camera View pop-up (lazy-import vmbpy stack)."""
+        try:
+            from calibration_modules.CameraViewWindow import CameraViewWindow
+            if (self.camera_view_window is None or
+                    not (hasattr(self.camera_view_window, 'window') and
+                         self.camera_view_window.window.winfo_exists())):
+                self.camera_view_window = CameraViewWindow(self.win)
+                self.update_status_message("Camera View window opened.")
+            else:
+                self.camera_view_window.window.lift()
+                self.camera_view_window.window.focus_force()
+        except Exception as e:
+            self.update_status_message(f"Failed to open Camera View: {e}", error=True)
+            messagebox.showerror("Camera Error", f"Could not launch camera window:\n{e}")
+            traceback.print_exc()
+
+    def _perform_preprint_viscosity_measurement(self):
+        """
+        Execute an in-situ squeeze-flow viscosity measurement during stage approach to reference.
+        DEFAULT: Calculates relative viscosity drift (% change vs today's baseline) to detect
+        solvent / reactive diluent evaporation without requiring absolute calibration standards.
+
+        NOTE FOR DEVELOPERS:
+        This in-situ relative viscosity drift monitoring feature is currently active in Prince_Segmented.py.
+        It is queued for integration into Prince_Segmented_Unified.py during the next unified refactor.
+        """
+        try:
+            self.update_status_message("In-situ viscosity check: approaching resin...")
+            if not hasattr(self, 'axis') or not self.axis:
+                self.update_status_message("Stage axis not available for viscosity check, moving directly.")
+                return
+
+            force_gauge_ref = None
+            if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
+                force_gauge_ref = getattr(self.sensor_data_window_instance, 'force_gauge_manager', None)
+
+            if force_gauge_ref is None:
+                self.update_status_message("Force gauge not active. Skipping viscosity check; moving to reference.")
+                self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+                self.update_status_message(f"Moved to reference: {self.reference} mm")
+                return
+
+            # Motion profile: descend to reference + 0.8mm at regular speed
+            z_ref = self.reference
+            z_start = z_ref + 0.800  # 800 um above reference
+            z_end = z_ref + 0.150    # 150 um above reference (safe asymptotic rigid regime)
+            v_probe = 1.0            # 1.0 mm/s constant probe velocity
+
+            self.axis.move_absolute(position=z_start, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+            time.sleep(0.4)  # Settle fluid
+
+            # Tare force in liquid to isolate hydrodynamic squeeze force
+            tare_f = force_gauge_ref.get_calibrated_force()
+
+            # Descend at constant probe speed
+            self.axis.move_velocity(-v_probe, Units.VELOCITY_MILLIMETRES_PER_SECOND)
+
+            z_pts = []
+            f_pts = []
+            while True:
+                curr_z = self.axis.get_position(Units.LENGTH_MILLIMETRES)
+                curr_f = force_gauge_ref.get_calibrated_force() - tare_f
+                z_pts.append(curr_z)
+                f_pts.append(curr_f)
+
+                if curr_z <= z_end or curr_f >= 12.0:
+                    break
+                time.sleep(0.015)
+
+            self.axis.stop()
+
+            # Analyze using ViscosityAnalyzer
+            from support_modules.viscosity_analyzer import (
+                ViscosityAnalyzer,
+                load_daily_baseline,
+                save_daily_baseline,
+            )
+            analyzer = ViscosityAnalyzer(stage_diameter_mm=12.7)
+            res = analyzer.analyze_stefan_linearized(
+                np.array(z_pts), np.array(f_pts), velocity_mm_s=v_probe, z_contact_guess_mm=z_ref
+            )
+
+            if res.get("valid", False):
+                slope_k = res["slope"]
+                intercept_k = res["intercept"]
+                r2 = res["r_squared"]
+                visc_cp = res["viscosity_cp"]
+                self.measured_preprint_viscosity_cp = visc_cp
+
+                # --- RELATIVE VISCOSITY DRIFT TRACKING (DEFAULT) ---
+                daily_baseline = load_daily_baseline()
+                if daily_baseline is None:
+                    # First run of the day: automatically establish as today's baseline!
+                    now_str = datetime.datetime.now().strftime("%H:%M:%S")
+                    new_baseline = {
+                        "date": datetime.date.today().isoformat(),
+                        "timestamp": now_str,
+                        "slope": float(slope_k),
+                        "intercept": float(intercept_k),
+                        "r_squared": float(r2),
+                        "viscosity_cp": float(visc_cp),
+                    }
+                    save_daily_baseline(new_baseline)
+                    self.measured_preprint_drift_pct = 0.0
+                    self.update_status_message(f"Resin Baseline Set: Reference established at {now_str} (0.0% drift, ~{visc_cp:.0f} cP nominal)")
+                else:
+                    m_0 = daily_baseline["slope"]
+                    base_time = daily_baseline.get("timestamp", "earlier")
+                    drift_calc = analyzer.compute_relative_viscosity_drift(m_0, slope_k)
+                    drift_pct = drift_calc["drift_percent"]
+                    self.measured_preprint_drift_pct = drift_pct
+
+                    if drift_calc["alert_level"] == "CRITICAL":
+                        self.update_status_message(f"⚠️ RESIN ALERT: +{drift_pct:.1f}% Viscosity Drift since {base_time}! (Severe solvent evaporation)", error=True)
+                    elif drift_calc["alert_level"] == "WARNING":
+                        self.update_status_message(f"⚠️ Resin Warning: +{drift_pct:.1f}% Viscosity Drift since {base_time} (Solvent loss)", error=True)
+                    else:
+                        self.update_status_message(f"Resin Drift: {drift_pct:+.1f}% vs {base_time} baseline (Status: Stable, ~{visc_cp:.0f} cP)")
+
+                # If Viscosity Monitor window is open, update its display
+                if hasattr(self, 'viscosity_monitor_window') and self.viscosity_monitor_window and hasattr(self.viscosity_monitor_window, 'window') and self.viscosity_monitor_window.window.winfo_exists():
+                    run_data = [{"velocity_mm_s": v_probe, "z_mm": np.array(z_pts), "force_n": np.array(f_pts)}]
+                    self.viscosity_monitor_window._on_probe_complete(run_data)
+            else:
+                self.update_status_message(f"Viscosity check warning: {res.get('error', 'Low SNR')}")
+
+            # Complete motion to reference height
+            self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+            self.update_status_message(f"Moved to reference: {self.reference} mm")
+
+        except Exception as e:
+            self.update_status_message(f"Error in preprint viscosity check: {e}", error=True)
+            try:
+                self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
+            except Exception:
+                pass
+
     def start_auto_home_sequence(self):
         if self.auto_home_thread and self.auto_home_thread.is_alive():
             self.update_status_message("Auto-Home is already in progress.")
@@ -2334,6 +2513,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
             self.sensor_data_window_instance.on_sensor_window_close()
+
+        if (getattr(self, 'camera_view_window', None) is not None
+                and hasattr(self.camera_view_window, 'window')):
+            try:
+                if self.camera_view_window.window.winfo_exists():
+                    self.camera_view_window.on_closing()
+            except Exception as e:
+                print(f"Error closing Camera View window: {e}")
+            self.camera_view_window = None
 
         if hasattr(self, 'axis') and self.axis:
             try:

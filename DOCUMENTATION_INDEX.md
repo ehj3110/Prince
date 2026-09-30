@@ -10,13 +10,19 @@
 
 | Document | Purpose | Read Time |
 |----------|---------|-----------|
+| [documentation/technical/RESIN_VISCOSITY_SQUEEZE_FLOW_PHYSICS.md](documentation/technical/RESIN_VISCOSITY_SQUEEZE_FLOW_PHYSICS.md) | Fluid mechanics & EHL theory for in-situ resin squeeze-flow viscometry | 12 min |
+| [documentation/technical/VISCOSITY_DATA_ANALYSIS_METHODS.md](documentation/technical/VISCOSITY_DATA_ANALYSIS_METHODS.md) | Data analysis, regression algorithms & multi-speed rheology solvers | 10 min |
+| [documentation/technical/IN_SITU_VISCOSITY_DRIFT_HANDOVER.md](documentation/technical/IN_SITU_VISCOSITY_DRIFT_HANDOVER.md) | Handover & migration guide for in-situ viscosity drift & solvent evaporation tracking | 8 min |
+| [documentation/PRINCE_UNIFIED_GUI.md](documentation/PRINCE_UNIFIED_GUI.md) | Architecture, layout overhaul, hardware integration & operational guide for Prince Unified GUI | 7 min |
 | [documentation/CODEBASE_DOCUMENTATION_ROUND2_MASTER.md](documentation/CODEBASE_DOCUMENTATION_ROUND2_MASTER.md) | Master tracker for full codebase documentation refresh | 8 min |
 | [documentation/CODEBASE_SUBSYSTEM_MAP_ROUND2.md](documentation/CODEBASE_SUBSYSTEM_MAP_ROUND2.md) | Subsystem coverage map and priority matrix for thorough sweep | 6 min |
 | [documentation/Z_COMPENSATION_CALIBRATION_PROTOCOL.md](documentation/Z_COMPENSATION_CALIBRATION_PROTOCOL.md) | Future-work calibration protocol for axial print-through compensation | 10 min |
 | [documentation/Z_COMPENSATION_TORTURE_TEST_GUIDE.md](documentation/Z_COMPENSATION_TORTURE_TEST_GUIDE.md) | Stress-test execution and triage guide for z compensation | 6 min |
 | [documentation/SUPPORT_MODULES_ROUND2_INDEX.md](documentation/SUPPORT_MODULES_ROUND2_INDEX.md) | Overview of support modules for round 2 | 5 min |
 | [documentation/POST_PROCESSING_FOLDER_INDEX.md](documentation/POST_PROCESSING_FOLDER_INDEX.md) | Folder-level architecture map for post-processing | 6 min |
-| [documentation/CALIBRATION_FOLDER_INDEX.md](documentation/CALIBRATION_FOLDER_INDEX.md) | Folder-level architecture map for calibration modules | 6 min |
+| [documentation/CALIBRATION_FOLDER_INDEX.md](documentation/CALIBRATION_FOLDER_INDEX.md) | Folder-level architecture map for calibration modules (vmbpy camera preview) | 6 min |
+| [documentation/CAMERA_VIEWER_POPUP_SPEC.md](documentation/CAMERA_VIEWER_POPUP_SPEC.md) | Implementation spec for Allied Vision Camera View popup (Phase 1) | 10 min |
+| [documentation/technical/SEEK_THERMAL_INSPECTION_CAMERA_INTEGRATION.md](documentation/technical/SEEK_THERMAL_INSPECTION_CAMERA_INTEGRATION.md) | Architectural integration guide for Seek Thermal infrared inspection camera | 10 min |
 | [documentation/DEBUG_FOLDER_INDEX.md](documentation/DEBUG_FOLDER_INDEX.md) | Folder-level map for debug utilities and helpers | 4 min |
 
 ---
