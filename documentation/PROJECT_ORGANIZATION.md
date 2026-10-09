@@ -8,7 +8,9 @@ This document describes the organization of the Prince_Segmented project workspa
 
 ### Root Directory (`Prince_CurrentWorkingVersion/`)
 **Essential files at project root:**
-- `Prince_Segmented.py` - Main printing application
+- `Prince_Modern.py` - Current PySide6 printer UI (`prince_modern/`, `Launch_Prince_Modern.bat`)
+- `Prince_Segmented_Unified.py` - Tk baseline with the same print backend
+- `Prince_Segmented.py` - Legacy printing application
 - `README.md` - Project overview (start here)
 - `.gitignore` - Git configuration
 - `force_gauge_calibration_20251106_144013.txt` - Calibration data
@@ -104,6 +106,7 @@ python batch_processors\batch_process_universal.py "path\to\data"
 - `SANDWICH_QUICK_REFERENCE.md` - Sandwich routine
 - `SANDWICH_ROUTINE_GUIDE.md` - Detailed sandwich guide
 - `TRIPLE_FORCE_GAUGE_GUIDE.md` - Triple force gauge setup
+- `MONITORING_DASHBOARD_GUIDE.md` - System monitor (cameras, PM100A, triple force calibrate/tare)
 - `QUICK_CALIBRATION_GUIDE.md` - Calibration procedures
 
 **Technical Guides:**

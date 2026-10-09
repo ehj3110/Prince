@@ -38,13 +38,19 @@ class CameraViewWindow:
     POLL_MS = 30
     DEBOUNCE_MS = 150
 
-    def __init__(self, parent=None, fallback_to_mock: bool = False):
+    def __init__(self, parent=None, fallback_to_mock: bool = False, embed_in=None):
         self.parent = parent
         self.fallback_to_mock = fallback_to_mock
-        self.window = tk.Toplevel(parent) if parent is not None else tk.Tk()
-        self.window.title("Allied Vision Alvium Preview & Alignment")
-        self.window.geometry("1300x850")
-        self.window.minsize(900, 600)
+        self._embedded = embed_in is not None
+        if self._embedded:
+            self.ui_parent = embed_in
+            self.window = embed_in.winfo_toplevel()
+        else:
+            self.window = tk.Toplevel(parent) if parent is not None else tk.Tk()
+            self.ui_parent = self.window
+            self.window.title("Allied Vision Alvium Preview & Alignment")
+            self.window.geometry("1300x850")
+            self.window.minsize(900, 600)
 
         self.frame_queue: queue.Queue = queue.Queue(maxsize=1)
         self.worker: VmbCameraWorker | None = None
@@ -56,7 +62,8 @@ class CameraViewWindow:
         self._ui_initialized = False
 
         self._build_ui()
-        self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
+        if not self._embedded:
+            self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         if not VMBPY_AVAILABLE and not self.fallback_to_mock:
             self.status_var.set("ERROR: vmbpy not installed. Install Vimba X + vmbpy.")
@@ -86,16 +93,16 @@ class CameraViewWindow:
         self._start_worker()
 
     def _build_ui(self) -> None:
-        self.window.columnconfigure(0, weight=4)
-        self.window.columnconfigure(1, weight=1)
-        self.window.rowconfigure(0, weight=1)
+        self.ui_parent.columnconfigure(0, weight=4)
+        self.ui_parent.columnconfigure(1, weight=1)
+        self.ui_parent.rowconfigure(0, weight=1)
 
-        canvas_frame = ttk.Frame(self.window)
+        canvas_frame = ttk.Frame(self.ui_parent)
         canvas_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         self.canvas = ZoomPanCanvas(canvas_frame)
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        control_panel = ttk.Frame(self.window, padding=10)
+        control_panel = ttk.Frame(self.ui_parent, padding=10)
         control_panel.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
 
         # Section 1: Viewport & Navigation
@@ -188,7 +195,7 @@ class CameraViewWindow:
         # Status Bar
         self.status_var = tk.StringVar(value="Connecting to camera...")
         status_bar = ttk.Label(
-            self.window, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=4
+            self.ui_parent, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding=4
         )
         status_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
         self._ui_initialized = True
@@ -369,10 +376,11 @@ class CameraViewWindow:
         if self.worker is not None:
             self.worker.stop(join_timeout=5.0)
             self.worker = None
-        try:
-            self.window.destroy()
-        except tk.TclError:
-            pass
+        if not self._embedded:
+            try:
+                self.window.destroy()
+            except tk.TclError:
+                pass
 
     def run(self) -> None:
         """Run mainloop when launched without a parent."""

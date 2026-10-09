@@ -1,5 +1,55 @@
 # Changelog - Prince 3D Printer Control Software
 
+## [2026-10-09] - Prince Modern look + printer-PC handoff
+
+- Prince Modern cards use the mockup dusty lavender (`#8870A3`) and bundled Inter (`prince_modern/fonts/`).
+- Build visualization loads only after **Generate visualization** (fixed the slice preview growing on a timer).
+- Printer-PC move checklist: [`documentation/DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) (clone from GitHub; do not copy `.conda`).
+
+## [2026-10-03] - Prince Modern (PySide6 shell)
+
+- New entry [`Prince_Modern.py`](../Prince_Modern.py): dark-purple card UI matching the Modern mockup and monitoring-dashboard palette.
+- Package [`prince_modern/`](../prince_modern/): `main_window`, `theme`, `controller`.
+- Backend: withdrawn copy of Unified as [`prince_modern_unified_source.py`](../prince_modern_unified_source.py) so print/stage/DLP/sensor windows keep Unified behavior.
+- Adds System Log, header/footer status chips, slice preview placeholder, and **Monitoring Suite** launcher (missing from Unified).
+- Operator notes + feature gap checklist: [`documentation/PRINCE_MODERN_GUI.md`](PRINCE_MODERN_GUI.md).
+- [`Prince_Segmented_Unified.py`](../Prince_Segmented_Unified.py) left unchanged.
+
+## [2026-10-02] - Monitoring dashboard: live sensors, UV expected power, triple force
+
+### PySide6 System Monitoring dashboard
+- Separate process under `.conda\python.exe`; Prince **Monitoring Suite** launches it with `close_fds=True` so the DLP HID is not inherited.
+- Live cards: Alvium optical, Seek thermal (radiometric), Phidget force, Thorlabs PM100A power, slice geometry driven by `data/monitor_print_state.json`.
+- Gray unavailable covers when a device is missing (no fake camera/force streams).
+
+### Thorlabs PM100A + expected UV line
+- NI-VISA SCPI driver (`thorlabs_pm100a.py`); default wavelength **385 nm**; software up-range at 75% of full scale.
+- Two-point density calibration at LED commands **10** and **100** on `Power_255.png`; saved to `data/uv_power_calibration.json`.
+- Expected power = density(command) × layer white area; dashed line on the power plot.
+- Scripts: `power_density_calibration.py` (4 s settle + range iteration), `power_expected_stress_test.py`, `power_range_sweep.py`.
+
+### Triple load-cell force on the monitor
+- When newest `force_gauge_calibration_*.txt` has `MODE=TRIPLE`, opens Phidget channels **0+1+2** and plots the **sum** at default **40 Hz (25 ms)**.
+- **Calibrate** / **Tare** on the force card: SensorDataWindow-style dialogs with proportional total-force math from the triple-cell guides; optional save under `data/`.
+- Total force readout to 3 decimals with stable sign spacing; per-channel UI labels removed to avoid layout shake.
+- Sensor Panel / `ForceGaugeManager` remain single-channel; keep Sensor Panel closed while the dashboard owns the bridge.
+
+### Docs
+- New operator guide: `documentation/MONITORING_DASHBOARD_GUIDE.md`.
+
+## [2026-09-30] - PySide6 monitoring dashboard
+
+- Prince **Monitoring Suite** now launches a separate PySide6 dashboard (`calibration_modules/monitoring_dashboard`) so the printer GUI stays on Tkinter.
+- Dark 2x2 layout: dual camera feeds, peel-force plot, 3D lattice with a moving slice plane plus the current mask, and a UV dose stand-in.
+- Force, dose, and print progress are simulated. Cameras use the Allied Vision and Seek workers when those devices start, and synthetic frames otherwise.
+
+## [2026-09-30] - Monitoring Suite (optical, thermal, force, power slot)
+
+- Prince **Monitoring Suite** opens one window with tabs for the Allied Vision camera, Seek Thermal camera, and force/power readouts.
+- Force is read from the existing Sensor Panel gauge. The suite does not open a second Phidget.
+- Thorlabs power meter is a reserved readout until a driver is added.
+- Optical and thermal viewers can still run standalone.
+
 ## [2026-09-23] - Allied Vision Camera View (Phase 1, Vimba X / vmbpy)
 
 ### Live camera preview in `Prince_Segmented.py`

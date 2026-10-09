@@ -14,7 +14,8 @@ The application provides a graphical user interface (GUI) built with Tkinter tha
 ## Core Components
 
 ### Main Application
-- **`Prince_Segmented_Unified.py`** *(Recommended)*: The unified printer control GUI featuring the dual-mode Projection Mode Switcher (standard 60 Hz HDMI video projection and 30 Hz HDMI Video Pattern LUT projection), dynamic Light/Dark theming, modern uncluttered interface, and thread-safe post-print survey logging. See [documentation/PRINCE_UNIFIED_GUI.md](documentation/PRINCE_UNIFIED_GUI.md).
+- **`Prince_Modern.py`** *(Current UI)*: PySide6 shell (mockup lavender cards, Inter). Print/hardware still run through a withdrawn Unified backend. See [documentation/PRINCE_MODERN_GUI.md](documentation/PRINCE_MODERN_GUI.md). Launch with `.\.conda\python.exe Prince_Modern.py`.
+- **`Prince_Segmented_Unified.py`** *(Tk baseline)*: Dual-mode Projection Mode Switcher (60 Hz HDMI video and 30 Hz HDMI Video Pattern), Light/Dark theming, and thread-safe post-print survey logging. See [documentation/PRINCE_UNIFIED_GUI.md](documentation/PRINCE_UNIFIED_GUI.md).
 - **`Prince_Segmented.py`**: Legacy application for standard 60 Hz video projection.
 - **`Prince_Segmented_VideoPattern.py`**: Legacy application for 30 Hz video pattern projection.
 

@@ -69,6 +69,19 @@ def generate_synthetic_thermal_frame(frame_idx: int, width: int = 320, height: i
     return temp.astype(np.float32)
 
 
+def _enable_thermal_auto(camera) -> None:
+    """Let the shutter calibrate itself. The dashboard spans the image in software.
+
+    Camera AGC is left untouched. On this core, SeekCameraAGCMode.LINEAR
+    replaces the thermography frame with zeros.
+    """
+    try:
+        camera.shutter_mode = seekcamera.SeekCameraShutterMode.AUTO
+        print("SeekThermalWorker: shutter mode set to automatic.")
+    except Exception as exc:
+        print(f"SeekThermalWorker: automatic shutter unavailable ({exc})")
+
+
 class SeekThermalWorker(threading.Thread):
     """
     Dedicated background worker for Seek Thermal InspectionCAM.
@@ -89,6 +102,7 @@ class SeekThermalWorker(threading.Thread):
         self._running = False
         self.connected = False
         self.is_mock = False
+        self._camera = None
         self.cam_id: str = "Unknown"
         self.cam_model: str = "InspectionCAM (IQ-AAA)"
         self.last_error: Optional[str] = None
@@ -188,7 +202,9 @@ class SeekThermalWorker(threading.Thread):
                 self.connected = False
                 return
 
-        # Hardware execution with seekcamera SDK
+        # Hardware execution with seekcamera SDK.
+        # Frame callbacks belong to the camera, not the manager. The camera object
+        # must stay referenced or the registered callback is collected.
         try:
             with manager:
                 def on_frame(_cam, camera_frame, _data):
@@ -203,19 +219,33 @@ class SeekThermalWorker(threading.Thread):
                     except Exception as err:
                         self.last_error = str(err)
 
-                def on_event(_mgr, camera, event_type, _data):
+                def on_event(camera, event_type, _status, _user_data):
                     if event_type == seekcamera.SeekCameraManagerEvent.CONNECT:
+                        self._camera = camera
                         self.cam_id = str(camera.chipid)
                         self.connected = True
-                        camera.capture_session_start(seekcamera.SeekCameraFrameFormat.THERMOGRAPHY_FLOAT)
+                        camera.register_frame_available_callback(on_frame)
+                        camera.capture_session_start(
+                            seekcamera.SeekCameraFrameFormat.THERMOGRAPHY_FLOAT
+                        )
+                        _enable_thermal_auto(camera)
                     elif event_type == seekcamera.SeekCameraManagerEvent.DISCONNECT:
                         self.connected = False
+                        try:
+                            camera.capture_session_stop()
+                        except Exception:
+                            pass
+                        self._camera = None
 
                 manager.register_event_callback(on_event)
-                manager.register_frame_available_callback(on_frame)
 
                 while self._running:
                     time.sleep(0.1)
+                if self._camera is not None:
+                    try:
+                        self._camera.capture_session_stop()
+                    except Exception:
+                        pass
 
         except Exception as exc:
             self.last_error = str(exc)

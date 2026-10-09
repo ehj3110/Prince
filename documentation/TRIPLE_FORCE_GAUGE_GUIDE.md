@@ -145,6 +145,15 @@ Once you've verified all three channels work correctly and are aligned:
 4. **Add diagnostics** - Warn if force distribution is uneven
 5. **Update GUI** - Show individual channel status
 
+### Done for the System Monitor (2026-10-02)
+
+The PySide6 **Monitoring Suite** already:
+- Opens Phidget channels **0, 1, and 2** when `data/force_gauge_calibration_*.txt` has `MODE=TRIPLE`
+- Plots **summed** force at 40 Hz with **Calibrate** (proportional total-force math) and **Tare**
+- Saves new triple calibration files under `data/`
+
+Operator guide: [MONITORING_DASHBOARD_GUIDE.md](MONITORING_DASHBOARD_GUIDE.md). Sensor Panel / print GUI force path is still single-channel.
+
 ## Notes
 
 - The test system runs independently - doesn't interfere with main printing system

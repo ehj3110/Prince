@@ -1,7 +1,7 @@
 {
-  "directory": "C:\\Users\\cheng sun\\BoyuanSun\\Slicing\\Evan\\6Cylinder_1500umDiameter_50umLayers",
-  "reference": 79.99995410156247,
-  "move_distance": "20",
+  "directory": "C:\\Users\\cheng sun\\BoyuanSun\\Slicing\\Evan\\6Cylinder_500umDiameter_50umLayers",
+  "reference": 76.81143554687496,
+  "move_distance": "1",
   "layer_thickness": "50",
   "layer_pause": "0.125",
   "overstep": "45",

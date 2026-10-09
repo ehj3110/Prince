@@ -28,6 +28,7 @@ import os
 import shutil
 import datetime
 import queue
+import subprocess
 import traceback
 from tkinter import messagebox
 from SensorDataWindow import SensorDataWindow
@@ -135,8 +136,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.b_reconnect_dlp = Button(win, text="Reconnect DLP", command=self.reconnect_dlp, state=DISABLED)
         self.b_reconnect_dlp.place(x=1050, y=95) # Side by side with disconnect, 125px gap
 
-        self.b_camera_view = Button(win, text="Camera View", command=self.open_camera_view_window)
-        self.b_camera_view.place(x=1175, y=95)  # Next to Reconnect DLP (on-screen within ~1200-wide layout)
+        self.b_camera_view = Button(win, text="Monitoring Suite", width=18, command=self.open_camera_view_window)
+        self.b_camera_view.place(x=720, y=280)
         
         # State save/load buttons
         self.b_save_state = Button(win, text="Save State", command=self.save_gui_state)
@@ -154,6 +155,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.ramped_cylinder_window = None
         self.viscosity_monitor_window = None
         self.camera_view_window = None
+        self.monitoring_suite_window = None
         self.measured_preprint_viscosity_cp = None
         self.auto_home_thread = None
         self.current_print_session_log_dir = None
@@ -519,6 +521,21 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # Try to auto-load state on startup
         self.win.after(100, self._try_autoload_state)
     
+    def _publish_monitor_layer(self, layer_index: int, running: bool) -> None:
+        """Tell the monitoring window which layer is on the projector."""
+        try:
+            from calibration_modules.print_monitor_state import write_print_monitor_state
+            power = 0.0
+            if running and layer_index < len(getattr(self, "intensity_list", [])):
+                power = float(self.intensity_list[layer_index])
+            write_print_monitor_state(
+                layer=layer_index + 1 if running else 1,
+                power=power,
+                running=running,
+            )
+        except Exception as exc:
+            print(f"Monitor state not written: {exc}")
+
     def _update_gui_progress(self, progress_value, total_layers, current_layer_index):
         """Updates the progress bar and layer count display."""
         if hasattr(self, 'p1'):
@@ -527,6 +544,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # current_layer_index is 0-based, display is 1-based
         if hasattr(self, 'current_layer_num_var'):
             self.current_layer_num_var.set(f"Layer: {current_layer_index + 1}/{total_layers}")
+        self._publish_monitor_layer(current_layer_index, True)
         
         # Update estimated time remaining for stepped printing
         if hasattr(self, 'exposure_time') and self.exposure_time and current_layer_index < len(self.exposure_time):
@@ -930,12 +948,72 @@ Evan Jones, evanjones2026@u.northwestern.edu
         """Reset DLP to safe idle state: stop sequence, power off, video mode."""
         try:
             if hasattr(self, 'controller'):
-                self.controller.stopsequence()
-                self.controller.power(current=0)  # Turn off LED
-                self.controller.changemode(3)     # HDMI/video mode
+                self.release_light_engine(self.controller, close_usb=False)
                 self.update_status_message("DLP reset to safe state (video mode, power=0)")
         except Exception as e:
             self.update_status_message(f"Error resetting DLP: {e}", error=True)
+
+    @staticmethod
+    def open_projection_window(screen, window_name="show", black_image=None):
+        """Fullscreen projector window, black frame first. Same placement as a print."""
+        if black_image is None:
+            black_image = np.zeros((1600, 2560))
+        cv2.namedWindow(window_name, cv2.WND_PROP_FULLSCREEN)
+        cv2.moveWindow(window_name, screen.x + 1439, screen.y - 1)
+        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.imshow(window_name, black_image)
+        for _ in range(10):
+            cv2.waitKey(50)
+        return black_image
+
+    @staticmethod
+    def enter_pattern_mode(controller):
+        """LED off, then pattern mode. The 2 s wait is the print's mode-change delay."""
+        controller.power(current=0)
+        time.sleep(0.1)
+        controller.changemode(0)
+        controller.power(current=0)
+        time.sleep(2.0)
+
+    @staticmethod
+    def show_projection(window_name, image):
+        """Put one frame on the projector window."""
+        cv2.imshow(window_name, image)
+        cv2.waitKey(1)
+
+    @staticmethod
+    def set_projection_power(controller, current):
+        """LED current command, 0–255, the same call a print layer uses."""
+        controller.power(current=int(current))
+
+    @staticmethod
+    def release_light_engine(controller, window_name=None, black_image=None, close_usb=False):
+        """LED off and HDMI/video mode. close_usb also releases the DLPC900 handle.
+
+        standby() is not used. It leaves the chip asleep so the TI GUI cannot open it.
+        """
+        if window_name is not None and black_image is not None:
+            try:
+                cv2.imshow(window_name, black_image)
+                cv2.waitKey(1)
+            except Exception:
+                pass
+        try:
+            controller.stopsequence()
+            controller.power(current=0)
+            controller.changemode(3)
+        except Exception as exc:
+            print(f"Error shutting down DLP: {exc}")
+        if close_usb:
+            try:
+                controller.close()
+            except Exception as exc:
+                print(f"Error releasing DLP USB interface: {exc}")
+            if window_name is not None:
+                try:
+                    cv2.destroyWindow(window_name)
+                except Exception:
+                    pass
     
     def save_gui_state(self):
         """Save current GUI state to JSON file."""
@@ -1068,26 +1146,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
                 self.update_status_message(f"Moved to reference: {self.reference} mm")
 
-            cv2.namedWindow(self.window_name, cv2.WND_PROP_FULLSCREEN)
-            cv2.moveWindow(self.window_name, self.screen.x + 1439, self.screen.y - 1) 
-            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-            cv2.imshow(self.window_name, self.black_image)
-            # Pump events longer on the first print to guarantee the black frame reaches the HDMI display buffer
-            for _ in range(10):
-                cv2.waitKey(50)
+            self.black_image = self.open_projection_window(self.screen, self.window_name, self.black_image)
             self.win.update_idletasks()
             self.win.update()
             self.update_status_message("OpenCV window initialized.")
 
             # DLP setup for pattern projection
             if hasattr(self, 'controller'):
-                self.controller.power(current=0)  # Set power to 0 BEFORE mode change to prevent flash
-                time.sleep(0.1)
-                self.controller.changemode(0) # Switch to pattern sequence mode
-                self.controller.power(current=0)  # Prevent auto-ignition from mode change
-
-                time.sleep(2.0) # Crucial delay for mode change to take effect
-                self.controller.power(current=dlp_power) 
+                self.enter_pattern_mode(self.controller)
+                self.set_projection_power(self.controller, dlp_power)
                 self.update_status_message(f"DLP set to pattern mode, power: {dlp_power}.")
             else:
                 self.update_status_message("DLP controller not available. Cannot control DLP.", error=True)
@@ -1241,7 +1308,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             current_dlp_power = int(actual_dlp_power)
                             # Only update if different from last commanded value to reduce unnecessary commands
                             if current_dlp_power != last_commanded_dlp_power:
-                                self.controller.power(current=current_dlp_power)
+                                self.set_projection_power(self.controller, current_dlp_power)
                                 last_commanded_dlp_power = current_dlp_power
                                 self.update_status_message(f"L{current_layer_num_for_display}: DLP power set to {current_dlp_power}")
                         except Exception as e:
@@ -1252,10 +1319,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     image_to_show = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
                     if image_to_show is None:
                         self.update_status_message(f"Error loading image {str(image_path)} for L{current_layer_num_for_display}. Showing black.", error=True)
-                        cv2.imshow(self.window_name, self.black_image)
+                        self.show_projection(self.window_name, self.black_image)
                     else:
-                        cv2.imshow(self.window_name, image_to_show)
-                    cv2.waitKey(1) # Essential for OpenCV to process imshow
+                        self.show_projection(self.window_name, image_to_show)
                     
                     # Set phase to Exposure (continuous mode combines exposure + lift)
                     self._set_phase_robust("Exposure")
@@ -1299,7 +1365,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                             current_dlp_power = int(actual_dlp_power)
                             # Only update if different from last commanded value to reduce unnecessary commands
                             if current_dlp_power != last_commanded_dlp_power:
-                                self.controller.power(current=current_dlp_power)
+                                self.set_projection_power(self.controller, current_dlp_power)
                                 last_commanded_dlp_power = current_dlp_power
                                 self.update_status_message(f"L{current_layer_num_for_display}: DLP power set to {current_dlp_power}")
                         except Exception as e:
@@ -1310,10 +1376,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     image_to_show = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
                     if image_to_show is None:
                         self.update_status_message(f"Error loading image {str(image_path)} for L{current_layer_num_for_display}. Showing black.", error=True)
-                        cv2.imshow(self.window_name, self.black_image)
+                        self.show_projection(self.window_name, self.black_image)
                     else:
-                        cv2.imshow(self.window_name, image_to_show)
-                    cv2.waitKey(1)
+                        self.show_projection(self.window_name, image_to_show)
                     
                     # Set phase to Exposure
                     self._set_phase_robust("Exposure")
@@ -1325,8 +1390,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         self.update_status_message(f"L{current_layer_num_for_display} (Stepped): Zero exposure time.", error=True)
 
                     # 3. Show black image after exposure for stepped mode
-                    cv2.imshow(self.window_name, self.black_image)
-                    cv2.waitKey(1)
+                    self.show_projection(self.window_name, self.black_image)
                     
                     # Set phase to Pause (blackout period)
                     self._set_phase_robust("Pause")
@@ -1334,7 +1398,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                     # 3b. Turn off DLP power to eliminate background light during movement
                     if hasattr(self, 'controller'):
                         try:
-                            self.controller.power(current=0)
+                            self.set_projection_power(self.controller, 0)
                             self.update_status_message(f"L{current_layer_num_for_display}: DLP power=0 (background light off)")
                         except Exception as e:
                             self.update_status_message(f"L{current_layer_num_for_display}: Could not set DLP power to 0: {e}", error=True)
@@ -1730,7 +1794,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         try:
                             # Get next layer's power setting
                             next_layer_power = int(actual_dlp_power)
-                            self.controller.power(current=next_layer_power)
+                            self.set_projection_power(self.controller, next_layer_power)
                             self.update_status_message(f"L{current_layer_num_for_display}: DLP power restored to {next_layer_power}")
                         except Exception as e:
                             self.update_status_message(f"L{current_layer_num_for_display}: Could not restore DLP power: {e}", error=True)
@@ -1780,8 +1844,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             if not self.flag: 
                  self.update_status_message("Print completed successfully.")
                  # Ensure black image is shown at the very end, especially if continuous mode was active
-                 cv2.imshow(self.window_name, self.black_image)
-                 cv2.waitKey(1) # Allow OpenCV to process the final black image
+                 self.show_projection(self.window_name, self.black_image)
             
             winsound.Beep(440, 1000) 
 
@@ -1793,13 +1856,16 @@ Evan Jones, evanjones2026@u.northwestern.edu
             # DLP Cleanup
             if hasattr(self, 'controller'):
                 try:
-                    self.controller.stopsequence()
-                    self.controller.power(current=0) # Turn off LED
-                    self.controller.changemode(3)   # Set back to HDMI/video input mode
-                    # self.controller.hdmi()        # Optionally ensure HDMI input is active
+                    self.release_light_engine(
+                        self.controller,
+                        self.window_name,
+                        getattr(self, "black_image", None),
+                        close_usb=False,
+                    )
                     self.update_status_message("DLP sequence stopped, LEDs off, and mode set to HDMI.")
                 except Exception as dlp_e:
                     self.update_status_message(f"Error during DLP cleanup: {dlp_e}", error=True)
+            self._publish_monitor_layer(0, False)
             
             # OpenCV window cleanup
             if hasattr(self, 'window_name') and self.window_name: # Check if window_name is not None
@@ -2286,20 +2352,31 @@ Evan Jones, evanjones2026@u.northwestern.edu
             traceback.print_exc()
 
     def open_camera_view_window(self):
-        """Open or focus the Allied Vision Camera View pop-up (lazy-import vmbpy stack)."""
+        """Launch the PySide6 monitoring dashboard in its own process."""
         try:
-            from calibration_modules.CameraViewWindow import CameraViewWindow
-            if (self.camera_view_window is None or
-                    not (hasattr(self.camera_view_window, 'window') and
-                         self.camera_view_window.window.winfo_exists())):
-                self.camera_view_window = CameraViewWindow(self.win)
-                self.update_status_message("Camera View window opened.")
-            else:
-                self.camera_view_window.window.lift()
-                self.camera_view_window.window.focus_force()
+            proc = getattr(self, "_monitoring_dashboard_proc", None)
+            if proc is not None and proc.poll() is None:
+                self.update_status_message("Monitoring dashboard is already open.")
+                return
+            repo = os.path.dirname(os.path.abspath(__file__))
+            bundled_python = os.path.join(repo, ".conda", "python.exe")
+            python = bundled_python if os.path.isfile(bundled_python) else sys.executable
+            command = [python, "-m", "calibration_modules.monitoring_dashboard"]
+            image_dir = str(self.t1.get()).strip()
+            if image_dir:
+                command.extend(["--image-dir", image_dir])
+            # close_fds keeps Prince's open DLPC900 handle out of this process.
+            # On Windows that handle is otherwise inherited, and the TI GUI
+            # cannot open the DLP until every holder exits.
+            self._monitoring_dashboard_proc = subprocess.Popen(
+                command,
+                cwd=repo,
+                close_fds=True,
+            )
+            self.update_status_message("Monitoring dashboard opened.")
         except Exception as e:
-            self.update_status_message(f"Failed to open Camera View: {e}", error=True)
-            messagebox.showerror("Camera Error", f"Could not launch camera window:\n{e}")
+            self.update_status_message(f"Failed to open monitoring dashboard: {e}", error=True)
+            messagebox.showerror("Monitoring Dashboard", f"Could not launch monitoring dashboard:\n{e}")
             traceback.print_exc()
 
     def _perform_preprint_viscosity_measurement(self):
@@ -2514,14 +2591,18 @@ Evan Jones, evanjones2026@u.northwestern.edu
         if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
             self.sensor_data_window_instance.on_sensor_window_close()
 
-        if (getattr(self, 'camera_view_window', None) is not None
-                and hasattr(self.camera_view_window, 'window')):
+        proc = getattr(self, "_monitoring_dashboard_proc", None)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
             try:
-                if self.camera_view_window.window.winfo_exists():
-                    self.camera_view_window.on_closing()
-            except Exception as e:
-                print(f"Error closing Camera View window: {e}")
-            self.camera_view_window = None
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    print("Warning: monitoring dashboard did not exit.")
+            self._monitoring_dashboard_proc = None
 
         if hasattr(self, 'axis') and self.axis:
             try:
@@ -2535,8 +2616,12 @@ Evan Jones, evanjones2026@u.northwestern.edu
         
         if hasattr(self, 'controller'):
             try:
-                self.controller.stopsequence()
-                self.controller.standby()
+                self.release_light_engine(
+                    self.controller,
+                    getattr(self, "window_name", None),
+                    getattr(self, "black_image", None),
+                    close_usb=True,
+                )
             except Exception as e:
                 print(f"Error shutting down DLP: {e}")
 

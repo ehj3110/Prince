@@ -17,7 +17,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 try:
-    from vmbpy import VmbSystem, PixelFormat
+    from vmbpy import FrameStatus, VmbSystem, PixelFormat
 
     VMBPY_AVAILABLE = True
 except ImportError:
@@ -91,11 +91,15 @@ class VmbCameraWorker(threading.Thread):
         frame_queue: queue.Queue,
         fallback_to_mock: bool = False,
         reconnect_interval_s: float = 2.0,
+        auto_exposure: bool = False,
     ):
         super().__init__(daemon=True, name="VmbCameraWorker")
         self.frame_queue = frame_queue
         self.fallback_to_mock = fallback_to_mock
         self.reconnect_interval_s = max(0.5, float(reconnect_interval_s))
+        self.auto_exposure = auto_exposure
+        self.auto_exposure_hw = False
+        self._last_auto_exposure_t = 0.0
 
         self._running = False
         self.connected = False
@@ -139,6 +143,63 @@ class VmbCameraWorker(threading.Thread):
         if self.is_alive() and threading.current_thread() is not self:
             self.join(timeout=join_timeout)
 
+    def _enable_hardware_auto_exposure(self, cam) -> None:
+        """Use the camera's ExposureAuto when the feature exists."""
+        try:
+            feature = cam.get_feature_by_name("ExposureAuto")
+            for value in ("Continuous", 2):
+                try:
+                    feature.set(value)
+                    self.auto_exposure_hw = True
+                    print("VmbCameraWorker: ExposureAuto set to Continuous.")
+                    self._cap_hardware_auto_exposure(cam)
+                    return
+                except Exception:
+                    continue
+        except Exception as exc:
+            print(f"VmbCameraWorker: ExposureAuto unavailable ({exc})")
+        self.auto_exposure_hw = False
+        print("VmbCameraWorker: using software auto-exposure.")
+
+    def _cap_hardware_auto_exposure(self, cam) -> None:
+        """Keep auto exposure short enough that the live view does not stall."""
+        ceiling_us = 100000.0
+        for name in ("ExposureAutoMax", "ExposureTimeMax"):
+            try:
+                feature = cam.get_feature_by_name(name)
+                lo, hi = feature.get_range()
+                feature.set(max(float(lo), min(ceiling_us, float(hi))))
+                print(f"VmbCameraWorker: {name} capped at {float(feature.get()):.0f} us.")
+                return
+            except Exception:
+                continue
+        print("VmbCameraWorker: exposure ceiling feature not found; auto exposure stays unlimited.")
+
+    def _software_auto_exposure(self, cam, image: np.ndarray) -> None:
+        """Drive ExposureTime so the frame mean stays near mid-gray."""
+        now = time.perf_counter()
+        if now - self._last_auto_exposure_t < 0.35:
+            return
+        sample = image[::16, ::16]
+        if sample.size == 0 or self.current_exposure is None:
+            return
+        mean = float(sample.mean())
+        target = 110.0
+        if 80.0 <= mean <= 140.0:
+            return
+        self._last_auto_exposure_t = now
+        factor = target / max(mean, 1.0)
+        factor = max(0.75, min(factor, 1.35))
+        lo, hi = self.exposure_range
+        updated = max(lo, min(self.current_exposure * factor, min(hi, 100000.0)))
+        if abs(updated - self.current_exposure) < 20.0:
+            return
+        try:
+            cam.get_feature_by_name("ExposureTime").set(updated)
+            self.current_exposure = updated
+        except Exception as exc:
+            print(f"VmbCameraWorker: software auto-exposure failed: {exc}")
+
     def _apply_pending_features(self, cam) -> None:
         with self._lock:
             exp = self._pending_exposure
@@ -146,10 +207,14 @@ class VmbCameraWorker(threading.Thread):
             self._pending_exposure = None
             self._pending_gain = None
 
-        if exp is not None:
+        if exp is not None and not self.auto_exposure:
             lo, hi = self.exposure_range
             clamped = max(lo, min(exp, hi))
             try:
+                try:
+                    cam.get_feature_by_name("ExposureAuto").set("Off")
+                except Exception:
+                    pass
                 cam.get_feature_by_name("ExposureTime").set(clamped)
                 self.current_exposure = clamped
             except Exception as exc:
@@ -163,6 +228,41 @@ class VmbCameraWorker(threading.Thread):
                 self.current_gain = clamped
             except Exception as exc:
                 print(f"VmbCameraWorker: failed to set Gain: {exc}")
+
+    def _on_stream_frame(self, cam, stream, frame) -> None:
+        """Copy one frame and return its buffer. A late frame must not stop the stream."""
+        try:
+            if self._running and frame.get_status() == FrameStatus.Complete:
+                self._apply_pending_features(cam)
+                image = _normalize_frame(frame.as_opencv_image())
+                if self.auto_exposure and not self.auto_exposure_hw:
+                    self._software_auto_exposure(cam, image)
+                self._enqueue_frame(image)
+                self._last_frame_t = time.perf_counter()
+        except Exception:
+            pass
+        finally:
+            try:
+                cam.queue_frame(frame)
+            except Exception:
+                pass
+
+    def _run_continuous_stream(self, cam) -> None:
+        """Keep acquisition running. The old generator started and stopped every frame,
+        and treated a 2 s wait as a lost camera.
+        """
+        self._last_frame_t = time.perf_counter()
+        cam.start_streaming(handler=self._on_stream_frame, buffer_count=5)
+        try:
+            while self._running:
+                time.sleep(0.2)
+                if time.perf_counter() - self._last_frame_t > 8.0:
+                    raise TimeoutError("no Alvium frames for 8 s")
+        finally:
+            try:
+                cam.stop_streaming()
+            except Exception:
+                pass
 
     def _enqueue_frame(self, image: np.ndarray) -> None:
         # Telemetry update
@@ -276,12 +376,13 @@ class VmbCameraWorker(threading.Thread):
                             feat_exp = cam.get_feature_by_name("ExposureTime")
                             self.exposure_range = tuple(feat_exp.get_range())
                             self.current_exposure = float(feat_exp.get())
-                            # Cap long initial exposure for responsive preview
-                            if self.current_exposure > 20000.0:
-                                feat_exp.set(10000.0)
-                                self.current_exposure = 10000.0
                         except Exception as exc:
                             print(f"VmbCameraWorker: ExposureTime range unavailable: {exc}")
+
+                        if self.auto_exposure:
+                            self._enable_hardware_auto_exposure(cam)
+                        else:
+                            self._apply_pending_features(cam)
 
                         try:
                             feat_gain = cam.get_feature_by_name("Gain")
@@ -290,18 +391,7 @@ class VmbCameraWorker(threading.Thread):
                         except Exception as exc:
                             print(f"VmbCameraWorker: Gain range unavailable: {exc}")
 
-                        for frame in cam.get_frame_generator(limit=None, timeout_ms=2000):
-                            if not self._running:
-                                break
-                            try:
-                                self._apply_pending_features(cam)
-                                image = _normalize_frame(frame.as_opencv_image())
-                                self._enqueue_frame(image)
-                            except Exception as exc:
-                                time.sleep(0.01)
-                                if not self._running:
-                                    break
-                                continue
+                        self._run_continuous_stream(cam)
 
             except Exception as exc:
                 self.last_error = str(exc)

@@ -1,6 +1,30 @@
 # Deployment Guide - Prince 3D Printer System
 
-## 🚀 Transfer to Production Printer Computer
+## Moving the printer onto a new desktop (2026-10-09)
+
+Clone the repo. Do not copy this computer’s `.conda` folder or `__pycache__` — both are gitignored and tied to this machine.
+
+```powershell
+git clone https://github.com/ehj3110/Prince.git
+cd Prince
+```
+
+Then, on the new PC:
+
+1. Install a conda/Python environment and point a local `.conda` (or edit launchers) at a `python.exe` that has the printer packages. Prince Modern and the monitoring dashboard re-launch with `.\.conda\python.exe` when the current interpreter lacks PySide6.
+2. Install Python deps used by the live tools:
+   - `pip install -r calibration_modules/camera_requirements.txt`
+   - `pip install -r calibration_modules/monitoring_requirements.txt`
+   - `pip install PySide6 opencv-python numpy`
+3. Install hardware SDKs before expecting live devices: Allied Vision **Vimba X**, Seek camera driver, Phidgets, NI-VISA (Thorlabs PM100A in USBTMC), Zaber, TI DLP (do not leave DLPC900REF-GUI open while Prince owns the HID).
+4. Camera bring-up: [`calibration_modules/SETUP_ON_PRINTER_COMPUTER.md`](../calibration_modules/SETUP_ON_PRINTER_COMPUTER.md).
+5. Launch:
+   - Printer UI: `.\.conda\python.exe Prince_Modern.py` or `Launch_Prince_Modern.bat` (Tk baseline remains `Prince_Segmented_Unified.py`).
+   - Monitor: `.\.conda\python.exe -m calibration_modules.monitoring_dashboard`
+6. `prince_gui_state.json` may still name a directory from the old PC. Browse to the slice folder on the new machine if that path is missing.
+7. UV density file `data/uv_power_calibration.json` and triple-cell files `data/force_gauge_calibration_*.txt` travel with the repo. Recalibrate if the optical path or load cells changed.
+
+## Transfer to Production Printer Computer (historical file list)
 
 ### Pre-Deployment Checklist
 

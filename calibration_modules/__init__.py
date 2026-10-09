@@ -13,6 +13,7 @@ ChArUco / legacy vimba calibration code was removed (never validated / non-worki
 """
 
 from .CameraViewWindow import CameraViewWindow
+from .MonitoringSuiteWindow import MonitoringSuiteWindow
 from .vmb_camera_worker import VMBPY_AVAILABLE, VmbCameraWorker
 from .zoom_pan_canvas import ZoomPanCanvas
 from .SeekThermalViewerWindow import SeekThermalViewerWindow
@@ -21,6 +22,7 @@ from .seek_thermal_canvas import SeekThermalCanvas
 
 __all__ = [
     "CameraViewWindow",
+    "MonitoringSuiteWindow",
     "VmbCameraWorker",
     "ZoomPanCanvas",
     "VMBPY_AVAILABLE",

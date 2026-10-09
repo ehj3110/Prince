@@ -209,13 +209,19 @@ class dmd():
         self.ans = []
 
     def close(self):
-        """Close HID device connection cleanly."""
+        """Release the DLPC900 USB interface so other software can open it."""
         if self.use_hidapi and self.hid_dev is not None:
             try:
                 self.hid_dev.close()
             except Exception:
                 pass
             self.hid_dev = None
+        if getattr(self, "dev", None) is not None:
+            try:
+                usb.util.dispose_resources(self.dev)
+            except Exception:
+                pass
+            self.dev = None
 
     def __del__(self):
         self.close()

@@ -1,0 +1,12 @@
+# PySide6 monitoring dashboard (separate from the Tkinter Prince GUI)
+# .\.conda\python.exe -m pip install -r calibration_modules/monitoring_requirements.txt
+
+PySide6>=6.6
+pyqtgraph>=0.13
+pyvista>=0.43
+pyvistaqt>=0.11
+opencv-python>=4.5
+numpy>=1.24
+Phidget22>=1.14
+pyvisa>=1.14
+pyvisa-py>=0.7
