@@ -2,7 +2,9 @@
 
 ## Start Here
 
-👉 **[NEXT_STEPS.md](NEXT_STEPS.md)** - Your immediate action items
+👉 **[START_HERE_FOR_AI.md](START_HERE_FOR_AI.md)** — Handoff for a coding assistant: which GUI is current, how to launch, hardware rules, and which older docs to ignore.
+
+👉 **[NEXT_STEPS.md](NEXT_STEPS.md)** — Older Phase 1 shutdown-instrumentation checklist (not the current task list).
 
 ---
 

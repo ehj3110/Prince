@@ -1,5 +1,9 @@
 # Changelog - Prince 3D Printer Control Software
 
+## [2026-10-09] - AI handoff
+
+- New [`START_HERE_FOR_AI.md`](../START_HERE_FOR_AI.md): which entry point is current, launch commands, hardware constraints, and docs that are out of date. Linked from `DOCUMENTATION_INDEX.md`.
+
 ## [2026-10-09] - Prince Modern look + printer-PC handoff
 
 - Prince Modern cards use the mockup dusty lavender (`#8870A3`) and bundled Inter (`prince_modern/fonts/`).
