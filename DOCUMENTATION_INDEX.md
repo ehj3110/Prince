@@ -96,6 +96,9 @@ Pre-processing toolchain for mask generation, scattering compensation, and expos
 | **Cone Generator** | `image_modification/ramped_cylinder.py` | Parametric layer stack generation for stepped/smooth conical test geometries. |
 | **Instruction Ramping** | `image_modification/ramped_cylinder.py` | Automatic exposure and power ramp scheduling between user-defined control layers with dosage preservation. |
 | **Standalone Executable** | `ImageModificationGUI_export/` | PyInstaller-compiled standalone GUI (`ImageModificationGUI.exe`) requiring no local Python installation. |
+| **Feature Depth Correction** | `image_modification/feature_depth.py` | Physics-based macro overcuring compensation: physical scale normalization ($1 - e^{-\text{depth}/D_{\text{char}}}$), normalized convolution, and dual distance / Poisson pressure solvers. |
+| **3D Axial Z Compensation** | `support_modules/z_compensation.py` | 3D voxel energy model ($D_p, E_c, E_0/E_c$) with backward lookahead single-array streaming and downward overhang dimming. |
+| **Pipeline Stage Reordering** | `ImageModificationWindow.py` | Interactive listbox for custom stage execution order (`axial`, `edge`, `global`, `depth`, `scatter`) and custom output tagging. |
 
 ---
 

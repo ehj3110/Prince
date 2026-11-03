@@ -30,7 +30,15 @@ import cv2
 import numpy as np
 
 import support_modules.image_modification.processor as _im_processor
-from support_modules.z_compensation import compute_layer_factors
+from support_modules.z_compensation import (
+    ZCompensationConfig,
+    compute_layer_factors,
+    solve_single_layer_lookahead,
+)
+from support_modules.image_modification.processor import (
+    DEFAULT_PIPELINE_ORDER,
+    STAGE_LABELS,
+)
 try:
     from support_modules.image_modification.feature_depth import build_feature_depth_map
     HAS_FEATURE_DEPTH = True
@@ -446,14 +454,16 @@ class ImageModificationWindow:
             Label(fd_row3, text="Sink:", font=control_font).pack(side="left", padx=(0, 5))
             Entry(fd_row3, textvariable=self.fd_sink_var, width=5, font=control_font).pack(side="left")
 
-        # --- Section 5: Axial Z Compensation (experimental) ---
-        zc_frame = ttk.LabelFrame(scrollable_frame, text="Axial Z Compensation  (simplified overcuring model)", padding=(10, 5))
+        # --- Section 5: Axial Z Compensation (3D Voxel Energy Model) ---
+        zc_frame = ttk.LabelFrame(scrollable_frame, text="Axial Z Compensation  (3D Voxel Energy Model: Dp, Ec, E0/Ec)", padding=(10, 5))
         zc_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
         self.zc_var = BooleanVar(value=False)
         self.zc_layer_thickness_var = StringVar(value="50")
         self.zc_penetration_depth_var = StringVar(value="120")
+        self.zc_ec_var = StringVar(value="10.0")
+        self.zc_exposure_ratio_var = StringVar(value="2.5")
         self.zc_strength_var = StringVar(value="1.0")
-        self.zc_min_factor_var = StringVar(value="0.25")
+        self.zc_min_factor_var = StringVar(value="0.0")
         self.zc_factor_preview_var = StringVar(value="Preview factor: 1.000")
 
         zc_row1 = ttk.Frame(zc_frame)
@@ -466,11 +476,18 @@ class ImageModificationWindow:
 
         zc_row2 = ttk.Frame(zc_frame)
         zc_row2.pack(side="top", fill="x", pady=(5, 0))
+        Label(zc_row2, text="Ec (mJ/cm^2):", font=control_font).pack(side="left", padx=(0, 5))
+        Entry(zc_row2, textvariable=self.zc_ec_var, width=6, font=control_font).pack(side="left", padx=(0, 12))
+        Label(zc_row2, text="Exposure ratio (E0/Ec):", font=control_font).pack(side="left", padx=(0, 5))
+        Entry(zc_row2, textvariable=self.zc_exposure_ratio_var, width=6, font=control_font).pack(side="left", padx=(0, 12))
         Label(zc_row2, text="Strength (0-1):", font=control_font).pack(side="left", padx=(0, 5))
         Entry(zc_row2, textvariable=self.zc_strength_var, width=6, font=control_font).pack(side="left", padx=(0, 12))
         Label(zc_row2, text="Min factor:", font=control_font).pack(side="left", padx=(0, 5))
-        Entry(zc_row2, textvariable=self.zc_min_factor_var, width=6, font=control_font).pack(side="left", padx=(0, 12))
-        Label(zc_row2, textvariable=self.zc_factor_preview_var, font=control_font).pack(side="left", padx=(8, 0))
+        Entry(zc_row2, textvariable=self.zc_min_factor_var, width=5, font=control_font).pack(side="left")
+
+        zc_row3 = ttk.Frame(zc_frame)
+        zc_row3.pack(side="top", fill="x", pady=(4, 0))
+        Label(zc_row3, textvariable=self.zc_factor_preview_var, font=control_font, fg="#4b5563").pack(side="left")
 
         # --- Section 6: Scattering Compensation ---
         sc_frame = ttk.LabelFrame(scrollable_frame, text="Scattering Compensation", padding=(10, 5))
@@ -491,6 +508,30 @@ class ImageModificationWindow:
         Label(sc_row, text="Max:", font=control_font).pack(side="left", padx=(5, 5))
         self.sc_max_var = StringVar(value="255")
         Entry(sc_row, textvariable=self.sc_max_var, width=5, font=control_font).pack(side="left")
+
+        # --- Section 7: Pipeline Execution Order ---
+        order_frame = ttk.LabelFrame(scrollable_frame, text="Pipeline Execution Order  (Default: 3D Axial First)", padding=(10, 5))
+        order_frame.pack(side="top", fill="x", padx=10, pady=(0, 5))
+
+        self.pipeline_order = list(DEFAULT_PIPELINE_ORDER)
+
+        order_row = ttk.Frame(order_frame)
+        order_row.pack(side="top", fill="x")
+
+        self.order_listbox = Listbox(order_row, height=5, width=30, font=control_font, exportselection=False)
+        self.order_listbox.pack(side="left", padx=(0, 10))
+
+        btn_col = ttk.Frame(order_row)
+        btn_col.pack(side="left", fill="y", padx=(0, 15))
+
+        Button(btn_col, text="Move Up", command=self._order_move_up, font=control_font).pack(side="top", fill="x", pady=(0, 2))
+        Button(btn_col, text="Move Down", command=self._order_move_down, font=control_font).pack(side="top", fill="x", pady=(0, 2))
+        Button(btn_col, text="Reset Default", command=self._order_reset, font=control_font).pack(side="top", fill="x")
+
+        self.order_summary_label = Label(order_row, text="", font=control_font, justify="left", wraplength=400)
+        self.order_summary_label.pack(side="left", fill="both", expand=True)
+
+        self._refresh_order_ui()
 
         # --- Section 7: Cone Generator ---
         cone_frame = ttk.LabelFrame(scrollable_frame, text="Cone Generator", padding=(10, 5))
@@ -570,6 +611,40 @@ class ImageModificationWindow:
         self.build_btn.pack(side="left", padx=(0, 10))
         self.status_label = Label(btn_frame, text="", font=control_font)
         self.status_label.pack(side="left", padx=(20, 0))
+
+    def _refresh_order_ui(self):
+        """Update listbox and summary label to reflect self.pipeline_order."""
+        if not hasattr(self, 'order_listbox'):
+            return
+        self.order_listbox.delete(0, "end")
+        summary_parts = []
+        for idx, key in enumerate(self.pipeline_order, start=1):
+            name = STAGE_LABELS.get(key, key)
+            self.order_listbox.insert("end", f"{idx}. {name}")
+            summary_parts.append(f"{idx}. {name}")
+        self.order_summary_label.config(text=" -> ".join(summary_parts))
+
+    def _order_move_up(self):
+        sel = self.order_listbox.curselection()
+        if not sel or sel[0] == 0:
+            return
+        idx = sel[0]
+        self.pipeline_order[idx - 1], self.pipeline_order[idx] = self.pipeline_order[idx], self.pipeline_order[idx - 1]
+        self._refresh_order_ui()
+        self.order_listbox.selection_set(idx - 1)
+
+    def _order_move_down(self):
+        sel = self.order_listbox.curselection()
+        if not sel or sel[0] >= len(self.pipeline_order) - 1:
+            return
+        idx = sel[0]
+        self.pipeline_order[idx + 1], self.pipeline_order[idx] = self.pipeline_order[idx], self.pipeline_order[idx + 1]
+        self._refresh_order_ui()
+        self.order_listbox.selection_set(idx + 1)
+
+    def _order_reset(self):
+        self.pipeline_order = list(DEFAULT_PIPELINE_ORDER)
+        self._refresh_order_ui()
 
     def _open_definitions(self):
         DefinitionsWindow(self.window)
@@ -769,13 +844,21 @@ class ImageModificationWindow:
         except ValueError:
             zc_penetration_depth = 120.0
         try:
+            zc_ec = float(self.zc_ec_var.get().strip() or "10.0")
+        except ValueError:
+            zc_ec = 10.0
+        try:
+            zc_exposure_ratio = float(self.zc_exposure_ratio_var.get().strip() or "2.5")
+        except ValueError:
+            zc_exposure_ratio = 2.5
+        try:
             zc_strength = float(self.zc_strength_var.get().strip() or "1.0")
         except ValueError:
             zc_strength = 1.0
         try:
-            zc_min_factor = float(self.zc_min_factor_var.get().strip() or "0.25")
+            zc_min_factor = float(self.zc_min_factor_var.get().strip() or "0.0")
         except ValueError:
-            zc_min_factor = 0.25
+            zc_min_factor = 0.0
 
         return (
             blur,
@@ -801,27 +884,36 @@ class ImageModificationWindow:
             zc_min_factor,
             ee_min,
             ee_max,
+            zc_ec,
+            zc_exposure_ratio,
         )
 
     def _do_preview(self):
         if not self.current_image_path or not os.path.isfile(self.current_image_path):
             messagebox.showwarning("Preview", "Load an image first (set folder and click Load).", parent=self.window)
             return
-        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor, ee_min, ee_max = self._get_params()
+        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor, ee_min, ee_max, zc_ec, zc_exposure_ratio = self._get_params()
         try:
             axial_factor = 1.0
             if self.zc_var.get() and self.image_files:
                 layer_idx = max(1, min(len(self.image_files), int(self.layer_var.get().strip() or "1"))) - 1
-                factors = compute_layer_factors(
-                    num_layers=len(self.image_files),
+                zc_config = ZCompensationConfig(
                     layer_thickness_um=zc_layer_thickness,
                     penetration_depth_um=zc_penetration_depth,
+                    critical_energy_ec=zc_ec,
+                    exposure_ratio=zc_exposure_ratio,
                     strength=zc_strength,
                     min_factor=zc_min_factor,
                 )
-                if 0 <= layer_idx < len(factors):
-                    axial_factor = factors[layer_idx]
-            self.zc_factor_preview_var.set(f"Preview factor: {axial_factor:.3f}")
+                axial_map = solve_single_layer_lookahead(self.image_files, layer_idx, zc_config)
+                axial_factor = axial_map
+                nz = axial_map[axial_map > 0]
+                if len(nz) > 0:
+                    self.zc_factor_preview_var.set(f"Factor min/mean/max: {np.min(nz):.2f} / {np.mean(nz):.2f} / {np.max(nz):.2f}")
+                else:
+                    self.zc_factor_preview_var.set("Factor: 1.000 (all void)")
+            else:
+                self.zc_factor_preview_var.set("Preview factor: 1.000")
 
             result = process_single_for_preview(
                 self.current_image_path,
@@ -846,10 +938,12 @@ class ImageModificationWindow:
                 scatter_min_val=sc_min,
                 scatter_max_val=sc_max,
                 axial_factor=axial_factor,
+                axial_enabled=self.zc_var.get(),
                 ee_falloff=ee_falloff,
                 scatter_falloff=sc_falloff,
                 ee_min=ee_min,
                 ee_max=ee_max,
+                pipeline_order=getattr(self, 'pipeline_order', None),
             )
             self._display_image(None, processed_array=result, preserve_view=True)
             self.update_status("Preview updated.")
@@ -866,7 +960,7 @@ class ImageModificationWindow:
         if not self.image_files:
             messagebox.showerror("Build", "No PNG images found in folder.", parent=self.window)
             return
-        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor, ee_min, ee_max = self._get_params()
+        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor, ee_min, ee_max, zc_ec, zc_exposure_ratio = self._get_params()
 
         def run_build():
             try:
@@ -899,12 +993,15 @@ class ImageModificationWindow:
                     axial_enabled=self.zc_var.get(),
                     layer_thickness_um=zc_layer_thickness,
                     penetration_depth_um=zc_penetration_depth,
+                    critical_energy_ec=zc_ec,
+                    exposure_ratio=zc_exposure_ratio,
                     axial_strength=zc_strength,
                     axial_min_factor=zc_min_factor,
                     ee_falloff=ee_falloff,
                     scatter_falloff=sc_falloff,
                     ee_min=ee_min,
                     ee_max=ee_max,
+                    pipeline_order=getattr(self, 'pipeline_order', None),
                 )
                 self.window.after(0, lambda: self._build_done(output, None))
             except Exception as e:
@@ -1192,7 +1289,7 @@ class ImageModificationWindow:
 
         folder = self.folder_entry.get().strip()
         session_dir = self._resolve_build_session_dir(folder) if folder and os.path.isdir(folder) else None
-        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor, ee_min, ee_max = self._get_params()
+        blur, globe, sigma, blend_angle, ge_sector_angle, ge_sector_smoothing, fd_strength, fd_decay, fd_smooth, fd_mode, fd_conductivity, fd_sink, sc_width, sc_min, sc_max, ee_falloff, sc_falloff, zc_layer_thickness, zc_penetration_depth, zc_strength, zc_min_factor, ee_min, ee_max, zc_ec, zc_exposure_ratio = self._get_params()
 
         summary_rows = [
             ("timestamp", datetime.now().isoformat(timespec="seconds")),
@@ -1225,8 +1322,11 @@ class ImageModificationWindow:
             ("axial_enabled", self.zc_var.get()),
             ("layer_thickness_um", zc_layer_thickness),
             ("penetration_depth_um", zc_penetration_depth),
+            ("critical_energy_ec", zc_ec),
+            ("exposure_ratio", zc_exposure_ratio),
             ("axial_strength", zc_strength),
             ("axial_min_factor", zc_min_factor),
+            ("pipeline_order", " -> ".join(getattr(self, 'pipeline_order', DEFAULT_PIPELINE_ORDER))),
             ("ee_falloff", ee_falloff),
             ("scatter_falloff", sc_falloff),
             ("ee_min", ee_min),

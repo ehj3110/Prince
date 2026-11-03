@@ -149,6 +149,12 @@ Prince_CurrentWorkingVersion/
 - Pillar clustering in XY with modular top-shell extraction or clean planar cuts.
 - CLI interface and full unit test suite (	ests/test_support_separator.py, 12 tests, 100% passing).
 
+**Robust Feature Depth Correction & Interactive Pipeline Ordering:**
+- `feature_depth.py`: Physical scale normalization using saturating exponential $1 - \exp(-\text{depth} / D_{\text{char}})$ (eliminating artificial over-dimming of small isolated features) and normalized convolution for spreading channel depths into struts without dilution.
+- Dual Modes: Distance/Channel Flow propagation and Pressure/Porous Media 2D Poisson solver with coarse-grid acceleration.
+- `ImageModificationWindow.py`: Added interactive listbox for dynamic pipeline stage reordering (`axial`, `edge`, `global`, `depth`, `scatter`) and 3D axial parameters ($E_c, E_0/E_c$).
+- Unit tested in `tests/test_image_modification.py` (3D axial folder builds, pipeline stage reordering, single-layer lookahead overhang dimming). All 71 tests passing in `tests/run_all_tests.py`.
+
 **High-Throughput SIMD Image Processing Vectorization:**
 - edge_enhancement.py: Converted internal pipeline to single-precision float32 SIMD operations with OpenCV cv2.minMaxLoc(), eliminating large boolean mask allocations during high-layer-count slicing.
 - scattering_compensation.py: Vectorized Gaussian boundary dimming with float32 SIMD and linear scale-offset fusion.

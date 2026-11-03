@@ -271,6 +271,89 @@ class TestImageModification(unittest.TestCase):
 
         self.assertTrue(callable(ImageModificationWindow))
 
+    def test_process_folder_3d_axial(self):
+        """Build: 3D Axial Z-compensation enabled with Dp, Ec, and exposure ratio."""
+        from support_modules.image_modification.processor import process_folder
+
+        output = process_folder(
+            self.test_path,
+            edge_enabled=False,
+            blurring=25,
+            global_enabled=False,
+            globe=0.8,
+            sigma=6.0,
+            padding_enabled=False,
+            axial_enabled=True,
+            layer_thickness_um=50.0,
+            penetration_depth_um=120.0,
+            critical_energy_ec=10.0,
+            exposure_ratio=2.5,
+            axial_strength=1.0,
+            axial_min_factor=0.0,
+        )
+        self.assertTrue(os.path.isdir(output))
+        self.assertIn("ZA_LT50_0_DP120_0_ER2_5", output)
+        out_files = [f for f in os.listdir(output) if f.endswith(".png")]
+        self.assertGreater(len(out_files), 0)
+
+    def test_pipeline_order_execution(self):
+        """Build: verify custom pipeline stage order executes and names output appropriately."""
+        from support_modules.image_modification.processor import process_folder
+
+        output = process_folder(
+            self.test_path,
+            edge_enabled=True,
+            blurring=25,
+            global_enabled=True,
+            globe=0.8,
+            sigma=6.0,
+            padding_enabled=False,
+            axial_enabled=True,
+            layer_thickness_um=50.0,
+            penetration_depth_um=120.0,
+            critical_energy_ec=10.0,
+            exposure_ratio=2.5,
+            pipeline_order=["edge", "axial", "global", "depth", "scatter"],
+        )
+        self.assertTrue(os.path.isdir(output))
+        self.assertIn("Ord-EEZAGE", output)
+
+    def test_single_layer_lookahead_overhang(self):
+        """Verify 3D single layer lookahead solver detects and dims downward overhangs."""
+        import tempfile
+        import cv2
+        from support_modules.z_compensation import ZCompensationConfig, solve_single_layer_lookahead
+
+        with tempfile.TemporaryDirectory() as td:
+            # Create a 3-layer thread model:
+            # Layer 1: solid core r=20
+            # Layer 2: thread overhang tooth r=40
+            # Layer 3: tooth continues r=40
+            files = []
+            for k, r in enumerate([20, 40, 40]):
+                im = np.zeros((100, 100), dtype=np.uint8)
+                cv2.circle(im, (50, 50), r, 255, -1)
+                p = Path(td) / f"{k+1}.png"
+                cv2.imwrite(str(p), im)
+                files.append(str(p))
+
+            cfg = ZCompensationConfig(
+                layer_thickness_um=50.0,
+                penetration_depth_um=120.0,
+                critical_energy_ec=10.0,
+                exposure_ratio=2.5,
+                min_factor=0.0,
+            )
+            # Layer 1 (index 1, slice 2) overhang tooth:
+            # Overhang region (r between 20 and 40) sits directly over empty void on layer 0.
+            factor_map = solve_single_layer_lookahead(files, 1, cfg)
+            self.assertEqual(factor_map.shape, (100, 100))
+            # Solid core (50, 50) has layers above it and below it
+            self.assertGreater(factor_map[50, 50], 0.0)
+            # The overhang pixel (50, 80) has layer 2 above it
+            self.assertGreater(factor_map[50, 80], 0.0)
+            self.assertLessEqual(factor_map[50, 80], 1.0)
+
 
 def run_standalone():
     """Run as standalone script with verbose output."""

@@ -11,6 +11,24 @@
 - **Object-Oriented & CLI Interface:** Added SupportedMeshSeparator class (separate(), tag_tips(), disconnect_tops(), export()) and a command-line interface supporting batch STL processing.
 - **Unit Test Suite:** Added tests/test_support_separator.py (12 tests) verifying synthetic cube + penetrating cylinders, multi-shell parts, base rafts, coordinate invariance, zero triangle loss, and CLI execution.
 
+### Robust Feature Depth Correction & Interactive Pipeline Ordering (Image Modification Suite)
+- **Robust Feature Depth Correction (`support_modules/image_modification/feature_depth.py`):**
+  - **Physical Scale Normalization:** Replaced global min/max rescaling with a saturating exponential physical scale $1 - \exp(-\text{depth} / D_{\text{char}})$ with $D_{\text{char}} = 2 \times \sigma_{\text{decay}}$. Ensures small or isolated parts are not artificially over-dimmed.
+  - **Normalized Convolution:** Spreads channel depth into solid features via $\text{GaussianBlur}(\text{depth} \times \text{mask}) / \text{GaussianBlur}(\text{mask})$, eliminating boundary dilution artifacts and computing the true local weighted average of arriving channel depths.
+  - **Dual Operating Modes:**
+    - **Mode A (Distance / Channel Flow):** Connected component classification separating exterior channels from enclosed pores; Euclidean propagation from the perimeter outer pool (`outer_pool`, depth = 0).
+    - **Mode B (Pressure / Porous Media Poisson Solver):** Solves 2D Darcy flow $\nabla \cdot (K \nabla P) = S$ with Successive Over-Relaxation (SOR) and automatic $2\times / 4\times$ coarse-grid acceleration for sub-second convergence on $1600\times 2560$ SLA masks.
+- **Interactive Pipeline Stage Reordering (`support_modules/ImageModificationWindow.py`):**
+  - Added interactive listbox allowing operators to dynamically reorder pipeline stages (`3D Axial`, `Edge Enhancement`, `Global Enhancement`, `Feature Depth`, `Scattering Compensation`) using Move Up / Move Down controls.
+  - Stages before and after axial compensation are partitioned cleanly during batch multiprocessing.
+  - Added folder tag encoding for custom order sequences (`_Ord-EEZAGE`, etc.).
+- **3D Axial Z Compensation GUI Integration:**
+  - Added controls for critical energy $E_c$, exposure ratio $E_0/E_c$, layer thickness $h$, and penetration depth $D_p$.
+  - Integrated single-layer lookahead downward overhang solver into live image preview.
+- **Unit Tests (`tests/test_image_modification.py`):**
+  - Added unit tests for 3D axial folder processing, custom pipeline execution order, and single-layer lookahead overhang dimming.
+  - Added `image_mod` test suite to `tests/run_all_tests.py` (all 71 tests pass).
+
 ### High-Efficiency SIMD Image Modification Optimizations
 - **Edge Enhancement Vectorization (support_modules/image_modification/edge_enhancement.py):**
   - Converted internal calculations to single-precision float32 SIMD operations for reduced memory overhead and increased throughput during high-layer-count slicing.

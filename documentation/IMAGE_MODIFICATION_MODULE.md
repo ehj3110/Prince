@@ -156,49 +156,62 @@ Padding normalization (intensity rescaling) only applies when both EE and GE are
 
 ---
 
-### 4. Feature Depth Correction
+### 4. Robust Feature Depth Correction
 
-**Enable checkbox + Strength / Channel decay (px) / Smooth (px)**
+**Enable checkbox + Mode (Distance / Pressure) + Strength / Decay / Smooth / Conductivity / Sink**
 
-Compensates for overcuring of features deep inside a dense lattice, caused by resin pre-curing as it flows inward through the channels.
+Compensates for macro-scale overcuring of features deep inside dense lattices, porous networks, and microfluidic channels caused by resin pre-curing and resin flow starvation.
 
-#### Physical Model
+#### Physical Motivation
+In dense lattice networks, resin must migrate inward from the external resin pool through narrow channels. As UV light cures adjacent white features, laterally scattered photons partially polymerize the resin in the channels. When this pre-cured resin reaches interior features, it requires less dose to solidify, leading to severe overcuring and channel clogging.
 
-Resin starts in the outer bath (fresh, uncured). It flows through the black (open) channels of the lattice to reach the white (solid) features. As it travels past illuminated white pixels, scattered UV partially cures it. The further it has to travel, the more pre-cured it arrives — and the more overcured the target feature becomes relative to its nominal dose.
+#### Modes of Operation
 
-Features at the perimeter of the lattice receive fresh resin; features at the center receive pre-cured resin. The correction dims center features more than perimeter features.
+##### Mode A: Distance / Channel Flow (Geometric Diffusion)
+1. **Black Pixel Classification:** Connected components separate open exterior channels from enclosed, trapped pores.
+2. **Perimeter Outer Pool Identification:** Dilation of the solid silhouette identifies the true outer resin pool at the boundary (`channel_depth = 0`).
+3. **Channel Depth Propagation:** Computes Euclidean distance through connected channels. Sealed pores compute distance through solid walls plus nearest channel depth.
+4. **Normalized Convolution:** Spreads channel depth into solid struts using normalized convolution (`GaussianBlur(depth * mask) / GaussianBlur(mask)`), computing the exact local weighted average of feeding channels without boundary dilution.
+5. **Effective Depth:** `effective_depth = dist_to_black + channel_spread`.
+6. **Saturating Physical Scale Normalization:** Normalizes depth using a saturating exponential $1 - \exp(-\text{depth} / D_{\text{char}})$ with characteristic scale $D_{\text{char}} = 2 \times \sigma_{\text{decay}}$. This avoids artificially over-dimming isolated or small parts.
 
-#### Algorithm
-
-1. **Classify black pixels** — Connected-component analysis separates black pixels into:
-   - *Connected black*: pixels with a path to the image border (open channels)
-   - *Enclosed black*: pixels with no path to the image border (sealed pores)
-
-2. **Identify the outer resin pool** — Treat enclosed pores as white to get the true outer silhouette of the part. Dilate this silhouette by 1 pixel; the newly covered pixels that fall in connected-black are the **outer resin pool** — the first ring of fresh resin immediately outside the part perimeter. These have `channel_depth = 0`.
-
-3. **Channel depth for connected-black pixels** — Euclidean distance from each connected-black pixel to the nearest outer-pool pixel. A channel 100 px deep has `channel_depth ≈ 100`.
-
-4. **Channel depth for enclosed pores** — Since sealed pores have no path to the outer pool, their depth is estimated as: (distance through white to nearest connected-black channel) + (channel depth of that connected-black neighbor). This approximates how much white the resin "seeped" through to reach the sealed pore.
-
-5. **Spread channel depth into white pixels** — Gaussian blur (`sigma = Channel decay / 2`) spreads the channel depth map from black pixels into the adjacent white struts. Each white pixel inherits the depth of its surrounding channels.
-
-6. **Effective depth** — `effective_depth = dist_to_black + channel_spread`  
-   Additive: how deep inside the strut + how deep the supplying channel is.  
-   This is monotonically larger toward the center of a lattice.
-
-7. **Normalise** — Scale to `[0, 1]` over all white pixels. Outliers are clipped at the 99th percentile so a single pathological enclosed pore doesn't compress the rest of the range.
-
-8. **Apply correction** — Each white pixel is dimmed by `(1 - Strength × depth_norm)`. The deepest pixel (depth=1) is multiplied by `(1 - Strength)`; the shallowest (depth=0) is unchanged. A constant minimum intensity floor (100) prevents any white pixel from dropping below printable threshold.
+##### Mode B: Pressure / Porous Media (Poisson Flow Solver)
+1. **Resin Starvation Physics:** Formulates resin replenishment as steady-state Darcy flow through a porous medium: $\nabla \cdot (K \nabla P) = S$, where $K$ is the channel conductivity ratio and $S$ is the consumption rate at curing pixels.
+2. **Coarse-Grid Acceleration:** Solves the 2D Poisson equation with Successive Over-Relaxation (SOR) on an automatically downsampled $2\times$ or $4\times$ grid for sub-second convergence on $1600\times 2560$ images, followed by smooth bilinear interpolation.
+3. **Dirichlet Boundaries:** Anchors pressure to zero at the outer pool and image borders.
+4. **Physical Pressure Normalization:** Normalizes using saturating scale $1 - \exp(-P / P_{\text{char}})$.
 
 **Parameters:**
 
-| Parameter | Default | Meaning |
-|---|---|---|
-| Strength | 0.4 | Correction magnitude. 0 = no correction. 1 = deepest pixels dimmed to zero (use with care). |
-| Channel decay (px) | 50 | Controls how far the channel depth influence spreads into adjacent white struts. Also the sigma used when blending depth into enclosed pore estimates. |
-| Smooth (px) | 10 | Gaussian sigma for final depth map smoothing. Removes medial-axis ridge artifacts. |
+| Parameter | Default | Mode | Meaning |
+|---|---|---|---|
+| Mode | Distance | Both | Choice of geometric distance propagation vs. physical pressure Poisson solver. |
+| Strength | 0.4 | Both | Maximum dimming factor applied to the deepest features ($1 - \text{strength} \times \text{depth}$). |
+| Decay (px) | 50.0 | Distance | Characteristic spatial reach of fresh resin replenishment into channels. |
+| Smooth (px) | 10.0 | Distance | Gaussian smoothing sigma removing medial-axis ridge artifacts. |
+| Conductivity | 100.0 | Pressure | Permeability ratio $K$ of open channels relative to solid struts. |
+| Sink | 0.1 | Pressure | Resin consumption rate / sink magnitude at each solid pixel. |
 
-> **Recommended usage:** Feature Depth Correction works best in combination with Edge Enhancement. EE handles fine optical blur at feature boundaries; FDC handles systematic overcuring at the macro scale (part center vs. perimeter).
+---
+
+### 5. 3D Axial Z Compensation (3D Voxel Energy Model)
+
+**Enable checkbox + Layer Thickness ($h$) / Penetration Depth ($D_p$) / Critical Energy ($E_c$) / Exposure Ratio ($E_0/E_c$)**
+
+Corrects axial print-through and downward overhang overcuring across the Z stack:
+- **Lookahead Backward Pass:** Models light penetration using Beer-Lambert attenuation $a = \exp(-h / D_p)$.
+- **Single 2D Carry Array:** Streams backward from the top layer to the bottom layer, accumulating penetrating irradiance and computing ideal exposure times $E_k = \text{clip}(E_{\text{target}} - \text{carry}, 0, E_{\text{nominal}})$.
+- **Downward Overhang Detection:** Automatically identifies downward-facing overhang teeth and adjusts local exposure to prevent axial overcure.
+
+---
+
+### 6. Pipeline Execution Order (Interactive Stage Reordering)
+
+The Image Modification window provides an interactive listbox allowing operators to customize the order of pipeline stages:
+- **Default Order:** `3D Axial` $\rightarrow$ `Edge Enhancement` $\rightarrow$ `Global Enhancement` $\rightarrow$ `Feature Depth` $\rightarrow$ `Scattering Compensation`.
+- Configurable via **Move Up**, **Move Down**, and **Reset to Default** buttons.
+- Preserves 3D consistency by running 3D axial lookahead before or after 2D slice modifications as desired.
+- Encoded directly in output folder tags (`_Ord-...`).
 
 ---
 
@@ -250,7 +263,7 @@ Builds a new instruction folder from an existing instruction file and image set 
 All processed images are saved to a subfolder inside the source folder. The folder name encodes the active settings:
 
 ```
-EE_{blur}_{Padded|NoPad}_GE_{globe}[_Asym][_FD_{strength}]
+EE_{blur}_{Padded|NoPad}_GE_{globe}[_Asym...][_FD_{strength}[_Pres]][_SC][_ZA_LT{h}_DP{dp}_ER{er}][_Ord-{stages}]
 ```
 
 **Examples:**
