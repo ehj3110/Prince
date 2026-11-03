@@ -239,6 +239,16 @@ class SeekThermalWorker(threading.Thread):
 
                 manager.register_event_callback(on_event)
 
+                if self.fallback_to_mock:
+                    # Give physical camera up to 0.15s to trigger CONNECT event
+                    connect_deadline = time.perf_counter() + 0.15
+                    while self._running and not self.connected and time.perf_counter() < connect_deadline:
+                        time.sleep(0.05)
+                    if not self.connected and self._running:
+                        print("SeekThermalWorker: No physical camera detected -> falling back to synthetic mock stream.")
+                        self._run_mock_loop()
+                        return
+
                 while self._running:
                     time.sleep(0.1)
                 if self._camera is not None:

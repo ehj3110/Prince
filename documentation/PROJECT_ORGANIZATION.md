@@ -8,12 +8,21 @@ This document describes the organization of the Prince_Segmented project workspa
 
 ### Root Directory (`Prince_CurrentWorkingVersion/`)
 **Essential files at project root:**
-- `Prince_Modern.py` - Current PySide6 printer UI (`prince_modern/`, `Launch_Prince_Modern.bat`)
-- `Prince_Segmented_Unified.py` - Tk baseline with the same print backend
-- `Prince_Segmented.py` - Legacy printing application
-- `README.md` - Project overview (start here)
+- `Prince_Modern.py` - Current PySide6 printer operator UI (`prince_modern/`, `Launch_Prince_Modern.bat`)
+- `Prince_Segmented_Unified.py` - Tk baseline with dual projection modes and identical hardware logic
+- `Prince_Segmented.py` - Legacy printing application with Camera View and Monitoring Suite hooks
+- `Prince_Segmented_VideoPattern.py` - Legacy 30 Hz pattern projection application
+- `README.md` - Project overview and quick start
+- `DOCUMENTATION_INDEX.md` - Master documentation index across all subsystems
+- `START_HERE_FOR_AI.md` - Handoff guide for AI and incoming developers
 - `.gitignore` - Git configuration
-- `force_gauge_calibration_20251106_144013.txt` - Calibration data
+
+### `/prince_modern/`
+**Purpose**: Modern PySide6 operator interface package
+- `main_window.py` - Main window layout, control cards, stage jog controls, system log, and slice preview
+- `controller.py` - Asynchronous Qt-Tk bridge pumping withdrawn Unified print engine
+- `theme.py` - Custom dark-purple QSS palette (`#19202A`/`#8870A3`) and font management
+- `fonts/` - Bundled Inter fonts (SIL OFL)
 
 ### `/batch_processors/` (6 files)
 **Purpose**: Batch processing scripts for test data analysis
@@ -32,17 +41,25 @@ python batch_processors\batch_process_universal.py "path\to\data"
 ```
 
 ### `/support_modules/` 
-**Purpose**: Core libraries and utilities used by the main application
+**Purpose**: Core libraries, hardware drivers, and mathematical solvers used by the main application
 
 **Key Components:**
-- `adhesion_metrics_calculator.py` - Unified adhesion analysis engine
-- `ForceGaugeManager.py` - Force gauge control and data acquisition
-- `AutoHomeRoutine.py` - Automated homing sequences
-- `SensorDataWindow.py` - Real-time sensor data plotting
-- `PositionLogger.py` - Data logging threads
-- `pycrafter9000.py` - DLP projector control
-- Hardware coordinators (USB management)
-- Helper libraries (file parsing, image generation)
+- **In-Situ Viscosity Monitoring Subsystem:**
+  - `viscosity_analyzer.py` - Squeeze-flow rheology engine: linearized Stefan regression ($F^{-1/3}\text{ vs } z$), zero-datum recovery, elastohydrodynamic membrane compliance, and power-law solvers
+  - `ViscosityMonitorWindow.py` - Dedicated dual-plot UI for real-time squeeze-curve monitoring and relative evaporation drift tracking ($\Delta \mu\%$)
+  - `reference_fluids_db.py` - Temperature-dependent viscosity models for standard calibration fluids (PEG 400, Glycerol-Water, Propylene Glycol)
+- **Adhesion & Force Analysis:**
+  - `adhesion_metrics_calculator.py` - Unified adhesion analysis engine
+  - `ForceGaugeManager.py` - Force gauge control and high-frequency acquisition
+  - `SensorDataWindow.py` - Real-time sensor data plotting
+  - `PositionLogger.py` - Data logging threads
+  - `PeakForceLogger.py` - Adhesion metrics extraction per layer
+- **Hardware Control & Sequencing:**
+  - `AutoHomeRoutine.py` - Automated homing sequences
+  - `pycrafter9000.py` - Texas Instruments DLP LightCrafter control
+  - `USBCoordinator.py` & `dlp_phidget_coordinator.py` - USB endpoint arbitration
+  - `SessionManager.py` - Session logging and GUI state persistence
+  - Helper libraries (`libs.py`, `Libs_Evan.py`, image generation, file parsing)
 
 ### `/post-processing/` (22 files)
 **Purpose**: Analysis, plotting, and post-print processing tools
@@ -72,42 +89,55 @@ python batch_processors\batch_process_universal.py "path\to\data"
 - Tkinter UI widgets, custom dialogs and windows
 
 ### `/calibration_modules/`
-**Purpose**: Camera-based calibration and alignment (resin tank focus and tilt)
+**Purpose**: Multi-spectral machine vision, infrared thermography, optical radiometry, and System Monitoring dashboard
 
 **Key Components:**
-- `CameraViewWindow.py` - Live Allied Vision preview (Vimba X / vmbpy): pan/zoom, exposure/gain, snapshot
-- `vmb_camera_worker.py` - Threaded vmbpy acquisition + frame queue
-- `zoom_pan_canvas.py` - Interactive ROI-first viewport canvas
-- CLI: `stream_smoke_test_vmbpy.py`, `vmb_worker_harness.py`, `hardware_connection_test_vmbpy.py`
+- **System Monitoring Dashboard (`monitoring_dashboard/`):**
+  - PySide6 standalone multi-sensor process (`close_fds=True`)
+  - Live feeds: Allied Vision optical, Seek Thermal radiometric, Phidget triple-cell summed force, and Thorlabs PM100A expected UV power line
+- **Allied Vision Alvium 1800 U-511m (Optical Machine Vision):**
+  - `CameraViewWindow.py` - Live Allied Vision preview (Vimba X / `vmbpy`): pan/zoom, crosshair, exposure/gain, snapshot
+  - `vmb_camera_worker.py` - Threaded vmbpy acquisition + auto-reconnection
+  - `zoom_pan_canvas.py` - Interactive ROI-first viewport canvas
+- **Seek Thermal InspectionCAM (Infrared Thermography):**
+  - `SeekThermalViewerWindow.py` - Radiometric thermal viewer for in-situ exotherm tracking
+  - `seek_thermal_worker.py` - 9 Hz acquisition thread with synthetic simulation fallback
+  - `seek_thermal_canvas.py` - Radiometric canvas with dynamic hover spot probe (°C)
+- **Thorlabs PM100A & UV Power Calibration:**
+  - `thorlabs_pm100a.py` - NI-VISA SCPI driver at 385 nm
+  - `power_density_calibration.py` - 2-point power density calibration saved to `data/uv_power_calibration.json`
+  - `print_monitor_state.py` - Shared IPC state between Prince and dashboard
+- CLI bring-up tools: `stream_smoke_test_vmbpy.py`, `vmb_worker_harness.py`, `hardware_connection_test_vmbpy.py`
 - `README.md` - Calibration setup and usage
 
 ### `/tests/`
-**Purpose**: Unit tests and integration test scripts
+**Purpose**: Comprehensive unit tests and integration test suites
 
 **Key Files:**
-- `run_all_tests.py` - Run all unit tests
-- `test_session_manager.py`, `test_adhesion_metrics.py`, `test_peak_force_logger.py` - Unit test suites
+- `run_all_tests.py` - Master unit test runner across all subsystems (42 tests)
+- `test_viscosity_analyzer.py` - Squeeze-flow rheology, Stefan regression, and baseline recovery unit tests
+- `test_camera_viewer_robustness.py` - Allied Vision zoom/pan math and worker acquisition tests
+- `test_seek_thermal_viewer.py` - Seek Thermal radiometric imaging, colormap, and export unit tests
+- `test_ramped_cylinder.py` - Cone slicing, exposure ramping, and instruction formatting unit tests
+- `test_session_manager.py` - SessionManager unit tests
+- `test_adhesion_metrics.py`, `test_peak_force_logger.py` - Adhesion metrics unit tests
 - `test_dlp_simple.py`, `test_sandwich_integration.py` - Integration/hardware tests
 - `README.md`, `TESTING_GUIDE.md` - Test documentation
 
 ### `/documentation/` (guides and references)
 **Purpose**: All project documentation, guides, and status updates
 
-**User Guides:**
-- `UNIVERSAL_PROCESSOR_GUIDE.md` ⭐ **Start here for data processing**
-- `QUICK_REFERENCE_CARD.md` - Quick reference for printing
-- `TESTING_GUIDE.md` - Testing and validation procedures
-- `DEPLOYMENT_GUIDE.md` - Setup and installation
-- `CHANGELOG.md` - Version history and changes
-- `README.md` - Documentation index
-
-**Feature Guides:**
-- `PHASE_AWARE_TESTING_GUIDE.md` - Phase-aware detection
-- `SANDWICH_QUICK_REFERENCE.md` - Sandwich routine
-- `SANDWICH_ROUTINE_GUIDE.md` - Detailed sandwich guide
-- `TRIPLE_FORCE_GAUGE_GUIDE.md` - Triple force gauge setup
+**Master Reference:**
+- `DOCUMENTATION_INDEX.md` ⭐ **Start here for complete index of all guides**
+- `START_HERE_FOR_AI.md` - Critical invariants and developer handoff
+- `DEPLOYMENT_GUIDE.md` - Moving the software onto a new PC
 - `MONITORING_DASHBOARD_GUIDE.md` - System monitor (cameras, PM100A, triple force calibrate/tare)
-- `QUICK_CALIBRATION_GUIDE.md` - Calibration procedures
+- `technical/IN_SITU_VISCOSITY_DRIFT_HANDOVER.md` - Viscosity monitor handover
+- `technical/RESIN_VISCOSITY_SQUEEZE_FLOW_PHYSICS.md` - Squeeze flow fluid mechanics
+- `technical/VISCOSITY_DATA_ANALYSIS_METHODS.md` - Viscosity data analysis & rheology solvers
+- `TRIPLE_FORCE_GAUGE_GUIDE.md` - Triple force gauge setup
+- `PRINCE_MODERN_GUI.md` - Prince Modern PySide6 UI guide
+- `PRINCE_UNIFIED_GUI.md` - Prince Unified dual projection mode guide
 
 **Technical Guides:**
 - `HOW_PROPAGATION_END_IS_MEASURED.md` - Propagation detection

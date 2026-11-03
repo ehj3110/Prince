@@ -5,9 +5,16 @@ Unit Tests for Ramped Cylinder generation backend math and file creation.
 
 import unittest
 import os
+import sys
 import shutil
 import tempfile
+from pathlib import Path
 import numpy as np
+
+repo_root = Path(__file__).resolve().parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
 from support_modules.image_modification.ramped_cylinder import generate_ramped_cylinder_workflow
 
 

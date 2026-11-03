@@ -858,6 +858,22 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 conditions = self.exp_conditions_window.get_conditions()
                 self.print_logging_service.start_new_print(self.current_print_session_log_dir, conditions)
 
+                # Save instruction file to log folder at print start
+                try:
+                    instr_path = getattr(self, 'active_instruction_file_path', None)
+                    if not instr_path or not os.path.exists(instr_path):
+                        expected_name = os.path.basename(os.path.normpath(path)) + ".txt"
+                        candidate = os.path.join(path, expected_name)
+                        if os.path.exists(candidate):
+                            instr_path = candidate
+                            self.active_instruction_file_path = candidate
+                    if instr_path and os.path.exists(instr_path):
+                        dest_path = os.path.join(self.current_print_session_log_dir, os.path.basename(instr_path))
+                        shutil.copy2(instr_path, dest_path)
+                        self.update_status_message(f"Instruction file saved to log folder: {os.path.basename(instr_path)}")
+                except Exception as e_copy:
+                    self.update_status_message(f"Warning: Could not copy instruction file at print start: {e_copy}")
+
             # Auto-logging configuration now relies entirely on SensorDataWindow's state
             if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
                 # Check if the "Enable Automated Logging" checkbox *within SensorDataWindow* is checked
@@ -2136,7 +2152,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 except Exception as e_stat:
                     self.update_status_message(f"Error writing final print status: {e_stat}")
 
-                # Save instruction file if work of adhesion or automated logging were enabled
+                # Save instruction file if work of adhesion, automated logging, or experimental conditions logging were enabled
                 try:
                     should_save_instruction_file = False
                     
@@ -2151,9 +2167,26 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         hasattr(self.sensor_data_window_instance, 'auto_log_enabled_var') and
                         self.sensor_data_window_instance.auto_log_enabled_var.get()):
                         should_save_instruction_file = True
+
+                    # Check if experimental conditions logging was enabled
+                    if (hasattr(self, 'exp_conditions_window') and self.exp_conditions_window and
+                        hasattr(self.exp_conditions_window, 'is_logging_enabled') and
+                        self.exp_conditions_window.is_logging_enabled()):
+                        should_save_instruction_file = True
                     
-                    if should_save_instruction_file and hasattr(self, 'active_instruction_file_path') and self.active_instruction_file_path:
-                        if os.path.exists(self.active_instruction_file_path):
+                    if should_save_instruction_file:
+                        instruction_path = getattr(self, 'active_instruction_file_path', None)
+                        if not instruction_path or not os.path.exists(instruction_path):
+                            if hasattr(self, 't1'):
+                                img_dir = str(self.t1.get()).strip()
+                                if img_dir and os.path.isdir(img_dir):
+                                    expected_name = os.path.basename(os.path.normpath(img_dir)) + ".txt"
+                                    candidate = os.path.join(img_dir, expected_name)
+                                    if os.path.exists(candidate):
+                                        instruction_path = candidate
+                                        self.active_instruction_file_path = candidate
+
+                        if instruction_path and os.path.exists(instruction_path):
                             # Get updated directory path from ExperimentalConditionsWindow after folder rename
                             target_dir = self.current_print_session_log_dir
                             if (hasattr(self, 'exp_conditions_window') and self.exp_conditions_window and 
@@ -2161,9 +2194,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                 self.exp_conditions_window.current_print_dir):
                                 target_dir = str(self.exp_conditions_window.current_print_dir)
                             
-                            instruction_filename = os.path.basename(self.active_instruction_file_path)
+                            os.makedirs(target_dir, exist_ok=True)
+                            instruction_filename = os.path.basename(instruction_path)
                             saved_instruction_path = os.path.join(target_dir, instruction_filename)
-                            shutil.copy2(self.active_instruction_file_path, saved_instruction_path)
+                            shutil.copy2(instruction_path, saved_instruction_path)
                             self.update_status_message(f"Instruction file saved: {instruction_filename}")
                         else:
                             self.update_status_message("Warning: Active instruction file not found, could not save copy.")

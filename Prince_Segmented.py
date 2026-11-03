@@ -124,7 +124,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.b_image_modification = Button(win, text="Image Modification", command=self.open_image_modification_window)
         self.b_image_modification.place(x=1070, y=60) # Next to Exp. Conditions
 
-        self.b_viscosity_monitor = Button(win, text="Viscosity Monitor", command=self.open_viscosity_monitor_window)
+        self.b_viscosity_monitor = Button(win, text="Viscosity Monitor", command=self.open_viscosity_monitor_window, state=DISABLED)
         self.b_viscosity_monitor.place(x=1205, y=60) # Next to Image Modification
         
         self.b_reload_script = Button(win, text="Reload Script", command=self.reload_script_modules)
@@ -261,10 +261,11 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.b_auto_home = Button(self.frame_auto_home, text="Auto-Home Surface", command=self.start_auto_home_sequence, state=DISABLED)
         self.b_auto_home.grid(row=0, column=6, padx=10, pady=2)
 
-        self.enable_preprint_viscosity = BooleanVar(value=True)
+        self.enable_preprint_viscosity = BooleanVar(value=False)
         self.chk_preprint_viscosity = Checkbutton(
             self.frame_auto_home,
-            text='Scan Viscosity at Start',
+            text='Scan Viscosity at Start (Disabled)',
+            state=DISABLED,
             variable=self.enable_preprint_viscosity
         )
         self.chk_preprint_viscosity.grid(row=0, column=7, padx=8, pady=2)
@@ -783,6 +784,20 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
             if self.exp_conditions_window and self.exp_conditions_window.is_logging_enabled():
                 self.exp_conditions_window.start_new_print(self.current_print_session_log_dir)
+                try:
+                    instr_path = getattr(self, 'active_instruction_file_path', None)
+                    if not instr_path or not os.path.exists(instr_path):
+                        expected_name = os.path.basename(os.path.normpath(path)) + ".txt"
+                        candidate = os.path.join(path, expected_name)
+                        if os.path.exists(candidate):
+                            instr_path = candidate
+                            self.active_instruction_file_path = candidate
+                    if instr_path and os.path.exists(instr_path):
+                        dest_path = os.path.join(self.current_print_session_log_dir, os.path.basename(instr_path))
+                        shutil.copy2(instr_path, dest_path)
+                        self.update_status_message(f"Instruction file saved to log folder: {os.path.basename(instr_path)}")
+                except Exception as e_copy:
+                    self.update_status_message(f"Warning: Could not copy instruction file at print start: {e_copy}")
 
             # Auto-logging configuration now relies entirely on SensorDataWindow's state
             if self.sensor_data_window_instance and self.sensor_data_window_instance.sensor_window.winfo_exists():
@@ -1934,7 +1949,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
                 except Exception as e_stat:
                     self.update_status_message(f"Error writing final print status: {e_stat}")
 
-                # Save instruction file if work of adhesion or automated logging were enabled
+                # Save instruction file if work of adhesion, automated logging, or experimental conditions logging were enabled
                 try:
                     should_save_instruction_file = False
                     
@@ -1950,8 +1965,25 @@ Evan Jones, evanjones2026@u.northwestern.edu
                         self.sensor_data_window_instance.auto_log_enabled_var.get()):
                         should_save_instruction_file = True
                     
-                    if should_save_instruction_file and hasattr(self, 'active_instruction_file_path') and self.active_instruction_file_path:
-                        if os.path.exists(self.active_instruction_file_path):
+                    # Check if experimental conditions logging was enabled
+                    if (hasattr(self, 'exp_conditions_window') and self.exp_conditions_window and
+                        hasattr(self.exp_conditions_window, 'is_logging_enabled') and
+                        self.exp_conditions_window.is_logging_enabled()):
+                        should_save_instruction_file = True
+                    
+                    if should_save_instruction_file:
+                        instruction_path = getattr(self, 'active_instruction_file_path', None)
+                        if not instruction_path or not os.path.exists(instruction_path):
+                            if hasattr(self, 't1'):
+                                img_dir = str(self.t1.get()).strip()
+                                if img_dir and os.path.isdir(img_dir):
+                                    expected_name = os.path.basename(os.path.normpath(img_dir)) + ".txt"
+                                    candidate = os.path.join(img_dir, expected_name)
+                                    if os.path.exists(candidate):
+                                        instruction_path = candidate
+                                        self.active_instruction_file_path = candidate
+
+                        if instruction_path and os.path.exists(instruction_path):
                             # Get updated directory path from ExperimentalConditionsWindow after folder rename
                             target_dir = self.current_print_session_log_dir
                             if (hasattr(self, 'exp_conditions_window') and self.exp_conditions_window and 
@@ -1959,9 +1991,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
                                 self.exp_conditions_window.current_print_dir):
                                 target_dir = str(self.exp_conditions_window.current_print_dir)
                             
-                            instruction_filename = os.path.basename(self.active_instruction_file_path)
+                            os.makedirs(target_dir, exist_ok=True)
+                            instruction_filename = os.path.basename(instruction_path)
                             saved_instruction_path = os.path.join(target_dir, instruction_filename)
-                            shutil.copy2(self.active_instruction_file_path, saved_instruction_path)
+                            shutil.copy2(instruction_path, saved_instruction_path)
                             self.update_status_message(f"Instruction file saved: {instruction_filename}")
                         else:
                             self.update_status_message("Warning: Active instruction file not found, could not save copy.")
@@ -2330,26 +2363,8 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.ramped_cylinder_window.window.lift()
 
     def open_viscosity_monitor_window(self):
-        """Open or show the dedicated In-Situ Viscosity & Rheology Monitor window."""
-        try:
-            from support_modules.ViscosityMonitorWindow import ViscosityMonitorWindow
-            if (self.viscosity_monitor_window is None or
-                    not (hasattr(self.viscosity_monitor_window, 'window') and
-                         self.viscosity_monitor_window.window.winfo_exists())):
-                axis_ref = getattr(self, 'axis', None)
-                force_gauge_ref = None
-                if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                    force_gauge_ref = getattr(self.sensor_data_window_instance, 'force_gauge_manager', None)
-                self.viscosity_monitor_window = ViscosityMonitorWindow(
-                    self.win, axis=axis_ref, force_gauge=force_gauge_ref,
-                    update_status_callback=self.update_status_message, prince_main_app_ref=self
-                )
-                self.update_status_message("Viscosity Monitor window opened")
-            else:
-                self.viscosity_monitor_window.window.lift()
-        except Exception as e:
-            self.update_status_message(f"Error opening Viscosity Monitor window: {e}", error=True)
-            traceback.print_exc()
+        """Open or show the dedicated In-Situ Viscosity & Rheology Monitor window (Disabled)."""
+        self.update_status_message("Viscosity Monitor is currently disabled.")
 
     def open_camera_view_window(self):
         """Launch the PySide6 monitoring dashboard in its own process."""
@@ -2382,123 +2397,15 @@ Evan Jones, evanjones2026@u.northwestern.edu
     def _perform_preprint_viscosity_measurement(self):
         """
         Execute an in-situ squeeze-flow viscosity measurement during stage approach to reference.
-        DEFAULT: Calculates relative viscosity drift (% change vs today's baseline) to detect
-        solvent / reactive diluent evaporation without requiring absolute calibration standards.
-
-        NOTE FOR DEVELOPERS:
-        This in-situ relative viscosity drift monitoring feature is currently active in Prince_Segmented.py.
-        It is queued for integration into Prince_Segmented_Unified.py during the next unified refactor.
+        (Disabled - directly moves stage to reference position).
         """
+        self.update_status_message("Preprint viscosity check disabled. Moving directly to reference.")
         try:
-            self.update_status_message("In-situ viscosity check: approaching resin...")
-            if not hasattr(self, 'axis') or not self.axis:
-                self.update_status_message("Stage axis not available for viscosity check, moving directly.")
-                return
-
-            force_gauge_ref = None
-            if hasattr(self, 'sensor_data_window_instance') and self.sensor_data_window_instance:
-                force_gauge_ref = getattr(self.sensor_data_window_instance, 'force_gauge_manager', None)
-
-            if force_gauge_ref is None:
-                self.update_status_message("Force gauge not active. Skipping viscosity check; moving to reference.")
+            if hasattr(self, 'axis') and self.axis:
                 self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
                 self.update_status_message(f"Moved to reference: {self.reference} mm")
-                return
-
-            # Motion profile: descend to reference + 0.8mm at regular speed
-            z_ref = self.reference
-            z_start = z_ref + 0.800  # 800 um above reference
-            z_end = z_ref + 0.150    # 150 um above reference (safe asymptotic rigid regime)
-            v_probe = 1.0            # 1.0 mm/s constant probe velocity
-
-            self.axis.move_absolute(position=z_start, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
-            time.sleep(0.4)  # Settle fluid
-
-            # Tare force in liquid to isolate hydrodynamic squeeze force
-            tare_f = force_gauge_ref.get_calibrated_force()
-
-            # Descend at constant probe speed
-            self.axis.move_velocity(-v_probe, Units.VELOCITY_MILLIMETRES_PER_SECOND)
-
-            z_pts = []
-            f_pts = []
-            while True:
-                curr_z = self.axis.get_position(Units.LENGTH_MILLIMETRES)
-                curr_f = force_gauge_ref.get_calibrated_force() - tare_f
-                z_pts.append(curr_z)
-                f_pts.append(curr_f)
-
-                if curr_z <= z_end or curr_f >= 12.0:
-                    break
-                time.sleep(0.015)
-
-            self.axis.stop()
-
-            # Analyze using ViscosityAnalyzer
-            from support_modules.viscosity_analyzer import (
-                ViscosityAnalyzer,
-                load_daily_baseline,
-                save_daily_baseline,
-            )
-            analyzer = ViscosityAnalyzer(stage_diameter_mm=12.7)
-            res = analyzer.analyze_stefan_linearized(
-                np.array(z_pts), np.array(f_pts), velocity_mm_s=v_probe, z_contact_guess_mm=z_ref
-            )
-
-            if res.get("valid", False):
-                slope_k = res["slope"]
-                intercept_k = res["intercept"]
-                r2 = res["r_squared"]
-                visc_cp = res["viscosity_cp"]
-                self.measured_preprint_viscosity_cp = visc_cp
-
-                # --- RELATIVE VISCOSITY DRIFT TRACKING (DEFAULT) ---
-                daily_baseline = load_daily_baseline()
-                if daily_baseline is None:
-                    # First run of the day: automatically establish as today's baseline!
-                    now_str = datetime.datetime.now().strftime("%H:%M:%S")
-                    new_baseline = {
-                        "date": datetime.date.today().isoformat(),
-                        "timestamp": now_str,
-                        "slope": float(slope_k),
-                        "intercept": float(intercept_k),
-                        "r_squared": float(r2),
-                        "viscosity_cp": float(visc_cp),
-                    }
-                    save_daily_baseline(new_baseline)
-                    self.measured_preprint_drift_pct = 0.0
-                    self.update_status_message(f"Resin Baseline Set: Reference established at {now_str} (0.0% drift, ~{visc_cp:.0f} cP nominal)")
-                else:
-                    m_0 = daily_baseline["slope"]
-                    base_time = daily_baseline.get("timestamp", "earlier")
-                    drift_calc = analyzer.compute_relative_viscosity_drift(m_0, slope_k)
-                    drift_pct = drift_calc["drift_percent"]
-                    self.measured_preprint_drift_pct = drift_pct
-
-                    if drift_calc["alert_level"] == "CRITICAL":
-                        self.update_status_message(f"⚠️ RESIN ALERT: +{drift_pct:.1f}% Viscosity Drift since {base_time}! (Severe solvent evaporation)", error=True)
-                    elif drift_calc["alert_level"] == "WARNING":
-                        self.update_status_message(f"⚠️ Resin Warning: +{drift_pct:.1f}% Viscosity Drift since {base_time} (Solvent loss)", error=True)
-                    else:
-                        self.update_status_message(f"Resin Drift: {drift_pct:+.1f}% vs {base_time} baseline (Status: Stable, ~{visc_cp:.0f} cP)")
-
-                # If Viscosity Monitor window is open, update its display
-                if hasattr(self, 'viscosity_monitor_window') and self.viscosity_monitor_window and hasattr(self.viscosity_monitor_window, 'window') and self.viscosity_monitor_window.window.winfo_exists():
-                    run_data = [{"velocity_mm_s": v_probe, "z_mm": np.array(z_pts), "force_n": np.array(f_pts)}]
-                    self.viscosity_monitor_window._on_probe_complete(run_data)
-            else:
-                self.update_status_message(f"Viscosity check warning: {res.get('error', 'Low SNR')}")
-
-            # Complete motion to reference height
-            self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
-            self.update_status_message(f"Moved to reference: {self.reference} mm")
-
         except Exception as e:
-            self.update_status_message(f"Error in preprint viscosity check: {e}", error=True)
-            try:
-                self.axis.move_absolute(position=self.reference, unit=Units.LENGTH_MILLIMETRES, wait_until_idle=True)
-            except Exception:
-                pass
+            self.update_status_message(f"Error moving to reference: {e}", error=True)
 
     def start_auto_home_sequence(self):
         if self.auto_home_thread and self.auto_home_thread.is_alive():

@@ -3,6 +3,8 @@
 
 Reduces boundary intensity for highly scattering resin materials using a
 Gaussian-based model that is the direct inverse of edge enhancement.
+Optimized with float32 SIMD vectorization and fast OpenCV masked min/max localization.
+Designed to be composable across pipeline stages.
 
 Physics motivation:
     UV photons scatter laterally inside the resin vat. A pixel projected
@@ -12,20 +14,14 @@ Physics motivation:
     matches the intended geometry.
 
 Algorithm:
-    1. Compute the same edge signal as Edge Enhancement:
-           signal = original − GaussianBlur(original)
+    1. Compute the edge signal from the part geometry:
+           signal = geom_mask − GaussianBlur(geom_mask)
        This gives a positive peak at boundaries and near-zero at the interior.
-    2. Apply the INVERTED normalisation compared to EE:
-           EE  maps  high signal (boundary) → max_val (bright)
-           SC  maps  high signal (boundary) → min_val (dim)
-               and   low signal  (interior) → max_val (bright)
-       Concretely:
-           normalised  = (signal − lo) / (hi − lo)    # boundary=1, interior=0
-           output      = (1 − normalised) × (max_val − min_val) + min_val
-
-    min_val sets how dark the boundary becomes; max_val is the interior ceiling.
-    This mirrors the EE API exactly: same sigma, same min_val/max_val semantics,
-    just with the normalisation direction flipped.
+    2. Apply inverted normalisation:
+           Boundary (high signal) → min_val (dim)
+           Interior (low signal)  → max_val (bright)
+    3. Apply as a composable multiplier (scaled / 255.0) to preserve upstream
+       attenuation from 3D axial Z-compensation.
 """
 
 import cv2
@@ -40,55 +36,52 @@ def apply_scattering_compensation(image: np.ndarray,
     """
     Dim pixels near part boundaries to compensate for lateral UV scatter.
 
-    Uses the same Gaussian edge signal as Edge Enhancement but with the
-    normalisation direction inverted: boundary pixels (high signal) are
-    mapped to min_val; interior pixels (low signal) are mapped to max_val.
+    Uses the Gaussian edge signal but with the normalisation direction inverted:
+    boundary pixels (high signal) are mapped to min_val; interior pixels (low signal)
+    are mapped to max_val.
 
     Args:
-        image:    Grayscale image (uint8 or float64, 0–255).
+        image:    Grayscale image (uint8 or float64/float32, 0–255).
         sigma:    Gaussian sigma — controls how far inward from the boundary
-                  the dimming extends.  Larger sigma = wider affected band.
+                  the dimming extends.
         min_val:  Output intensity at the exact boundary (the darkest value).
-                  Analogous to the Min parameter in Edge Enhancement.
-                  E.g. 127 means boundary pixels drop to ~50 % intensity.
         max_val:  Output intensity at the interior (the brightest value).
-                  Normally 255.
         falloff:  Kernel size for the Gaussian blur (must be odd and > 0).
-                  Controls how quickly the Gaussian tails are clipped.
-                  Smaller falloff = tighter kernel = less cross-strut
-                  interference on dense lattices.  If 0, auto-computed as
-                  4*sigma+1 (same as Edge Enhancement default).
 
     Returns:
-        Compensated image as float64 in [0, 255].
+        Compensated image matching input float type or float64 in [0, 255].
     """
-    img_float = image.astype(np.float64)
+    if sigma <= 0 or min_val >= max_val or not np.any(image > 0):
+        return image.astype(np.float64, copy=False) if image.dtype == np.float64 else image
 
-    if sigma <= 0 or min_val >= max_val or not np.any(img_float > 0):
-        return img_float
+    is_f64 = image.dtype == np.float64
+    img = image.astype(np.float32, copy=False) if is_f64 else image
+
+    mask = img > 0
+    if not np.any(mask):
+        return image.astype(np.float64, copy=False) if image.dtype == np.float64 else image
 
     filter_size = int(falloff) if falloff and falloff > 0 else int(2 * (2 * sigma) + 1)
     if filter_size % 2 == 0:
         filter_size += 1
+    if filter_size <= 0:
+        filter_size = max(3, int(4 * sigma + 1))
 
-    blurred = cv2.GaussianBlur(img_float, (filter_size, filter_size), sigma)
+    geom_mask = mask.astype(np.float32) * 255.0
+    blurred = cv2.GaussianBlur(geom_mask, (filter_size, filter_size), sigma)
+    signal = geom_mask - blurred
 
-    # Edge signal: same direction as EE — positive at boundaries, ~0 at interior
-    signal = img_float - blurred
-
-    mask = img_float > 0
-    sig_masked = signal[mask]
-
-    lo = np.min(sig_masked)   # near-zero (interior)
-    hi = np.max(sig_masked)   # peak (boundary)
+    mask_u8 = mask.astype(np.uint8)
+    lo, hi, _, _ = cv2.minMaxLoc(signal, mask=mask_u8)
 
     if hi <= lo:
-        return img_float  # flat signal — no edge structure to work with
+        return image.astype(np.float64, copy=False) if is_f64 else image
 
     # Normalise so boundary=1, interior=0, then INVERT before scaling
-    normalised = (signal - lo) / (hi - lo)
-    scaled = (1.0 - normalised) * (max_val - min_val) + min_val
-    scaled[~mask] = 0
+    scale = (max_val - min_val) / (hi - lo)
+    scaled = (max_val + scale * lo) - signal * scale
+    multiplier = scaled / 255.0
+    out = img * multiplier
+    out[~mask] = 0.0
 
-    return scaled
-
+    return out.astype(np.float64, copy=False) if is_f64 else out

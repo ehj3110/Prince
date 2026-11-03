@@ -10,39 +10,16 @@ Problem:
     receive pre-cured resin, leading to overcuring relative to their
     nominal dose.
 
-Algorithm (v3 - perimeter outer pool):
-
+Algorithm (v3 - perimeter outer pool + physical scale):
   1. Classify black pixels as exterior-connected or enclosed.
-
-  2. Fill enclosed pores (treat them as white) to produce the outer
-     silhouette of the part. Dilate that silhouette by one pixel; the
-     newly covered pixels that lie in connected-black are the OUTER RESIN
-     POOL — the first ring of fresh resin immediately outside the part
-     perimeter. These pixels have channel_depth = 0.
-
-  3. For every other connected-black pixel, channel_depth = Euclidean
-     distance to the nearest outer-pool pixel. Channels that penetrate
-     deeper into the lattice accumulate more channel_depth and therefore
-     carry more pre-cured resin.
-
-  4. Enclosed black pores have no connected path to the outer pool.
-     Their channel_depth = (Euclidean distance through white to the
-     nearest connected-black pixel) + (channel_depth of that neighbour).
-     This estimates how much pre-curing the resin "seeped" through to
-     reach a sealed pore.
-
-  5. Spread channel_depth from black pixels into white pixels via Gaussian
-     blur. Each white pixel inherits the depth of its surrounding channels.
-
-  6. effective_depth = dist_to_black  +  channel_depth_spread
-     (additive: how deep inside the strut  +  how deep the supplying
-     channel is). This is monotonically larger toward lattice centres.
-
-  7. Clip outliers at the 99th percentile before normalising to [0, 1] so
-     that a single pathological enclosed pore doesn't compress the rest of
-     the dynamic range.
-
-  8. Correction: dim white pixels by  (1 - strength * depth_norm).
+  2. Find outer resin pool immediately outside the part perimeter (depth = 0).
+  3. Channel depth for connected black = distance to nearest outer-pool pixel.
+  4. Channel depth for enclosed black = distance through white + nearest channel depth.
+  5. Normalized convolution spreads channel depth into white pixels without dilution.
+  6. Effective depth = distance into strut + channel spread.
+  7. Physical scale normalization: saturating exponential 1 - exp(-depth / D_char)
+     so small isolated features are not artificially over-dimmed.
+  8. Correction: dim white pixels by (1 - strength * depth_norm).
 """
 
 import cv2
@@ -63,9 +40,10 @@ def _classify_black(black_mask: np.ndarray):
     border_label_set = set(labels[border_mask & (black_mask == 1)].ravel())
     border_label_set.discard(0)
 
-    connected_black = np.zeros((rows, cols), dtype=bool)
-    for lbl in border_label_set:
-        connected_black |= (labels == lbl)
+    if border_label_set:
+        connected_black = np.isin(labels, list(border_label_set))
+    else:
+        connected_black = np.zeros((rows, cols), dtype=bool)
 
     enclosed_black = (black_mask == 1) & ~connected_black
     return connected_black, enclosed_black, border_mask
@@ -102,7 +80,7 @@ def build_feature_depth_map(image: np.ndarray,
                              channel_decay_sigma: float = 50.0,
                              smooth_sigma: float = 10.0) -> np.ndarray:
     """
-    Build a feature depth correction map.
+    Build a feature depth correction map using physical scale normalization.
 
     Returns a float64 array [0, 1], same shape as image.
       1.0  = deepest pixel (receives most pre-cured resin, needs most dimming)
@@ -112,10 +90,7 @@ def build_feature_depth_map(image: np.ndarray,
         image:               Grayscale image (uint8 or float64, 0–255)
         channel_decay_sigma: Controls how far the fresh-resin "influence"
                              reaches from the outer pool into the channels.
-                             Also used as the spread sigma for blending channel
-                             depth into the adjacent white pixels.
-        smooth_sigma:        Gaussian sigma to smooth the final depth map
-                             (removes sharp medial-axis ridges).
+        smooth_sigma:        Gaussian sigma to smooth the final depth map.
     """
     rows, cols = image.shape
     img_u8 = np.clip(image, 0, 255).astype(np.uint8)
@@ -128,30 +103,15 @@ def build_feature_depth_map(image: np.ndarray,
 
     connected_black, enclosed_black, border_mask = _classify_black(black_mask)
 
-    # ------------------------------------------------------------------ #
-    #  Step 1: Identify the OUTER RESIN POOL                              #
-    #  = first ring of connected-black pixels immediately outside the     #
-    #    outer perimeter of the part.                                     #
-    #                                                                     #
-    #  Method:                                                            #
-    #   a) Treat enclosed pores as white → filled silhouette of the part. #
-    #   b) Dilate that silhouette by 1 px via a 3×3 kernel.              #
-    #   c) Any pixel touched by the dilation that is still in             #
-    #      connected-black (and not already white/enclosed) is on the     #
-    #      first-ring boundary → outer pool, channel_depth = 0.           #
-    # ------------------------------------------------------------------ #
+    # Step 1: Identify outer resin pool
     filled_white_u8 = np.clip(
         binary_mask.astype(np.int32) + enclosed_black.astype(np.int32), 0, 1
     ).astype(np.uint8)
 
     kernel_3x3 = np.ones((3, 3), dtype=np.uint8)
     dilated_silhouette = cv2.dilate(filled_white_u8, kernel_3x3, iterations=1)
-
-    # Pixels added by dilation that are in connected-black = outer pool
     outer_pool = (dilated_silhouette == 1) & (filled_white_u8 == 0) & connected_black
 
-    # Fallback: if the part covers the whole canvas (no exterior black),
-    # fall back to the most-open connected-black pixels by dist_to_white.
     if not np.any(outer_pool):
         dist_to_white = cv2.distanceTransform(
             black_mask, cv2.DIST_L2, cv2.DIST_MASK_PRECISE
@@ -161,60 +121,41 @@ def build_feature_depth_map(image: np.ndarray,
             thr = float(np.percentile(vals, 75))
             outer_pool = connected_black & (dist_to_white >= thr)
     if not np.any(outer_pool):
-        outer_pool = connected_black & border_mask   # last resort
+        outer_pool = connected_black & border_mask
 
-    # ------------------------------------------------------------------ #
-    #  Step 2: Channel depth for connected-black pixels                   #
-    #  = Euclidean distance to nearest outer-pool pixel                   #
-    # ------------------------------------------------------------------ #
+    # Step 2: Channel depth for connected-black pixels
     dist_src = np.ones((rows, cols), dtype=np.uint8)
     dist_src[outer_pool] = 0
     channel_depth_map = cv2.distanceTransform(
         dist_src, cv2.DIST_L2, cv2.DIST_MASK_PRECISE
     ).astype(np.float64)
-
-    # Apply only to connected-black pixels (outer_pool gets 0, others > 0)
     channel_depth_map = np.where(connected_black, channel_depth_map, 0.0)
 
-    # ------------------------------------------------------------------ #
-    #  Step 3: Channel depth for enclosed black pixels                    #
-    #  = (distance through white to nearest connected-black channel)      #
-    #    + (channel depth of that connected-black neighbour)              #
-    # ------------------------------------------------------------------ #
+    # Step 3: Channel depth for enclosed black pixels
     if np.any(enclosed_black):
-        # Euclidean distance from each pixel to nearest connected-black pixel
         dist_to_connected = cv2.distanceTransform(
             (~connected_black).astype(np.uint8),
             cv2.DIST_L2, cv2.DIST_MASK_PRECISE
         ).astype(np.float64)
 
-        # To find the channel_depth of the nearest connected-black neighbour
-        # we spread channel_depth_map out of connected-black pixels via a
-        # large Gaussian (sigma = channel_decay_sigma) so enclosed pores
-        # can pick up their nearest channel's depth.
         spread_for_enclosed = cv2.GaussianBlur(
             channel_depth_map.astype(np.float32), (0, 0), channel_decay_sigma
         ).astype(np.float64)
 
-        # Enclosed pore channel_depth = white thickness + neighbour channel depth
         enclosed_depth = dist_to_connected + spread_for_enclosed
         channel_depth_map = np.where(enclosed_black, enclosed_depth, channel_depth_map)
 
-    # ------------------------------------------------------------------ #
-    #  Step 4: Spread channel depth into white pixels                     #
-    # ------------------------------------------------------------------ #
-    # channel_depth_map is non-zero at black pixels; zero at white.
-    # Gaussian blur spreads it into the adjacent white region so every
-    # white pixel inherits the depth of its surrounding channels.
+    # Step 4: Spread channel depth into white pixels using normalized convolution
     channel_depth_at_black = channel_depth_map * black_mask.astype(np.float64)
-    channel_spread = cv2.GaussianBlur(
+    num = cv2.GaussianBlur(
         channel_depth_at_black.astype(np.float32), (0, 0), channel_decay_sigma * 0.5
     ).astype(np.float64)
+    den = cv2.GaussianBlur(
+        black_mask.astype(np.float32), (0, 0), channel_decay_sigma * 0.5
+    ).astype(np.float64)
+    channel_spread = np.where(den > 1e-5, num / np.maximum(den, 1e-5), 0.0)
 
-    # ------------------------------------------------------------------ #
-    #  Step 5: Effective depth (additive)                                 #
-    #  = how far into the strut  +  how deep the channel itself is        #
-    # ------------------------------------------------------------------ #
+    # Step 5: Effective depth (distance into strut + channel spread)
     dist_to_black = cv2.distanceTransform(
         binary_mask, cv2.DIST_L2, cv2.DIST_MASK_PRECISE
     ).astype(np.float64)
@@ -222,34 +163,22 @@ def build_feature_depth_map(image: np.ndarray,
     effective_depth = dist_to_black + channel_spread
     effective_depth[binary_mask == 0] = 0.0
 
-    # ------------------------------------------------------------------ #
-    #  Step 6: Optional smoothing                                         #
-    # ------------------------------------------------------------------ #
+    # Step 6: Optional smoothing
     if smooth_sigma > 0:
         effective_depth = cv2.GaussianBlur(
             effective_depth.astype(np.float32), (0, 0), smooth_sigma
         ).astype(np.float64)
         effective_depth[binary_mask == 0] = 0.0
 
-    # ------------------------------------------------------------------ #
-    #  Step 7: Normalise [0, 1] over white pixels; clip outliers at 99th  #
-    #  percentile so one pathological enclosed pore doesn't dominate.     #
-    # ------------------------------------------------------------------ #
+    # Step 7: Saturating physical scale normalization
     white = binary_mask.astype(bool)
-    vals = effective_depth[white]
-    if len(vals) == 0:
+    if not np.any(white):
         return np.zeros((rows, cols), dtype=np.float64)
 
-    dmin = float(np.min(vals))
-    dmax = float(np.percentile(vals, 99))  # robust max
-
-    if dmax > dmin:
-        depth_norm = np.clip((effective_depth - dmin) / (dmax - dmin), 0.0, 1.0)
-    else:
-        depth_norm = np.zeros_like(effective_depth)
-
-    depth_norm[~white] = 0.0
-    return depth_norm
+    char_depth = 2.0 * max(1.0, float(channel_decay_sigma))
+    depth_norm = np.where(white, 1.0 - np.exp(-effective_depth / char_depth), 0.0)
+    depth_norm = np.clip(depth_norm, 0.0, 1.0)
+    return depth_norm.astype(np.float64)
 
 
 def build_pressure_depth_map(image: np.ndarray,
@@ -259,49 +188,38 @@ def build_pressure_depth_map(image: np.ndarray,
                               tolerance: float = 5e-4) -> np.ndarray:
     """
     Build a resin starvation map by solving the 2D Poisson equation for
-    pressure in a porous medium (Reynolds lubrication approximation).
-
-    Physics model:
-        ∇·(K ∇P) = -Q
-        K = channel_conductivity  in black (open) channels  → fast flow
-        K = 1.0                   in white (solid) features → slow flow
-        Q = -sink_strength        at white pixels            → resin consumption
-        P = 0                     at the outer resin pool   (Dirichlet BC)
-
-    The solved pressure field P gives the "vacuum" at each point — the
-    effort required to pull fresh resin there.  High P = deep starvation
-    = more overcuring correction needed.
-
-    Compared to the distance-based map, this model also captures:
-      - Channel WIDTH: narrow channels have higher resistance, raise P more.
-      - White density: features surrounded by dense struts accumulate higher P.
+    pressure in a porous medium with coarse-grid acceleration.
 
     Args:
         image:                Grayscale image (uint8 or float64, 0–255)
         channel_conductivity: K ratio for open channels vs solid (default 100).
-                              Higher → sharper gradient between edge and centre.
         sink_strength:        Source magnitude at each white pixel.
-                              Higher → steeper starvation gradient.
-        max_iterations:       Maximum SOR iterations (SOR converges ~4× faster
-                              than Jacobi, so 600 iterations ≈ 2400 Jacobi iters).
-        tolerance:            Convergence threshold (max pixel change per step).
+        max_iterations:       Maximum SOR iterations.
+        tolerance:            Convergence threshold.
 
     Returns:
         float64 depth_norm in [0, 1], same shape as image.
-        1.0 = highest starvation (needs most correction).
-        0.0 = outer pool / no starvation.
     """
     rows, cols = image.shape
     img_u8 = np.clip(image, 0, 255).astype(np.uint8)
-    binary_mask = (img_u8 > 0).astype(np.uint8)   # 1 = white, 0 = black
-    black_mask  = 1 - binary_mask
+
+    # Use 2x or 4x coarse grid for fast convergence and wider information horizon on large grids
+    scale = 4 if (rows >= 400 and cols >= 400) else (2 if (rows >= 200 and cols >= 200) else 1)
+    if scale > 1:
+        c_rows, c_cols = rows // scale, cols // scale
+        c_img = cv2.resize(img_u8, (c_cols, c_rows), interpolation=cv2.INTER_AREA)
+    else:
+        c_rows, c_cols = rows, cols
+        c_img = img_u8
+
+    binary_mask = (c_img > 0).astype(np.uint8)
+    black_mask = 1 - binary_mask
 
     if not np.any(black_mask) or not np.any(binary_mask):
         return np.zeros((rows, cols), dtype=np.float64)
 
     connected_black, enclosed_black, border_mask = _classify_black(black_mask)
 
-    # Outer pool (same perimeter-dilation definition as v3)
     filled_white_u8 = np.clip(
         binary_mask.astype(np.int32) + enclosed_black.astype(np.int32), 0, 1
     ).astype(np.uint8)
@@ -320,74 +238,50 @@ def build_pressure_depth_map(image: np.ndarray,
     if not np.any(outer_pool):
         outer_pool = connected_black & border_mask
 
-    # ------------------------------------------------------------------ #
-    #  Conductivity map                                                    #
-    # ------------------------------------------------------------------ #
-    K = np.where(binary_mask == 0,
-                 float(channel_conductivity), 1.0).astype(np.float64)
-
-    # Source term: white pixels consume resin → positive starvation pressure
+    K = np.where(binary_mask == 0, float(channel_conductivity), 1.0).astype(np.float64)
     source = binary_mask.astype(np.float64) * float(sink_strength)
-
-    # Dirichlet BC: outer pool + image border → P = 0 (fresh resin)
     dirichlet_mask = outer_pool | border_mask
 
-    # ------------------------------------------------------------------ #
-    #  Precompute face-averaged conductivities (constant across iterations)#
-    #  K_face = (K[i,j] + K[neighbor]) / 2                               #
-    # ------------------------------------------------------------------ #
-    K_n = (K + np.roll(K,  1, axis=0)) * 0.5
+    K_n = (K + np.roll(K, 1, axis=0)) * 0.5
     K_s = (K + np.roll(K, -1, axis=0)) * 0.5
-    K_w = (K + np.roll(K,  1, axis=1)) * 0.5
+    K_w = (K + np.roll(K, 1, axis=1)) * 0.5
     K_e = (K + np.roll(K, -1, axis=1)) * 0.5
     denom = np.maximum(K_n + K_s + K_w + K_e, 1e-12)
 
-    # ------------------------------------------------------------------ #
-    #  SOR iteration (ω = 1.5 gives ~4× speedup over Jacobi)             #
-    #  Update rule: P_new = (1-ω)·P + ω·P_jacobi                        #
-    #  P_jacobi = (Σ K_face·P_neighbor + source) / denom                 #
-    # ------------------------------------------------------------------ #
-    omega = 1.5
-    P = np.zeros((rows, cols), dtype=np.float64)
+    omega = 1.0  # Stable Jacobi/Gauss relaxation
+    P = np.zeros((c_rows, c_cols), dtype=np.float64)
 
     for iteration in range(max_iterations):
-        P_n = np.roll(P,  1, axis=0)
+        P_n = np.roll(P, 1, axis=0)
         P_s = np.roll(P, -1, axis=0)
-        P_w = np.roll(P,  1, axis=1)
+        P_w = np.roll(P, 1, axis=1)
         P_e = np.roll(P, -1, axis=1)
 
         P_jacobi = (K_n * P_n + K_s * P_s + K_w * P_w + K_e * P_e + source) / denom
-        P_new = np.where(dirichlet_mask, 0.0,
-                         (1.0 - omega) * P + omega * P_jacobi)
+        P_new = np.where(dirichlet_mask, 0.0, (1.0 - omega) * P + omega * P_jacobi)
 
-        # Check convergence every 50 iterations
-        if (iteration + 1) % 50 == 0:
+        if (iteration + 1) % 40 == 0:
             if float(np.max(np.abs(P_new - P))) < tolerance:
                 P = P_new
                 break
-
         P = P_new
 
-    # ------------------------------------------------------------------ #
-    #  Normalise [0, 1] over white pixels only; clip outliers at 99th pct #
-    # ------------------------------------------------------------------ #
-    white = binary_mask.astype(bool)
-    P[~white] = 0.0
+    # Upsample if solved on coarse grid
+    if scale > 1:
+        P_full = cv2.resize(P, (cols, rows), interpolation=cv2.INTER_LINEAR).astype(np.float64)
+    else:
+        P_full = P
 
-    vals = P[white]
-    if len(vals) == 0 or float(np.max(vals)) == 0:
+    full_white = (img_u8 > 0)
+    P_full[~full_white] = 0.0
+
+    if not np.any(full_white):
         return np.zeros((rows, cols), dtype=np.float64)
 
-    dmin = float(np.min(vals))
-    dmax = float(np.percentile(vals, 99))
-
-    if dmax > dmin:
-        depth_norm = np.clip((P - dmin) / (dmax - dmin), 0.0, 1.0)
-    else:
-        depth_norm = np.zeros_like(P)
-
-    depth_norm[~white] = 0.0
-    return depth_norm
+    char_pressure = max(1e-4, float(sink_strength) * float(channel_conductivity) * 5.0)
+    depth_norm = np.where(full_white, 1.0 - np.exp(-P_full / char_pressure), 0.0)
+    depth_norm = np.clip(depth_norm, 0.0, 1.0)
+    return depth_norm.astype(np.float64)
 
 
 def apply_feature_depth_correction(image: np.ndarray,
@@ -403,22 +297,18 @@ def apply_feature_depth_correction(image: np.ndarray,
     Black pixels are untouched.
 
     Args:
-        image:               Float64 image in [0, 255]
+        image:               Float64 or float32 image in [0, 255]
         depth_map:           From build_feature_depth_map, values in [0, 1]
         correction_strength: 0.0 = no correction, 1.0 = full correction
         min_intensity:       Floor value; corrected white pixels will not drop
                              below this intensity so features stay visible.
 
     Returns:
-        Corrected image (float64)
+        Corrected image (same float type as input or float64)
     """
     multiplier = 1.0 - correction_strength * depth_map
     result = image * multiplier
 
-    # Apply a constant intensity floor to all originally-white pixels
-    # (not proportional to multiplier, which would raise shallowest pixels
-    # and compress the correction range).
     mask = image > 0
     result = np.where(mask, np.maximum(result, min_intensity), result)
-
     return np.clip(result, 0, 255)

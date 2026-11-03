@@ -14,6 +14,8 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 import csv
+import os
+import shutil
 from pathlib import Path
 from datetime import datetime
 import threading
@@ -330,6 +332,9 @@ class ExperimentalConditionsWindow:
             self.file_var.set(str(self.current_csv_file))
             self.update_status(f"Experimental conditions logging started: {self.current_csv_file.name}")
             
+            # Copy instruction .txt file into the print log folder
+            self._copy_instruction_file()
+            
         except Exception as e:
             self.update_status(f"Error starting experimental conditions logging: {e}", error=True)
             print(f"Error in start_new_print: {e}")
@@ -452,8 +457,40 @@ class ExperimentalConditionsWindow:
         except Exception as e:
             print(f"Error renaming print folder: {e}")
         
+        # Ensure instruction file is present in the final print directory
+        self._copy_instruction_file()
+        
         self.update_status(f"Print ended with status: {final_status}")
     
+    def _copy_instruction_file(self):
+        """Copy print instruction file (.txt) into the current log directory if available."""
+        if not self.logging_enabled.get() or not self.current_print_dir or not self.current_print_dir.exists():
+            return
+        
+        main_app = getattr(self, 'prince_main_app_ref', None)
+        if not main_app:
+            return
+        
+        try:
+            instr_path = getattr(main_app, 'active_instruction_file_path', None)
+            if not instr_path or not os.path.exists(instr_path):
+                if hasattr(main_app, 't1'):
+                    img_dir = str(main_app.t1.get()).strip()
+                    if img_dir and os.path.isdir(img_dir):
+                        expected_name = os.path.basename(os.path.normpath(img_dir)) + ".txt"
+                        candidate = os.path.join(img_dir, expected_name)
+                        if os.path.exists(candidate):
+                            instr_path = candidate
+                            main_app.active_instruction_file_path = candidate
+            
+            if instr_path and os.path.exists(instr_path):
+                dest_file = self.current_print_dir / Path(instr_path).name
+                shutil.copy2(instr_path, dest_file)
+                self.update_status(f"Instruction file saved to log folder: {Path(instr_path).name}")
+                print(f"ExperimentalConditionsWindow: Saved instruction file {Path(instr_path).name} to {self.current_print_dir}")
+        except Exception as e:
+            print(f"ExperimentalConditionsWindow: Error copying instruction file: {e}")
+
     def is_logging_enabled(self):
         """Check if logging is enabled."""
         return self.logging_enabled.get()

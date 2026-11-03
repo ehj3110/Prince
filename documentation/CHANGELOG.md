@@ -1,5 +1,54 @@
 # Changelog - Prince 3D Printer Control Software
 
+## [2026-11-03] - Graphite Slicing Support Separator & Image Modification Vectorization
+
+### Graphite Slicing Pipeline: Supported Mesh Separator (graphite/slicing/support_separator.py)
+- **Combined STL Separation (split_supported_mesh):** Decouples multi-shell STL files containing printed parts and slicer-generated supports into co-registered meshes while strictly preserving original world coordinates.
+  - **Mode A (Reference Guided):** Uses KDTree spatial query against the reference part geometry to accurately identify part shells with sub-millimeter precision.
+  - **Mode B (Autonomous / Heuristic):** Autonomous classification analyzing vertical aspect ratio (Z/extent_XY), characteristic cross-sectional thickness, volume ratios, and build-plate rafts.
+- **Support Contact Tip Extraction (extract_support_tips):** Identifies vertices and submeshes within tip_distance_threshold (default 0.8 mm) of the part surface. Tags tips with lower grayscale intensity (G_tip = 128 vs G_pillar = 255) to prevent contact overcuring and facilitate clean mechanical release.
+- **Pillar Top Disconnection (detect_and_disconnect_support_tops):** Clusters support shells into XY pillar columns and separates top contact modules from bulk scaffolding either via modular shell grouping (component mode) or clean horizontal cross-sectional cuts (planar_cut mode).
+- **Object-Oriented & CLI Interface:** Added SupportedMeshSeparator class (separate(), tag_tips(), disconnect_tops(), export()) and a command-line interface supporting batch STL processing.
+- **Unit Test Suite:** Added tests/test_support_separator.py (12 tests) verifying synthetic cube + penetrating cylinders, multi-shell parts, base rafts, coordinate invariance, zero triangle loss, and CLI execution.
+
+### High-Efficiency SIMD Image Modification Optimizations
+- **Edge Enhancement Vectorization (support_modules/image_modification/edge_enhancement.py):**
+  - Converted internal calculations to single-precision float32 SIMD operations for reduced memory overhead and increased throughput during high-layer-count slicing.
+  - Replaced Python boolean array indexing (edge_enhanced[mask]) with OpenCV SIMD-accelerated cv2.minMaxLoc(), avoiding large intermediate allocations.
+- **Scattering Compensation Vectorization (support_modules/image_modification/scattering_compensation.py):**
+  - Optimized Gaussian boundary dimming using float32 vectorization and cv2.minMaxLoc().
+  - Streamlined normalization and scaling into a fused linear transformation ((max_val + scale * lo) - signal * scale).
+
+### Control UI Safety & Test Suite Consolidation
+- **Viscosity Monitor Button State:** Temporarily set b_viscosity_monitor and chk_preprint_viscosity to DISABLED state across Prince control GUIs (Prince_Segmented.py, Prince_Segmented_Unified.py, Prince_Segmented_VideoPattern.py, prince_modern_unified_source.py) pending physical sensor attachment, while maintaining the underlying mathematical engine and tests.
+- **Full Test Suite (57 Tests):** Registered support_separator and exp_conditions in tests/run_all_tests.py. All 57 tests across 7 active test modules pass cleanly.
+
+## [2026-10-19] - Save Print Instruction File on Experimental Conditions Logging
+
+### Experimental Conditions Logging & Print Instruction Persistence
+- Updated the print finalization and initialization logic across Prince GUIs (`Prince_Segmented.py`, `Prince_Segmented_Unified.py`, `prince_modern_unified_source.py`, `Prince_Segmented_VideoPattern.py`, and `ExperimentalConditionsWindow.py`) so that whenever **"Enable Experimental Conditions Logging"** is enabled, the active print instruction file (`.txt`) is automatically copied into the print's session log folder.
+- **Immediate Save at Print Start:** The instruction file is copied as soon as the print session directory is established, ensuring that aborted prints or unexpected shutdowns still retain their instruction `.txt` in the log directory.
+- **Folder Rename Persistence:** When `ExperimentalConditionsWindow.end_print()` renames the session folder to include status suffixes (`- Complete` or `- Stopped`), the copied `.txt` file persists within the renamed folder, and post-print finalization verifies the instruction file exists in the target folder.
+- **Robust Fallback Discovery:** If `active_instruction_file_path` is not explicitly set in memory, the system automatically discovers the expected `<foldername>.txt` from the image directory specified in `t1`.
+- **Unit Tests:** Added unit tests in `tests/test_experimental_conditions_logging.py` covering copy at start, persistence across folder rename, fallback from directory path, and exclusion when logging is disabled. Added `exp_conditions` test target to `tests/run_all_tests.py`.
+
+## [2026-10-14] - Test Suite Robustness & Documentation Consolidation
+
+### Test Suite Multi-Subsystem Expansion
+- Extended master test runner (`tests/run_all_tests.py`) to execute unit and regression suites across all major subsystems: `SessionManager`, `ViscosityAnalyzer`, `RampedCylinder`, `CameraViewWindow` (optical robustness), and `SeekThermalViewerWindow` (radiometric thermography).
+- All 42 test cases across 5 active test suites now pass cleanly in ~15 seconds.
+- Handled optional post-processing dependencies (`pandas`, `scipy`) gracefully in `run_all_tests.py`, allowing the printing and hardware suites to execute on production environments without requiring the dev analysis stack.
+- Added module path resolution to `tests/test_ramped_cylinder.py` so it can be executed standalone or via test runner.
+- Resolved Windows console `cp1252` encoding crashes in `run_all_tests.py` by eliminating non-ASCII glyphs.
+
+### Seek Thermal Radiometric Viewer Robustness
+- Enhanced `SeekThermalWorker` synthetic simulation fallback: When running in mock mode or headless test environments without physical USB hardware attached, the worker initializes the simulation loop within a fast 0.15 s detection window, enabling automated testing without UI blocking or timeout failures.
+
+### Master Documentation Index & Subsystem Collation
+- Rebuilt `DOCUMENTATION_INDEX.md` as the unified master index for the Prince repository, replacing obsolete Rush Phase 1 shutdown testing documentation.
+- Synchronized `README.md` with complete architecture, core components, and chronological changelog entries spanning the addition of the live Sensor Suite, In-Situ Resin Viscosity Monitor, and Prince Modern PySide6 GUI.
+- Updated `documentation/PROJECT_ORGANIZATION.md` to map new modules across `/support_modules/`, `/calibration_modules/`, `/prince_modern/`, and `/tests/`.
+
 ## [2026-10-09] - AI handoff
 
 - New [`START_HERE_FOR_AI.md`](../START_HERE_FOR_AI.md): which entry point is current, launch commands, hardware constraints, and docs that are out of date. Linked from `DOCUMENTATION_INDEX.md`.
@@ -46,6 +95,40 @@
 - Prince **Monitoring Suite** now launches a separate PySide6 dashboard (`calibration_modules/monitoring_dashboard`) so the printer GUI stays on Tkinter.
 - Dark 2x2 layout: dual camera feeds, peel-force plot, 3D lattice with a moving slice plane plus the current mask, and a UV dose stand-in.
 - Force, dose, and print progress are simulated. Cameras use the Allied Vision and Seek workers when those devices start, and synthetic frames otherwise.
+
+## [2026-09-30] - In-Situ Resin Viscosity & Solvent Evaporation Drift Monitoring
+
+### Mathematical Engine & Stefan Squeeze-Flow Theory (`support_modules/viscosity_analyzer.py`)
+- Implemented linearized Stefan squeeze-flow regression for circular plate rheometry ($D = 12.7\text{ mm}$ aluminum build stage): transforms raw hydrodynamic force to $F^{-1/3}\text{ vs } z$.
+- Slope $m = (32 / (3\pi D^4 \mu v))^{1/3}$ extracts relative viscosity changes while providing mathematical invariance to zero-gap datum shifts ($z_0$) caused by chassis thermal expansion ($10\text{--}25\ \mu\text{m}$).
+- Added lumped elastohydrodynamic compliance solver to decouple FEP membrane deflection from viscous drag.
+- Added multi-speed power-law rheology solver for evaluating non-Newtonian shear-thinning indices.
+- Pre-fluid dry membrane touch and contact-stiffness detector.
+
+### Relative Drift Tracking & Solvent Evaporation Alerts
+- Self-referencing morning baseline model: Tracks $\Delta \mu\% = [(m_0/m_k)^3 - 1] \times 100\%$ across printing sessions without requiring external calibration standards.
+- Designed specifically for volatile diluents and reactive solvents that evaporate over long print runs.
+- Added automated descent sampling hook in `Prince_Segmented.py` before Layer 1 exposure.
+- Automated threshold alerts: Warnings triggered at $+20\%$ thickening; critical stop alerts at $+25\%$ to prevent delamination or suction failure.
+- Auto-persists daily baselines to `config/daily_viscosity_baseline.json` with same-day date validation.
+
+### Real-Time Viscosity Monitor Window (`support_modules/ViscosityMonitorWindow.py`)
+- Dedicated Tkinter + Matplotlib secondary GUI window.
+- Dual-plot real-time visualization: Top plot displays raw squeeze force $F(z)$ vs gap; bottom plot displays linearized Stefan fit $F^{-1/3}(z)$ with live $R^2$ goodness-of-fit and slope readouts.
+- Pre-print dry membrane touch checks, reference fluid precalibration dialog, and baseline reset controls.
+
+### Reference Fluids Database (`support_modules/reference_fluids_db.py`)
+- Standardized laboratory reference fluid database with Arrhenius temperature models ($\ln \mu = A + B/T$):
+  - PEG 400 (Polyethylene Glycol 400, water-soluble, non-toxic, ideal resin viscosity match)
+  - Glycerol-Water mixtures (85% w/w and 90% w/w Newtonian standards)
+  - Propylene Glycol (USP)
+
+### Testing & Technical Documentation
+- Added 9-test unit test suite in `tests/test_viscosity_analyzer.py` verifying geometry prefactors, linearized regression, zero-datum recovery, baseline persistence, reference fluids, and synthetic curve simulation (all passing).
+- Detailed technical guides:
+  - `documentation/technical/RESIN_VISCOSITY_SQUEEZE_FLOW_PHYSICS.md` (fluid mechanics and EHL theory)
+  - `documentation/technical/VISCOSITY_DATA_ANALYSIS_METHODS.md` (data analysis and numerical solvers)
+  - `documentation/technical/IN_SITU_VISCOSITY_DRIFT_HANDOVER.md` (developer handover and implementation guide)
 
 ## [2026-09-30] - Monitoring Suite (optical, thermal, force, power slot)
 

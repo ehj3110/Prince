@@ -40,7 +40,14 @@ def run_all_tests(verbose=False, specific_test=None):
     test_modules = {
         'session': 'test_session_manager',
         'adhesion': 'test_adhesion_metrics',
-        'peakforce': 'test_peak_force_logger'
+        'peakforce': 'test_peak_force_logger',
+        'viscosity': 'test_viscosity_analyzer',
+        'ramped_cylinder': 'test_ramped_cylinder',
+        'optical_camera': 'test_camera_viewer_robustness',
+        'thermal_camera': 'test_seek_thermal_viewer',
+        'support_separator': 'test_support_separator',
+        'exp_conditions': 'test_experimental_conditions_logging',
+        'image_mod': 'test_image_modification',
     }
     
     # Determine which tests to run
@@ -61,14 +68,19 @@ def run_all_tests(verbose=False, specific_test=None):
     print(f"Loading tests from: {Path(__file__).parent}")
     print()
     
+    skipped_modules = []
     for test_name, module_name in modules_to_test.items():
         try:
             module = __import__(module_name)
             suite.addTests(loader.loadTestsFromModule(module))
-            print(f"✓ Loaded {test_name} tests from {module_name}.py")
+            print(f"[OK] Loaded {test_name} tests from {module_name}.py")
         except ImportError as e:
-            print(f"✗ Failed to load {test_name} tests: {e}")
-            return False
+            if specific_test:
+                print(f"[FAIL] Failed to load {test_name} tests: {e}")
+                return False
+            else:
+                skipped_modules.append(test_name)
+                print(f"[SKIP] Skipped {test_name} tests (missing dependency: {e})")
     
     print()
     print("=" * 70)
@@ -102,11 +114,11 @@ def run_all_tests(verbose=False, specific_test=None):
     print("=" * 70)
     
     if result.wasSuccessful():
-        print("✓ ALL TESTS PASSED")
+        print("[PASS] ALL TESTS PASSED")
         print("=" * 70)
         return True
     else:
-        print("✗ SOME TESTS FAILED")
+        print("[FAIL] SOME TESTS FAILED")
         print("=" * 70)
         
         if result.failures:

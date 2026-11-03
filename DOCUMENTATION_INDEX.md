@@ -1,292 +1,139 @@
-# Phase 1 Complete - Documentation Index
+# Prince 3D Printer System — Documentation Master Index
 
-## Start Here
-
-👉 **[START_HERE_FOR_AI.md](START_HERE_FOR_AI.md)** — Handoff for a coding assistant: which GUI is current, how to launch, hardware rules, and which older docs to ignore.
-
-👉 **[NEXT_STEPS.md](NEXT_STEPS.md)** — Older Phase 1 shutdown-instrumentation checklist (not the current task list).
+Welcome to the comprehensive documentation index for the **Prince Resin DLP 3D Printer Control Software** (`Prince_CurrentWorkingVersion`). This index organizes all technical guides, architectural specifications, operator manuals, and scientific references across the codebase.
 
 ---
 
-## New Documentation Work (Round 2)
+## 🚀 Quick Navigation & Getting Started
 
-| Document | Purpose | Read Time |
-|----------|---------|-----------|
-| [documentation/technical/RESIN_VISCOSITY_SQUEEZE_FLOW_PHYSICS.md](documentation/technical/RESIN_VISCOSITY_SQUEEZE_FLOW_PHYSICS.md) | Fluid mechanics & EHL theory for in-situ resin squeeze-flow viscometry | 12 min |
-| [documentation/technical/VISCOSITY_DATA_ANALYSIS_METHODS.md](documentation/technical/VISCOSITY_DATA_ANALYSIS_METHODS.md) | Data analysis, regression algorithms & multi-speed rheology solvers | 10 min |
-| [documentation/technical/IN_SITU_VISCOSITY_DRIFT_HANDOVER.md](documentation/technical/IN_SITU_VISCOSITY_DRIFT_HANDOVER.md) | Handover & migration guide for in-situ viscosity drift & solvent evaporation tracking | 8 min |
-| [documentation/PRINCE_UNIFIED_GUI.md](documentation/PRINCE_UNIFIED_GUI.md) | Architecture, layout overhaul, hardware integration & operational guide for Prince Unified GUI | 7 min |
-| [documentation/PRINCE_MODERN_GUI.md](documentation/PRINCE_MODERN_GUI.md) | PySide6 Prince Modern shell, Unified backend bridge, feature gap checklist | 8 min |
-| [documentation/CODEBASE_DOCUMENTATION_ROUND2_MASTER.md](documentation/CODEBASE_DOCUMENTATION_ROUND2_MASTER.md) | Master tracker for full codebase documentation refresh | 8 min |
-| [documentation/CODEBASE_SUBSYSTEM_MAP_ROUND2.md](documentation/CODEBASE_SUBSYSTEM_MAP_ROUND2.md) | Subsystem coverage map and priority matrix for thorough sweep | 6 min |
-| [documentation/Z_COMPENSATION_CALIBRATION_PROTOCOL.md](documentation/Z_COMPENSATION_CALIBRATION_PROTOCOL.md) | Future-work calibration protocol for axial print-through compensation | 10 min |
-| [documentation/Z_COMPENSATION_TORTURE_TEST_GUIDE.md](documentation/Z_COMPENSATION_TORTURE_TEST_GUIDE.md) | Stress-test execution and triage guide for z compensation | 6 min |
-| [documentation/SUPPORT_MODULES_ROUND2_INDEX.md](documentation/SUPPORT_MODULES_ROUND2_INDEX.md) | Overview of support modules for round 2 | 5 min |
-| [documentation/POST_PROCESSING_FOLDER_INDEX.md](documentation/POST_PROCESSING_FOLDER_INDEX.md) | Folder-level architecture map for post-processing | 6 min |
-| [documentation/CALIBRATION_FOLDER_INDEX.md](documentation/CALIBRATION_FOLDER_INDEX.md) | Folder-level architecture map for calibration modules (Allied Vision optical + Seek Thermal InspectionCAM + monitoring dashboard) | 6 min |
-| [documentation/MONITORING_DASHBOARD_GUIDE.md](documentation/MONITORING_DASHBOARD_GUIDE.md) | System monitor: live cameras, PM100A expected UV power, triple load-cell calibrate/tare, tour checklist | 10 min |
-| [documentation/CAMERA_VIEWER_POPUP_SPEC.md](documentation/CAMERA_VIEWER_POPUP_SPEC.md) | Implementation spec for Allied Vision Camera View popup (Phase 1) | 10 min |
-| [documentation/technical/SEEK_THERMAL_INSPECTION_CAMERA_INTEGRATION.md](documentation/technical/SEEK_THERMAL_INSPECTION_CAMERA_INTEGRATION.md) | Architectural integration guide for Seek Thermal infrared inspection camera | 10 min |
-| [documentation/DEBUG_FOLDER_INDEX.md](documentation/DEBUG_FOLDER_INDEX.md) | Folder-level map for debug utilities and helpers | 4 min |
+| Document | Description | Target Audience |
+| :--- | :--- | :--- |
+| **[`START_HERE_FOR_AI.md`](START_HERE_FOR_AI.md)** | **Handoff for AI & Developers** — Current GUI entry points, hardware invariants, launch commands, and outdated docs. | Developers, AI Agents |
+| **[`README.md`](README.md)** | Project overview, core components, architecture, and recent changes. | Everyone |
+| **[`documentation/DEPLOYMENT_GUIDE.md`](documentation/DEPLOYMENT_GUIDE.md)** | **New PC Clone & Setup Guide** — Environment recreation (`.conda`), hardware drivers, SDK installations, and production deployment checklist. | Operators, Developers |
+| **[`documentation/PRE_PRINT_SETUP_GUIDE.md`](documentation/PRE_PRINT_SETUP_GUIDE.md)** | Hardware setup, camera focus, optical alignment, force gauge calibration, resin vat prep, and pre-flight checklist. | Operators |
+| **[`documentation/QUICK_REFERENCE_CARD.md`](documentation/QUICK_REFERENCE_CARD.md)** | Quick printable cheatsheet for daily printing operations. | Operators |
+| **[`documentation/PROJECT_ORGANIZATION.md`](documentation/PROJECT_ORGANIZATION.md)** | Directory tree map and component responsibilities. | Everyone |
+| **[`documentation/CHANGELOG.md`](documentation/CHANGELOG.md)** | Complete chronological history of releases and codebase improvements. | Everyone |
 
 ---
 
-## Quick Reference
+## 🖥️ Graphical User Interfaces (GUIs)
 
-| Document | Purpose | Read Time |
-|----------|---------|-----------|
-| [NEXT_STEPS.md](NEXT_STEPS.md) | Your immediate action items | 3 min |
-| [QUICKSTART_PHASE1.md](QUICKSTART_PHASE1.md) | How to run Phase 1 tests | 5 min |
-| [PHASE1_README.md](PHASE1_README.md) | Overview and FAQ | 5 min |
-| [PHASE1_IMPLEMENTATION.md](PHASE1_IMPLEMENTATION.md) | Technical implementation details | 10 min |
-| [PHASE1_VALIDATION_CHECKLIST.md](PHASE1_VALIDATION_CHECKLIST.md) | Evidence of quality | 5 min |
-| [documentation/IMAGE_MODIFICATION_MODULE.md](documentation/IMAGE_MODIFICATION_MODULE.md) | Image Modification reference including Cone Generator and Instruction Ramping | 8 min |
+The Prince platform features multiple GUI interfaces for different operational workflows:
 
----
-
-## Implementation Files
-
-Located in `Rush_Segmented_VideoPattern/`:
-
-1. **lifecycle_logger.py** (8.9 KB)
-   - Core instrumentation module
-   - Records all shutdown events with timestamps and thread context
-   - Exports JSON logs with detailed event history
-   - ✅ Tested and working
-
-2. **test_scenarios.py** (13.9 KB)  
-   - Interactive test scenario guide
-   - Runs 3 shutdown scenarios: normal, stop+delay, stop+immediate
-   - Auto-analyzes logs and generates reports
-   - ✅ Tested and working
-
-3. **Rush_Segmented_VideoPattern.py** (140 KB)
-   - Main GUI application with instrumentation patches
-   - 6 instrumentation points added for shutdown monitoring
-   - All edits syntax-verified
-   - ✅ Compiled and ready
-
-4. **logs/** (directory)
-   - Auto-created by lifecycle logger
-   - Stores lifecycle_*.json files from test runs
-   - Ready for Phase 1 evidence collection
-   - ✅ Directory exists
+| Document | Application / Module | Description |
+| :--- | :--- | :--- |
+| **[`documentation/PRINCE_MODERN_GUI.md`](documentation/PRINCE_MODERN_GUI.md)** | `Prince_Modern.py`<br>`prince_modern/` | **Current Operator UI** — PySide6 shell with modern dark purple card styling (`#19202A`/`#8870A3`), Inter typography, live system log, asynchronous bridge to Unified print backend, and satellite launchers. |
+| **[`documentation/PRINCE_UNIFIED_GUI.md`](documentation/PRINCE_UNIFIED_GUI.md)** | `Prince_Segmented_Unified.py` | **Tkinter Stable Baseline** — Dual projection mode switcher (60 Hz HDMI Video vs 30 Hz HDMI Video Pattern LUT), Rush-aligned clean UI, dynamic geometry, and thread-safe post-print survey. |
+| Legacy Applications | `Prince_Segmented.py`<br>`Prince_Segmented_VideoPattern.py` | Standalone Tkinter applications for legacy video mode and pattern LUT projection mode. |
 
 ---
 
-## Documentation Files
+## 🔬 Multi-Spectral Vision & Live Sensor Suite
 
-Located in `Prince_CurrentWorkingVersion/`:
+Real-time monitoring, alignment, thermography, and force acquisition during printing:
 
-1. **NEXT_STEPS.md** (this folder)
-   - What you need to do next
-   - One-line command to run Phase 1
-   - What to expect and look for
-
-2. **QUICKSTART_PHASE1.md**
-   - Step-by-step how to run tests
-   - What each scenario tests
-   - How to interpret results
-   - Troubleshooting guide
-
-3. **PHASE1_README.md**
-   - Complete overview of Phase 1
-   - What got installed and why
-   - FAQ and summary
-   - Expected results (success vs problem indicators)
-
-4. **PHASE1_IMPLEMENTATION.md**
-   - Detailed technical information
-   - What each instrumentation point logs
-   - Log file structure explanation
-   - What to look for in logs
-   - Code changes summary
-
-5. **PHASE1_VALIDATION_CHECKLIST.md**
-   - Complete validation proof
-   - All tests passed ✅
-   - Sign-off and readiness confirmation
-   - How to verify Phase 1 post-execution
+| Document | Subsystem / Files | Key Capabilities |
+| :--- | :--- | :--- |
+| **[`documentation/MONITORING_DASHBOARD_GUIDE.md`](documentation/MONITORING_DASHBOARD_GUIDE.md)** | `calibration_modules/monitoring_dashboard/`<br>`calibration_modules/MonitoringSuiteWindow.py` | **PySide6 System Monitoring Dashboard** — Independent process displaying live optical machine vision, radiometric thermal imaging, 40 Hz triple-load-cell summed force, and Thorlabs PM100A expected UV power line. |
+| **[`calibration_modules/CALIBRATION_FOLDER_INDEX.md`](calibration_modules/CALIBRATION_FOLDER_INDEX.md)** | `calibration_modules/` | Comprehensive architecture map and setup guide for calibration, cameras, power meters, and dashboard workers. |
+| **[`documentation/CAMERA_VIEWER_POPUP_SPEC.md`](documentation/CAMERA_VIEWER_POPUP_SPEC.md)** | `calibration_modules/CameraViewWindow.py`<br>`vmb_camera_worker.py`<br>`zoom_pan_canvas.py` | **Optical Machine Vision** — Allied Vision Alvium 1800 U-511m monochrome camera via Vimba X (`vmbpy`). Non-blocking popup with cursor-anchored zoom/pan, crosshair reticle, manual exposure/gain, and snapshot capture. |
+| **[`documentation/technical/SEEK_THERMAL_INSPECTION_CAMERA_INTEGRATION.md`](documentation/technical/SEEK_THERMAL_INSPECTION_CAMERA_INTEGRATION.md)** | `calibration_modules/SeekThermalViewerWindow.py`<br>`seek_thermal_worker.py`<br>`seek_thermal_canvas.py` | **Infrared Thermography** — Seek Thermal InspectionCAM (Model IQ-AAA, 320×240, 9 Hz, 4 cm macro). Real-time photopolymerization exotherm tracking, hover spot probe (°C), false-color palettes, and radiometric CSV/NPY export. |
+| **[`documentation/TRIPLE_FORCE_GAUGE_GUIDE.md`](documentation/TRIPLE_FORCE_GAUGE_GUIDE.md)** | `support_modules/ForceGaugeManager.py`<br>`calibration_modules/monitoring_dashboard/workers.py` | **Triple Load Cell System** — Phidget 4x Bridge ports 0, 1, 2 summed at 40 Hz (25 ms interval). Proportional force calibration and session tare. |
+| **[`calibration_modules/thorlabs_pm100a.py`](calibration_modules/thorlabs_pm100a.py)** | `thorlabs_pm100a.py`<br>`power_density_calibration.py` | **Optical Power Meter** — Thorlabs PM100A over NI-VISA/USBTMC at 385 nm. Two-point UV power density calibration and real-time expected power tracking ($P_{\text{exp}} = \text{density} \times \text{area}$). |
 
 ---
 
-## What Phase 1 Does
+## 🧪 In-Situ Resin Viscosity & Solvent Evaporation Drift
 
-### Problem Being Investigated
-Light engine freezes after shutdown on "other computer", requiring power cycle.
+Hydrodynamic squeeze-flow viscometry for monitoring resin thickening and solvent/diluent evaporation:
 
-### Solution Approach
-**Phase 1: Instrumentation** - Capture detailed evidence of what happens during shutdown.
-
-### How It Works
-1. Logs every DLP command, stage operation, and GUI event
-2. Records thread lifecycle and join results
-3. Detects exceptions and timeouts
-4. Exports JSON for analysis
-
-### Test Scenarios
-1. **NORMAL_COMPLETE** - Let print finish, close normally
-2. **STOP_WITH_DELAY** - Click stop, wait 5 sec, close
-3. **STOP_IMMEDIATE** - Click stop, immediately close
+| Document | Subsystem / Files | Key Capabilities |
+| :--- | :--- | :--- |
+| **[`documentation/technical/IN_SITU_VISCOSITY_DRIFT_HANDOVER.md`](documentation/technical/IN_SITU_VISCOSITY_DRIFT_HANDOVER.md)** | Developer Handover Guide | Complete implementation architecture, daily baseline management, pre-print descent scan hook in `Prince_Segmented.py`, and operator alert thresholds. |
+| **[`documentation/technical/RESIN_VISCOSITY_SQUEEZE_FLOW_PHYSICS.md`](documentation/technical/RESIN_VISCOSITY_SQUEEZE_FLOW_PHYSICS.md)** | Physics & Fluid Mechanics | Classical Stefan squeeze flow for $\varnothing 12.7\text{ mm}$ aluminum plate, elastohydrodynamic compliance, membrane flex decoupling, and mathematical proof of datum-shift invariance. |
+| **[`documentation/technical/VISCOSITY_DATA_ANALYSIS_METHODS.md`](documentation/technical/VISCOSITY_DATA_ANALYSIS_METHODS.md)** | Analysis Algorithms | Linearized regression ($F^{-1/3}\text{ vs } z$), multi-speed power-law rheology solvers, and Arrhenius temperature compensation models. |
+| Core Code Modules | `support_modules/viscosity_analyzer.py`<br>`support_modules/ViscosityMonitorWindow.py`<br>`support_modules/reference_fluids_db.py` | Core mathematical engine, dual-plot real-time UI, and certified reference fluids library (PEG 400, Glycerol/Water, Propylene Glycol). |
 
 ---
 
-## How to Run Phase 1
+## ⚙️ Printing Mechanics & Adhesion Science
 
-### Command
-```bash
-cd Rush_Segmented_VideoPattern
-python test_scenarios.py
-```
+Core physical modeling and stage movement algorithms for DLP stereolithography:
 
-### Expected Output
-- Interactive prompts for each scenario
-- Auto-generated analysis reports for each
-- JSON logs saved to `logs/` directory
-
-### Expected Time
-15-20 minutes (3 scenarios, ~5 minutes each)
+| Document | Topic | Description |
+| :--- | :--- | :--- |
+| **[`documentation/PRINTING_PROCESS_GUIDE.md`](documentation/PRINTING_PROCESS_GUIDE.md)** | Printing Workflow | Complete layer cycle, stage movement phases, data logging sequences, and error mitigation. |
+| **[`documentation/SANDWICH_ROUTINE_GUIDE.md`](documentation/SANDWICH_ROUTINE_GUIDE.md)** | Peeling Routine | Multi-tier sandwich ascent profile designed to minimize peel stress and prevent vat suction delamination. |
+| **[`documentation/SANDWICH_SPEED_FLOOR_MODIFICATIONS.md`](documentation/SANDWICH_SPEED_FLOOR_MODIFICATIONS.md)** | Speed Floors | Minimum velocity constraints and smooth deceleration curves for stage motion. |
+| **[`documentation/STAGE_STALL_PREVENTION.md`](documentation/STAGE_STALL_PREVENTION.md)** | Motion Control | Zaber linear stage acceleration quantization, microstep tolerances, and stall mitigation. |
+| **[`documentation/technical/WORK_OF_ADHESION_METRICS_DEFINITIONS.md`](documentation/technical/WORK_OF_ADHESION_METRICS_DEFINITIONS.md)** | Adhesion Science | Formal mathematical definitions for peak force, work of adhesion, separation point, and baseline detection. |
+| **[`documentation/Z_COMPENSATION_CALIBRATION_PROTOCOL.md`](documentation/Z_COMPENSATION_CALIBRATION_PROTOCOL.md)** | Axial Compensation | Calibration protocol for compensating axial overcure and print-through errors. |
 
 ---
 
-## What Gets Logged
+## 📐 Graphite Geometry & Support Separator Pipeline
 
-For each scenario:
-- ✅ DLP commands (power, stopsequence, changemode, standby)
-- ✅ Stage operations (stop, disconnect)
-- ✅ Print thread lifecycle (start, end, join attempts)
-- ✅ GUI close sequence
-- ✅ Cleanup call order and who initiated it
-- ✅ All exceptions and timeouts
-- ✅ Thread context and monotonic timestamps
+Advanced geometry tools for multi-shell mesh separation, support structure classification, and contact tip tagging:
 
----
-
-## Success vs Problem Indicators
-
-### ✅ If things are working normally:
-```
-Single cleanup_dlp sequence
-Print thread joins cleanly (success=true)
-All DLP operations succeed
-All stage operations succeed
-No exceptions or timeouts
-No duplicate cleanup calls
-```
-
-### ❌ If there's a freeze (what we expect to see):
-```
-Timeout in stage.disconnect() (A3200 socket hanging)
-DLP operation fails (blocked by timeout)
-Print thread join fails (thread still running)
-callback_skipped event (GUI closed while thread active)
-Multiple cleanup calls (race condition)
-```
+| Document | Subsystem / Files | Description |
+| :--- | :--- | :--- |
+| **Support Separator** | graphite/slicing/support_separator.py | Multi-shell STL decoupling separating printed parts from supports retaining exact world coordinates. Supports Mode A (reference guided KDTree) and Mode B (autonomous aspect-ratio and volume classification). |
+| **Contact Tip Tagging** | graphite/slicing/support_separator.py | Identifies contact tips within sub-millimeter proximity of part surfaces, applying reduced grayscale intensity ({\\text{tip}} = 128$) to reduce peel forces. |
+| **Pillar Top Disconnection** | graphite/slicing/support_separator.py | Spatial clustering of support pillars in XY to cleanly disconnect modular heads or make horizontal planar cuts below detected peaks. |
+| **Python API & CLI** | SupportedMeshSeparator | Unified Python class and command-line toolchain for automated STL processing pipelines. |
 
 ---
 
-## Next Phase Preview
+## 🖼️ Image Modification & Slicing Pre-Processing
 
-**Phase 2: Root Cause Analysis**
-- After you provide Phase 1 logs
-- Analyze event sequences and identify root cause
-- Choose which fixes to implement
+Pre-processing toolchain for mask generation, scattering compensation, and exposure scheduling:
 
-**Phases 3-7: Implementation**
-- Shutdown coordinator (prevent duplicate calls)
-- Socket timeout on A3200
-- Forced print thread join 
-- DLP recovery startup
-- Validation and testing
+| Document | Subsystem / Files | Description |
+| :--- | :--- | :--- |
+| **[`documentation/IMAGE_MODIFICATION_MODULE.md`](documentation/IMAGE_MODIFICATION_MODULE.md)** | `support_modules/ImageModificationWindow.py`<br>`image_modification/` | Full guide to SLA image pre-processing including Edge Enhancement, Scattering Compensation, and pixel padding. |
+| **Cone Generator** | `image_modification/ramped_cylinder.py` | Parametric layer stack generation for stepped/smooth conical test geometries. |
+| **Instruction Ramping** | `image_modification/ramped_cylinder.py` | Automatic exposure and power ramp scheduling between user-defined control layers with dosage preservation. |
+| **Standalone Executable** | `ImageModificationGUI_export/` | PyInstaller-compiled standalone GUI (`ImageModificationGUI.exe`) requiring no local Python installation. |
 
 ---
 
-## Status Summary
+## 📊 Post-Processing, Batch Analytics & Data Pipelines
 
-| Item | Status |
-|------|--------|
-| Lifecycle logger | ✅ Complete |
-| Test scenario guide | ✅ Complete |
-| Main GUI instrumentation | ✅ Complete |
-| Code validation | ✅ Passed |
-| Documentation | ✅ Complete |
-| Ready for operator testing | ✅ YES |
+Tools for processing adhesion force curves, generating summary statistics, and cross-print comparisons:
 
----
-
-## File Structure
-
-```
-Prince_CurrentWorkingVersion/
-│
-├── Rush_Segmented_VideoPattern/
-│   ├── lifecycle_logger.py          ← Instrumentation
-│   ├── test_scenarios.py             ← Test runner (RUN THIS)
-│   ├── Rush_Segmented_VideoPattern.py ← Main GUI (instrumented)
-│   ├── logs/                         ← Output logs
-│   └── no_hardware_preview.py       ← Preview mode (no hardware)
-│
-├── NEXT_STEPS.md                    ← START HERE
-├── QUICKSTART_PHASE1.md             ← How-to guide
-├── PHASE1_README.md                 ← Overview
-├── PHASE1_IMPLEMENTATION.md         ← Technical details
-├── PHASE1_VALIDATION_CHECKLIST.md   ← Quality assurance
-└── This file (index)
-```
+| Document | Subsystem / Files | Description |
+| :--- | :--- | :--- |
+| **[`documentation/POST_PROCESSING_GUIDE.md`](documentation/POST_PROCESSING_GUIDE.md)** | Post-Print Analytics | Guide to batch data processing, layer force curve extraction, and master comparison plotting. |
+| **[`documentation/UNIVERSAL_PROCESSOR_GUIDE.md`](documentation/UNIVERSAL_PROCESSOR_GUIDE.md)** | `batch_processors/batch_process_universal.py` | Unified processor compatible with all print log formats (V4, V5, V6+) without script modifications. |
+| **[`documentation/POST_PROCESSING_FOLDER_INDEX.md`](documentation/POST_PROCESSING_FOLDER_INDEX.md)** | `post-processing/` | Directory map for master plotters, hybrid adhesion analysis, and summary table generators. |
 
 ---
 
-## Key Points
+## 🧪 Testing, Verification & Quality Assurance
 
-1. **Everything is ready** - All code written, tested, and documented
-2. **No prior setup needed** - Just run the test scenarios
-3. **Evidence will guide fixes** - Phase 1 logs determine Phase 2 approach
-4. **Quick turnaround** - Phase 1 takes 15-20 minutes to complete
-5. **Clear documentation** - Every file explains its purpose
+Automated test suites ensuring regression-free hardware control and data integrity:
 
----
-
-## Action Items (Priority Order)
-
-### NOW (You)
-- [ ] Read [NEXT_STEPS.md](NEXT_STEPS.md) (3 minutes)
-- [ ] Run `python test_scenarios.py` (15-20 minutes)
-- [ ] Share analysis output or logs
-
-### NEXT (Me)
-- [ ] Analyze Phase 1 logs for root cause
-- [ ] Implement Phase 2 diagnosis
-- [ ] Design Phase 3-7 fixes
-- [ ] Implement targeted solutions
-
-### LATER (Quality Check)
-- [ ] Validate fixes on both computers
-- [ ] Test all shutdown paths
-- [ ] Verify no regressions
+| Test Suite | File | Coverage |
+| :--- | :--- | :--- |
+| **Full Suite Runner** | **[`tests/run_all_tests.py`](tests/run_all_tests.py)** | Master runner for all unit and integration tests across subsystems. |
+| **Viscosity Rheology** | **[`tests/test_viscosity_analyzer.py`](tests/test_viscosity_analyzer.py)** | Linearized Stefan regression, zero-datum recovery, reference fluid database, and synthetic curve simulation. |
+| **Optical Vision** | **[`tests/test_camera_viewer_robustness.py`](tests/test_camera_viewer_robustness.py)** | Allied Vision zoom/pan coordinate math, gamma lookup tables, worker thread lifecycle, and frame streaming. |
+| **Thermal Radiometry** | **[`tests/test_seek_thermal_viewer.py`](tests/test_seek_thermal_viewer.py)** | Seek Thermal frame generation, colormap palettes, spot probe mapping, CSV/NPY export, and mock fallback. |
+| **Ramped Geometry** | **[`tests/test_ramped_cylinder.py`](tests/test_ramped_cylinder.py)** | Cone slicing, exposure/power ramping interpolation, and instruction file formatting. |
+| **Session Management** | **[`tests/test_session_manager.py`](tests/test_session_manager.py)** | Session logger initialization, print numbering, state persistence, and directory path validation. |
+| **Adhesion Calculations** | **[`tests/test_adhesion_metrics.py`](tests/test_adhesion_metrics.py)** | Savitzky-Golay and median filtering, second-derivative propagation detection, and work integration. |
 
 ---
 
-## Contact / Questions
+## 🔒 Critical Hardware Constraints Summary
 
-If you have questions:
-- **About running Phase 1?** → Read [QUICKSTART_PHASE1.md](QUICKSTART_PHASE1.md)
-- **About what was implemented?** → Read [PHASE1_IMPLEMENTATION.md](PHASE1_IMPLEMENTATION.md)
-- **About quality/validation?** → Read [PHASE1_VALIDATION_CHECKLIST.md](PHASE1_VALIDATION_CHECKLIST.md)
-- **FAQ and overview?** → Read [PHASE1_README.md](PHASE1_README.md)
-- **What to do next?** → Read [NEXT_STEPS.md](NEXT_STEPS.md)
-
----
-
-## Summary
-
-**Phase 1 is complete.** All instrumentation is in place, tested, and documented.
-
-**Your next action:** Run the test scenarios to capture evidence of the freeze.
-
-```bash
-cd Rush_Segmented_VideoPattern
-python test_scenarios.py
-```
-
-Get the analysis output or logs, and we'll proceed to Phase 2 root-cause diagnosis and Phase 3-7 implementation.
-
+For quick reference, operators and developers must keep these hardware rules in mind:
+1. **Never call DLP `standby()`**: Release the projector using HDMI video mode and `close()`.
+2. **Exclusive DLP HID**: Close TI DLPC900REF-GUI before launching any Prince script or power calibration.
+3. **Phidget Bridge Single Ownership**: The Monitoring Dashboard and Prince Sensor Panel cannot query the Phidget bridge simultaneously.
+4. **Monitoring Dashboard Process Isolation**: Always launch the dashboard as an independent process with `close_fds=True`.
+5. **No Faked Sensor Feeds in Production**: Use gray covers for disconnected hardware; never spoof live force or camera feeds in production.
+6. **Alvium Exposure Cap**: Keep ExposureAuto disabled and limit manual exposure to 0.5 s ($500{,}000\ \mu\text{s}$).
+7. **Process State Bridge**: The dashboard reads layer and print state strictly via `data/monitor_print_state.json`.
