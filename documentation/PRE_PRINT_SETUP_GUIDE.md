@@ -587,13 +587,14 @@ Verify this sequence occurs during printing:
 ### Essential Pre-Print Steps
 
 1. **Connect Hardware** → Force gauge, DLP, Stage, Camera
-2. **Launch Software** → `python Prince_Segmented.py`
+2. **Launch Software** → `.\.conda\python.exe Prince_Modern.py` (Tk baseline: `Prince_Segmented_Unified.py`)
 3. **Calibrate Force Gauge** → Open Sensor Window → Connect → Calibrate
 4. **Calibrate Camera** → Camera View → Start Calibration → Follow guidance
 5. **Home Stage** → Run auto-home or manual home
 6. **Test DLP** → Project test pattern, verify UV output
-7. **Load Print File** → Select .txt file, verify layers
-8. **Start Print** → Monitor sensor window, verify data logging
+7. **Load Print File** → Browse to folder / load `.txt`, verify layers
+8. **(Optional, Run Cont.)** → System Actions → **Simple Variable Speed** → Update → Apply ([guide](SIMPLE_VARIABLE_SPEED.md))
+9. **Start Print** → Monitor sensor window, verify data logging
 
 ### Critical Success Indicators
 

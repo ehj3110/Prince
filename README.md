@@ -82,6 +82,7 @@ Prince_CurrentWorkingVersion/
 ├── prince_modern/                   # Modern UI components, controller, theme, bundled fonts
 │   ├── main_window.py               # Main window layout and cards
 │   ├── controller.py                # Asynchronous Qt-Tk bridge to print engine
+│   ├── simple_variable_speed_dialog.py  # Continuous Stefan speed schedule UI
 │   ├── theme.py                     # Custom stylesheet palette
 │   └── fonts/                       # Bundled Inter fonts (SIL OFL)
 ├── prince_modern_unified_source.py  # Withdrawn backend print engine for Modern
@@ -94,8 +95,9 @@ Prince_CurrentWorkingVersion/
 ├── graphite/                        # Graphite geometry & slicing pipeline
 │   └── slicing/                     # Mesh separation, tip tagging, top disconnection
 │       └── support_separator.py     # Multi-shell support separator & CLI
-├── tests/                           # Comprehensive test suite (57 tests)
+├── tests/                           # Comprehensive test suite
 │   ├── run_all_tests.py             # Master test suite runner
+│   ├── test_simple_variable_speed.py # Continuous Stefan schedule / EDT tests
 │   ├── test_support_separator.py    # Support separator & tip tagging unit tests
 │   ├── test_experimental_conditions_logging.py # Instruction copy & exp conditions tests
 │   ├── test_viscosity_analyzer.py   # Stefan squeeze-flow & rheology unit tests
@@ -153,7 +155,7 @@ Prince_CurrentWorkingVersion/
 - `feature_depth.py`: Physical scale normalization using saturating exponential $1 - \exp(-\text{depth} / D_{\text{char}})$ (eliminating artificial over-dimming of small isolated features) and normalized convolution for spreading channel depths into struts without dilution.
 - Dual Modes: Distance/Channel Flow propagation and Pressure/Porous Media 2D Poisson solver with coarse-grid acceleration.
 - `ImageModificationWindow.py`: Added interactive listbox for dynamic pipeline stage reordering (`axial`, `edge`, `global`, `depth`, `scatter`) and 3D axial parameters ($E_c, E_0/E_c$).
-- Unit tested in `tests/test_image_modification.py` (3D axial folder builds, pipeline stage reordering, single-layer lookahead overhang dimming). All 71 tests passing in `tests/run_all_tests.py`.
+- Unit tested in `tests/test_image_modification.py` (3D axial folder builds, pipeline stage reordering, single-layer lookahead overhang dimming). Full suite: **83** tests passing in `tests/run_all_tests.py` as of 2026-11-13 (1 skipped without optional deps), including Simple Variable Speed.
 
 **High-Throughput SIMD Image Processing Vectorization:**
 - edge_enhancement.py: Converted internal pipeline to single-precision float32 SIMD operations with OpenCV cv2.minMaxLoc(), eliminating large boolean mask allocations during high-layer-count slicing.
@@ -165,6 +167,12 @@ Prince_CurrentWorkingVersion/
 - Unit tested in 	ests/test_experimental_conditions_logging.py.
 
 ---
+
+### November 2026 - Simple Variable Speed (continuous prints)
+
+**Prince Modern System Actions → Simple Variable Speed:**
+- EDT-based \(d_{\max}\) geometry, fixed \(\beta=4\) Stefan speed law with correction factor \(C\), dose-coupled LED PWM, optional LED/speed limits and selective hole fill.
+- Rewrites only Time/Intensity in the instruction `.txt` and reloads for Run Cont. Guide: [`documentation/SIMPLE_VARIABLE_SPEED.md`](documentation/SIMPLE_VARIABLE_SPEED.md).
 
 ### October 2026 - Prince Modern Control Shell, Sensor Suite & System Monitoring
 

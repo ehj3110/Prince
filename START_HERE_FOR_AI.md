@@ -34,7 +34,7 @@ Check syntax with:
 | `Prince_Segmented_VideoPattern.py` | Older video-pattern Tk app | Only if the task names this file |
 | `calibration_modules/monitoring_dashboard/` | Live sensor dashboard, separate process | Cameras, force, power, slice geometry on the monitor |
 
-Modern does not reimplement printing. `prince_modern/controller.py` loads `prince_modern_unified_source.py` as a withdrawn Tk `MyWindow` and pumps Tk with a 50 ms `QTimer`. Qt fields sync into that window. Satellite tools (Sensor Panel, Image Modification, Experimental Conditions, Ramped Cylinder) are still Tk.
+Modern does not reimplement printing. `prince_modern/controller.py` loads `prince_modern_unified_source.py` as a withdrawn Tk `MyWindow` and pumps Tk with a 50 ms `QTimer`. Qt fields sync into that window. Satellite tools (Sensor Panel, Image Modification, Experimental Conditions, Ramped Cylinder) are still Tk. **Simple Variable Speed** is a native PySide6 dialog (`prince_modern/simple_variable_speed_dialog.py`) that rewrites Time/Intensity for Run Cont.; see `documentation/SIMPLE_VARIABLE_SPEED.md`.
 
 If you change print behavior for Modern, edit `prince_modern_unified_source.py`, not `Prince_Segmented_Unified.py`. Those two files can drift. Say so in the summary when you change only one of them.
 
@@ -106,6 +106,7 @@ Tracked in `documentation/PRINCE_MODERN_GUI.md`:
 |------|------|
 | Modern layout or theme | `prince_modern/main_window.py`, `prince_modern/theme.py` |
 | A button does the wrong hardware thing | `prince_modern/controller.py`, then the matching method in `prince_modern_unified_source.py` |
+| Simple Variable Speed (Run Cont. schedule) | `documentation/SIMPLE_VARIABLE_SPEED.md`, `support_modules/simple_variable_speed.py`, `prince_modern/simple_variable_speed_dialog.py` |
 | Monitor plot, force, exposure, power | `calibration_modules/monitoring_dashboard/window.py`, `workers.py` |
 | UV calibration numbers | `calibration_modules/power_density_calibration.py`, `data/uv_power_calibration.json` |
 | “Why did the new PC fail to launch?” | `documentation/DEPLOYMENT_GUIDE.md`, `Prince_Modern.py` bootstrap |

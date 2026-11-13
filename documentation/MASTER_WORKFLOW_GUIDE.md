@@ -345,6 +345,17 @@ The Image Modification window includes an **Instruction Ramping** helper for cre
 - New folder: `<source_folder>_ramped_linear` or `<source_folder>_ramped_exponential`
 - Copied image stack + new tab-delimited instruction file named after the output folder
 
+### Simple Variable Speed (Prince Modern — continuous prints)
+
+For **Run Cont.** schedules that track geometry (Stefan / peel load), use Prince Modern rather than editing the `.txt` by hand:
+
+1. Launch `.\.conda\python.exe Prince_Modern.py` and browse to the print folder.
+2. **System Actions → Simple Variable Speed**.
+3. Set control layer / size, speed, dose, correction factor \(C\), optional parameter limits and hole fill.
+4. **Update** (preview) → **Apply to instruction file** (rewrites Time & Intensity in place, then reloads).
+
+See [`SIMPLE_VARIABLE_SPEED.md`](SIMPLE_VARIABLE_SPEED.md). Do not confuse this with Instruction Ramping above (which writes a *new* ramped folder).
+
 ### Typical Print Parameters
 
 **Standard Print Settings:**
@@ -950,12 +961,13 @@ See `SANDWICH_ROUTINE_GUIDE.md` for advanced sandwich configurations.
 | Button | Function |
 |--------|----------|
 | Generate TXT | Create instruction file from image folder |
-| Load TXT | Parse instruction file, load print parameters |
-| Stepped Print | Start layer-by-layer print (recommended) |
-| Continuous Print | Start continuous motion print (legacy) |
+| Load TXT / Browse | Parse instruction file, load print parameters |
+| Run Step / Run Cont. | Stepped or continuous print (Prince Modern / Unified) |
+| Simple Variable Speed | Modern System Actions — EDT Stefan Time/Intensity rewrite for Run Cont. |
 | Auto Home | Move stage to limit switch, set reference |
 | Initialize Stage | Connect to stage hardware |
 | Open Sensor Panel | Launch force monitoring window |
+| Monitoring Suite | Live multi-sensor dashboard (separate process) |
 | Open Camera View | Launch camera calibration (optional) |
 
 ### Keyboard Shortcuts
@@ -978,6 +990,7 @@ See `SANDWICH_ROUTINE_GUIDE.md` for advanced sandwich configurations.
 ## Document Updates
 
 **Version History:**
+- v1.1 - November 13, 2026 - Prince Modern Simple Variable Speed continuous-print step
 - v1.0 - February 3, 2026 - Initial master workflow guide
 
 **Maintained by:** Prince Development Team

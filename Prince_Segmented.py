@@ -79,9 +79,9 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.terminal_verbosity = self.LOG_NORMAL  # What shows in terminal
         self.file_verbosity = self.LOG_DEBUG       # What goes to detailed log
 
-        # Progress section header
+        # Progress section header (shifted down to clear top utility / run button grids)
         self.lbl_progress_header = Label(win, text='Progress', font='Helvetica 12 bold')
-        self.lbl_progress_header.place(x=50, y=285)
+        self.lbl_progress_header.place(x=50, y=320)
         
         # Progress bar - 20% taller (height ~24px instead of default ~20px)
         self.p1 = Progressbar(win, orient=HORIZONTAL, length=550, mode='determinate')
@@ -89,21 +89,21 @@ Evan Jones, evanjones2026@u.northwestern.edu
         style = Style()
         style.configure('Tall.Horizontal.TProgressbar', thickness=24)
         self.p1.configure(style='Tall.Horizontal.TProgressbar')
-        self.p1.place(x=50, y=310) # Below "Progress" header
+        self.p1.place(x=50, y=345) # Below "Progress" header
 
         # Labels at top right of progress bar
         self.current_layer_num_var = StringVar()
         self.current_layer_num_var.set("Layer: 0/0")
         self.lbl_current_layer = Label(win, textvariable=self.current_layer_num_var, 
                                          font='Helvetica 9') 
-        self.lbl_current_layer.place(x=400, y=287) # Top right of progress bar
+        self.lbl_current_layer.place(x=400, y=322) # Top right of progress bar
         
         # Estimate time label at top right of progress bar
         self.lbl15_var = StringVar()
         self.lbl15_var.set("Est: ∞ min")
         self.lbl15_inside = Label(win, textvariable=self.lbl15_var, 
                                      font='Helvetica 9')
-        self.lbl15_inside.place(x=500, y=287) # Top right of progress bar, next to layer count
+        self.lbl15_inside.place(x=500, y=322) # Top right of progress bar, next to layer count
 
         self.win = win
         self.flag = False
@@ -115,40 +115,84 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.status_message_var = StringVar() 
         self.status_message_var.set("System Initializing...") 
 
-        self.b_open_sensor_window = Button(win, text="Open Sensor Panel", command=self.open_sensor_panel)
-        self.b_open_sensor_window.place(x=800, y=60) # Above Directory of Images (y=150)
-        
-        self.b_exp_conditions = Button(win, text="Exp. Conditions", command=self.open_exp_conditions_window)
-        self.b_exp_conditions.place(x=935, y=60) # Next to sensor panel button
+        # Top-right utility grid: 3 columns × 3 rows, equal width (fits longest label).
+        # Viscosity Monitor removed from this layout.
+        # Longest labels: "Exp. Conditions" / "Ramped Cylinder" (15 chars) → width 16.
+        _util_w = 16
+        _util_x0, _util_dx = 800, 150
+        _util_y0, _util_dy = 55, 34
+        _ux = [_util_x0 + i * _util_dx for i in range(3)]
+        _uy = [_util_y0 + i * _util_dy for i in range(3)]
 
-        self.b_image_modification = Button(win, text="Image Modification", command=self.open_image_modification_window)
-        self.b_image_modification.place(x=1070, y=60) # Next to Exp. Conditions
+        self.b_open_sensor_window = Button(
+            win, text="Sensor Panel", width=_util_w,
+            command=self.open_sensor_panel,
+        )
+        self.b_open_sensor_window.place(x=_ux[0], y=_uy[0])
 
-        self.b_viscosity_monitor = Button(win, text="Viscosity Monitor", command=self.open_viscosity_monitor_window, state=DISABLED)
-        self.b_viscosity_monitor.place(x=1205, y=60) # Next to Image Modification
-        
-        self.b_reload_script = Button(win, text="Reload Script", command=self.reload_script_modules)
-        self.b_reload_script.place(x=800, y=95) # Below sensor panel button
-        
-        self.b_disconnect_dlp = Button(win, text="Disconnect DLP", command=self.disconnect_dlp)
-        self.b_disconnect_dlp.place(x=925, y=95) # Side by side with reload, 125px gap (button width + spacing)
-        
-        self.b_reconnect_dlp = Button(win, text="Reconnect DLP", command=self.reconnect_dlp, state=DISABLED)
-        self.b_reconnect_dlp.place(x=1050, y=95) # Side by side with disconnect, 125px gap
+        self.b_exp_conditions = Button(
+            win, text="Exp. Conditions", width=_util_w,
+            command=self.open_exp_conditions_window,
+        )
+        self.b_exp_conditions.place(x=_ux[1], y=_uy[0])
 
-        self.b_camera_view = Button(win, text="Monitoring Suite", width=18, command=self.open_camera_view_window)
-        self.b_camera_view.place(x=720, y=280)
-        
-        # State save/load buttons
-        self.b_save_state = Button(win, text="Save State", command=self.save_gui_state)
-        self.b_save_state.place(x=800, y=130) # Below reload script button
-        
-        self.b_load_state = Button(win, text="Load State", command=self.load_gui_state)
-        self.b_load_state.place(x=925, y=130) # Side by side with save state
+        self.b_image_modification = Button(
+            win, text="Image Mod", width=_util_w,
+            command=self.open_image_modification_window,
+        )
+        self.b_image_modification.place(x=_ux[2], y=_uy[0])
 
-        self.b_ramped_cylinder = Button(win, text="Ramped Cylinder", command=self.open_ramped_cylinder_window)
-        self.b_ramped_cylinder.place(x=1050, y=130) # Below reconnect DLP
-        
+        self.b_reload_script = Button(
+            win, text="Reload Script", width=_util_w,
+            command=self.reload_script_modules,
+        )
+        self.b_reload_script.place(x=_ux[0], y=_uy[1])
+
+        self.b_disconnect_dlp = Button(
+            win, text="Disconnect DLP", width=_util_w,
+            command=self.disconnect_dlp,
+        )
+        self.b_disconnect_dlp.place(x=_ux[1], y=_uy[1])
+
+        self.b_reconnect_dlp = Button(
+            win, text="Reconnect DLP", width=_util_w,
+            command=self.reconnect_dlp, state=DISABLED,
+        )
+        self.b_reconnect_dlp.place(x=_ux[2], y=_uy[1])
+
+        self.b_save_state = Button(
+            win, text="Save State", width=_util_w,
+            command=self.save_gui_state,
+        )
+        self.b_save_state.place(x=_ux[0], y=_uy[2])
+
+        self.b_load_state = Button(
+            win, text="Load State", width=_util_w,
+            command=self.load_gui_state,
+        )
+        self.b_load_state.place(x=_ux[1], y=_uy[2])
+
+        self.b_ramped_cylinder = Button(
+            win, text="Ramped Cylinder", width=_util_w,
+            command=self.open_ramped_cylinder_window,
+        )
+        self.b_ramped_cylinder.place(x=_ux[2], y=_uy[2])
+
+        # Monitoring Suite + Simple Variable Speed stacked beside Progress.
+        # "Simple Variable Speed" is 21 chars → width 22 for both stacked buttons.
+        _suite_w = 22
+        self.b_camera_view = Button(
+            win, text="Monitoring Suite", width=_suite_w,
+            command=self.open_camera_view_window,
+        )
+        self.b_camera_view.place(x=720, y=315)
+
+        self.b_simple_variable_speed = Button(
+            win, text="Simple Variable Speed", width=_suite_w,
+            command=self.open_simple_variable_speed,
+        )
+        self.b_simple_variable_speed.place(x=720, y=350)
+
         self.sensor_data_window_instance = None
         self.exp_conditions_window = None
         self.image_modification_window = None
@@ -172,10 +216,10 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         # --- Existing Canvases and Labels (adjust placement if they conflict with new frames) ---
         self.canvas1 = Canvas(win, height=200, width=270, bg="#FFEFD5")
-        self.canvas1.place(x=70, y=390)
+        self.canvas1.place(x=70, y=425)
         
         self.canvas2 = Canvas(win, height=200, width=500, bg="#FFEFD5")
-        self.canvas2.place(x=370, y=390)
+        self.canvas2.place(x=370, y=425)
 
         # Prince header with purple background box
         self.header_frame = tk.Frame(win, bg='#834bd0', relief='solid', borderwidth=3, highlightbackground='#834bd0', highlightthickness=0)
@@ -212,30 +256,30 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         # COLUMN 2: Step Speed, Overstep, Pause
         column2_x = 550
-        self.lbl16.place(x=column2_x, y=420)
+        self.lbl16.place(x=column2_x, y=455)
         self.t16 = Entry(win)
-        self.t16.place(x=column2_x, y=440)
+        self.t16.place(x=column2_x, y=475)
         self.t16.insert(END, "1000.0") # Default Step Speed
         
-        self.lbl19.place(x=column2_x, y=460)
+        self.lbl19.place(x=column2_x, y=495)
         self.t19 = Entry(win)
-        self.t19.place(x=column2_x, y=480)
+        self.t19.place(x=column2_x, y=515)
         self.t19.insert(END, "500") # Default Overstep in µm
         
-        self.lbl17.place(x=column2_x, y=500)
+        self.lbl17.place(x=column2_x, y=535)
         self.t17 = Entry(win)
-        self.t17.place(x=column2_x, y=520)
+        self.t17.place(x=column2_x, y=555)
         self.t17.insert(END, "0.0") # Default Pause
         
         # COLUMN 3: Acceleration only
         column3_x = 700
-        self.lbl21.place(x=column3_x, y=420)
+        self.lbl21.place(x=column3_x, y=455)
         self.t21 = Entry(win)
-        self.t21.place(x=column3_x, y=440)
+        self.t21.place(x=column3_x, y=475)
         self.t21.insert(END, "5.0") # Default Acceleration in mm/s²
 
         # --- Auto-Home Control Box ---
-        frame_auto_home_y_start = 590 # Positioned above sandwich controls
+        frame_auto_home_y_start = 625 # Positioned above sandwich controls
         frame_auto_home_width = 750 # Define width for re-use
         self.frame_auto_home = LabelFrame(win, text="Auto-Home Control", padding=(10, 10))
         self.frame_auto_home.place(x=50, y=frame_auto_home_y_start, width=frame_auto_home_width) # Adjust width as needed
@@ -271,7 +315,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
         self.chk_preprint_viscosity.grid(row=0, column=7, padx=8, pady=2)
 
         # --- Sandwich Control Box ---
-        frame_sandwich_y_start = 660  # Below the Auto-Home frame (70px gap for auto-home height)
+        frame_sandwich_y_start = 695  # Below the Auto-Home frame (70px gap for auto-home height)
         self.frame_sandwich = LabelFrame(win, text="Sandwich Routine (Glass Contact)", padding=(10, 10))
         self.frame_sandwich.place(x=50, y=frame_sandwich_y_start, width=frame_auto_home_width)
 
@@ -362,29 +406,30 @@ Evan Jones, evanjones2026@u.northwestern.edu
 
         # --- Place Entry Widgets and Labels ---
         self.lbl0.pack(expand=True, fill='both', padx=5, pady=5)  # Pack with padding to show full border
-        self.lbl1.place(x=50, y=150)
-        self.t1.place(x=180, y=150) # t1 is now defined before _check_default_logging_windows_file
+        # Directory row cleared below the 3×3 utility grid (ends ~y=123).
+        self.lbl1.place(x=50, y=175)
+        self.t1.place(x=180, y=175) # t1 is now defined before _check_default_logging_windows_file
 
-        self.lbl4.place(x=50, y=230) # Moved up from 260
-        self.t4.place(x=50, y=250) # Moved up from 280
-        self.lbl5.place(x=710, y=180)
+        self.lbl4.place(x=50, y=255)
+        self.t4.place(x=50, y=275)
+        self.lbl5.place(x=710, y=205)
         self.lbl6.place(x=950, y=0)
         # self.t8.place(x=500, y=280) # This line will now work as self.t8 is defined
         self.lbl8.place(x=50, y=40) # "System Message:" - aligned slightly above system box
         # System message display box at top, shortened to avoid header overlap
         self.t8.place(x=50, y=60) # Place the actual status message display, aligned with Open Sensor Panel
-        self.t9.place(x=140, y=450)
-        self.lbl9.place(x=140, y=430)
-        self.t10.place(x=400, y=440)
-        self.lbl10.place(x=400, y=420)
-        self.t11.place(x=400, y=480)
-        self.lbl11.place(x=400, y=460)
-        self.t11_2.place(x=400, y=520)
-        self.lbl11_2.place(x=400, y=500)
-        self.lbl12.place(x=150, y=370)
-        self.lbl13.place(x=410, y=370)
-        self.t14.place(x=250, y=250) # Closer to Z-axis position
-        self.lbl14.place(x=250, y=230) # Closer to Z-axis position
+        self.t9.place(x=140, y=485)
+        self.lbl9.place(x=140, y=465)
+        self.t10.place(x=400, y=475)
+        self.lbl10.place(x=400, y=455)
+        self.t11.place(x=400, y=515)
+        self.lbl11.place(x=400, y=495)
+        self.t11_2.place(x=400, y=555)
+        self.lbl11_2.place(x=400, y=535)
+        self.lbl12.place(x=150, y=405)
+        self.lbl13.place(x=410, y=405)
+        self.t14.place(x=250, y=275) # Closer to Z-axis position
+        self.lbl14.place(x=250, y=255) # Closer to Z-axis position
         # self.lbl15.place(x=250, y=460) # Removed - now inside progress bar as lbl15_inside
 
         # self.lbl_current_layer_display = Label(win, textvariable=self.current_layer_num_var, font='Helvetica 10')
@@ -393,30 +438,34 @@ Evan Jones, evanjones2026@u.northwestern.edu
         # self.progress = Progressbar(win, orient=HORIZONTAL, length=500, mode='determinate') # This is already commented out
         # self.progress.place(x=50, y=430) # This is already commented out
 
-        self.b1 = Button(win, text='Run-Cont.', command=self.run_Continuous)
-        self.b10 = Button(win, text='Run-Step', command=self.run_Stepped)
-        self.b_set_dir = Button(win, text='Set Direct.', command=self.input_directory)
-        self.b4 = Button(win, text='Stop', command=self.stop)
+        # Longest run label: "Set Direct." (11 chars) → width 12.
+        _run_w = 12
+        _run_x0, _run_dx = 50, 110
+        _run_y0, _run_dy = 95, 34
+        self.b1 = Button(win, text='Run-Cont.', width=_run_w, command=self.run_Continuous)
+        self.b10 = Button(win, text='Run-Step', width=_run_w, command=self.run_Stepped)
+        self.b_set_dir = Button(win, text='Set Direct.', width=_run_w, command=self.input_directory)
+        self.b4 = Button(win, text='Stop', width=_run_w, command=self.stop)
         self.b2 = Button(win, text='Set Home', command=self.set_home)
         self.b3 = Button(win, text='Get Position', command=self.get_position)
         self.b5 = Button(win, text='Move Down', command=self.movedown)
         self.b6 = Button(win, text='Move Up', command=self.moveup)
         self.b7 = Button(win, text='Simple input txt generator', command=self.simple_txt)
 
-        # Run buttons and Stop button aligned with right side buttons at y=95
-        self.b1.place(x=50, y=95)
-        self.b10.place(x=140, y=95)
-        self.b_set_dir.place(x=230, y=95)
-        self.b4.place(x=330, y=95)
+        # Run controls in an even 2×2 grid (equal width, centered labels)
+        self.b1.place(x=_run_x0, y=_run_y0)
+        self.b10.place(x=_run_x0 + _run_dx, y=_run_y0)
+        self.b_set_dir.place(x=_run_x0, y=_run_y0 + _run_dy)
+        self.b4.place(x=_run_x0 + _run_dx, y=_run_y0 + _run_dy)
         
-        # Z-Axis controls back at original position
-        self.b2.place(x=50, y=200)
-        self.b3.place(x=140, y=200)
+        # Z-Axis controls below directory row
+        self.b2.place(x=50, y=225)
+        self.b3.place(x=140, y=225)
         
         # Move Up/Down buttons stay in stage control area
-        self.b5.place(x=100, y=500)
-        self.b6.place(x=200, y=500)
-        self.b7.place(x=400, y=550)
+        self.b5.place(x=100, y=535)
+        self.b6.place(x=200, y=535)
+        self.b7.place(x=400, y=585)
         
         # Smooth motion checkboxes next to Simple input txt generator button
         self.smoother_retraction_var = tk.IntVar(value=0)
@@ -426,7 +475,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             variable=self.smoother_retraction_var,
             command=self.toggle_smoother_retraction
         )
-        self.chk_smoother_retraction.place(x=580, y=550)
+        self.chk_smoother_retraction.place(x=580, y=585)
         
         self.smooth_lifting_var = tk.IntVar(value=0)
         self.chk_smooth_lifting = tk.Checkbutton(
@@ -435,7 +484,7 @@ Evan Jones, evanjones2026@u.northwestern.edu
             variable=self.smooth_lifting_var,
             command=self.toggle_smooth_lifting
         )
-        self.chk_smooth_lifting.place(x=720, y=550)
+        self.chk_smooth_lifting.place(x=720, y=585)
 
         # --- Initialize active_logging_windows_filepath AFTER t1 and status_message_var are created ---
         # self.active_logging_windows_filepath = None
@@ -2363,8 +2412,70 @@ Evan Jones, evanjones2026@u.northwestern.edu
             self.ramped_cylinder_window.window.lift()
 
     def open_viscosity_monitor_window(self):
-        """Open or show the dedicated In-Situ Viscosity & Rheology Monitor window (Disabled)."""
+        """Legacy hook — Viscosity Monitor button removed from the main layout."""
         self.update_status_message("Viscosity Monitor is currently disabled.")
+
+    def open_simple_variable_speed(self):
+        """Launch Simple Variable Speed (PySide6) for the loaded print folder, then reload."""
+        folder_text = str(self.t1.get()).strip()
+        if not folder_text:
+            messagebox.showwarning(
+                "Simple Variable Speed",
+                "Set the Directory of Images first (Set Direct. / Browse).",
+            )
+            return
+        folder = folder_text
+        if not os.path.isdir(folder):
+            messagebox.showwarning(
+                "Simple Variable Speed",
+                f"Folder does not exist:\n{folder}",
+            )
+            return
+        folder_name = os.path.basename(os.path.normpath(folder))
+        txt_path = os.path.join(folder, f"{folder_name}.txt")
+        if not os.path.isfile(txt_path):
+            messagebox.showwarning(
+                "Simple Variable Speed",
+                f"Instruction file not found:\n{txt_path}",
+            )
+            return
+        try:
+            repo = os.path.dirname(os.path.abspath(__file__))
+            bundled_python = os.path.join(repo, ".conda", "python.exe")
+            python = bundled_python if os.path.isfile(bundled_python) else sys.executable
+            command = [
+                python,
+                "-m",
+                "prince_modern.simple_variable_speed_dialog",
+                folder,
+            ]
+            # Separate process: Tk and Qt event loops do not share well in-process.
+            result = subprocess.run(
+                command,
+                cwd=repo,
+                close_fds=True,
+            )
+            if result.returncode == 0:
+                try:
+                    self.input_directory()
+                    self.update_status_message(
+                        "Simple Variable Speed closed; instruction file reloaded."
+                    )
+                except Exception as reload_exc:
+                    self.update_status_message(
+                        f"SVS closed; reload failed: {reload_exc}", error=True
+                    )
+            else:
+                self.update_status_message(
+                    f"Simple Variable Speed exited with code {result.returncode}."
+                )
+        except Exception as e:
+            self.update_status_message(f"Failed to open Simple Variable Speed: {e}", error=True)
+            messagebox.showerror(
+                "Simple Variable Speed",
+                f"Could not launch Simple Variable Speed:\n{e}",
+            )
+            traceback.print_exc()
 
     def open_camera_view_window(self):
         """Launch the PySide6 monitoring dashboard in its own process."""
@@ -2595,6 +2706,6 @@ if __name__ == '__main__':
     window = Tk()
     mywin = MyWindow(window)
     window.title('Prince - Main Window')
-    window.geometry("1200x800+10+10")
+    window.geometry("1200x860+10+10")
     window.protocol("WM_DELETE_WINDOW", mywin.on_closing)
     window.mainloop()

@@ -1488,6 +1488,19 @@ L48: *** HARD FORCE FAILSAFE *** Force=-5.234N exceeded 200% limit (5.000N)
 
 ## Advanced Topics
 
+### Simple Variable Speed (continuous / Run Cont.)
+
+Before **Run Cont.** in Prince Modern, you can rebuild Time and Intensity from raw slice geometry:
+
+1. Load the print folder in Modern (**Browse…**).
+2. **System Actions → Simple Variable Speed**.
+3. Set control speed, dose, size (or **Use control layer**), correction factor \(C\), optional LED/speed limits and hole fill.
+4. **Update** to preview YZ + speed vs Z, then **Apply to instruction file**.
+
+Only Time and Intensity are overwritten; Thickness and filenames stay. Soft-warns if PWM would fall below 5. Full guide: [`SIMPLE_VARIABLE_SPEED.md`](SIMPLE_VARIABLE_SPEED.md).
+
+This is separate from Image Modification **Instruction Ramping** (exposure ramps between control layers into a *new* folder).
+
 ### Custom Layer Sequences
 
 You can define per-layer parameters in the instruction file:
@@ -1539,11 +1552,13 @@ This metadata is saved with print data for analysis correlation.
 
 **For More Information:**
 - Pre-print setup: See [PRE_PRINT_SETUP_GUIDE.md](PRE_PRINT_SETUP_GUIDE.md)
+- Continuous Stefan schedule: See [SIMPLE_VARIABLE_SPEED.md](SIMPLE_VARIABLE_SPEED.md)
+- Prince Modern UI: See [PRINCE_MODERN_GUI.md](PRINCE_MODERN_GUI.md)
 - Post-processing: See post-processing/README.md
 - Technical details: See documentation/technical/
 
 ---
 
-**Last Updated:** December 18, 2025  
-**Guide Version:** 1.0  
-**Software:** Prince Segmented 3D Printer Control Software
+**Last Updated:** November 13, 2026  
+**Guide Version:** 1.1  
+**Software:** Prince Modern / Unified 3D Printer Control Software

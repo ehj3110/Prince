@@ -78,6 +78,7 @@ class ModernMainWindow(QMainWindow):
     open_sensor_logging = Signal()
     open_sensor_monitoring = Signal()
     open_monitoring_suite = Signal()
+    open_simple_variable_speed = Signal()
     disconnect_dlp = Signal()
     reconnect_dlp = Signal()
     open_ramped_cylinder = Signal()
@@ -290,6 +291,7 @@ class ModernMainWindow(QMainWindow):
             ("Sensor Panel (Logging)", self.open_sensor_logging),
             ("Sensor Panel (Monitoring)", self.open_sensor_monitoring),
             ("Monitoring Suite", self.open_monitoring_suite),
+            ("Simple Variable Speed", self.open_simple_variable_speed),
             ("Disconnect DLP", self.disconnect_dlp),
             ("Reconnect DLP", self.reconnect_dlp),
             ("Ramped Cylinder", self.open_ramped_cylinder),

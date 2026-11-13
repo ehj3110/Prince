@@ -20,7 +20,8 @@ This document describes the organization of the Prince_Segmented project workspa
 ### `/prince_modern/`
 **Purpose**: Modern PySide6 operator interface package
 - `main_window.py` - Main window layout, control cards, stage jog controls, system log, and slice preview
-- `controller.py` - Asynchronous Qt-Tk bridge pumping withdrawn Unified print engine
+- `controller.py` - Asynchronous Qt-Tk bridge pumping withdrawn Unified print engine; Monitoring Suite + Simple Variable Speed launchers
+- `simple_variable_speed_dialog.py` - Continuous Stefan speed schedule UI (YZ + speed plots)
 - `theme.py` - Custom dark-purple QSS palette (`#19202A`/`#8870A3`) and font management
 - `fonts/` - Bundled Inter fonts (SIL OFL)
 
@@ -59,6 +60,7 @@ python batch_processors\batch_process_universal.py "path\to\data"
   - `pycrafter9000.py` - Texas Instruments DLP LightCrafter control
   - `USBCoordinator.py` & `dlp_phidget_coordinator.py` - USB endpoint arbitration
   - `SessionManager.py` - Session logging and GUI state persistence
+  - `simple_variable_speed.py` - EDT \(d_{\max}\) + \(\beta=4\) continuous speed/PWM schedule; rewrites Time/Intensity
   - Helper libraries (`libs.py`, `Libs_Evan.py`, image generation, file parsing)
 
 ### `/post-processing/` (22 files)
@@ -114,7 +116,8 @@ python batch_processors\batch_process_universal.py "path\to\data"
 **Purpose**: Comprehensive unit tests and integration test suites
 
 **Key Files:**
-- `run_all_tests.py` - Master unit test runner across all subsystems (42 tests)
+- `run_all_tests.py` - Master unit test runner across all subsystems (**83** tests as of 2026-11-13; 1 skipped without optional deps)
+- `test_simple_variable_speed.py` - EDT \(d_{\max}\), hole fill, \(\beta=4\) speed law, dose-coupled PWM, `.txt` rewrite
 - `test_viscosity_analyzer.py` - Squeeze-flow rheology, Stefan regression, and baseline recovery unit tests
 - `test_camera_viewer_robustness.py` - Allied Vision zoom/pan math and worker acquisition tests
 - `test_seek_thermal_viewer.py` - Seek Thermal radiometric imaging, colormap, and export unit tests
@@ -137,6 +140,7 @@ python batch_processors\batch_process_universal.py "path\to\data"
 - `technical/VISCOSITY_DATA_ANALYSIS_METHODS.md` - Viscosity data analysis & rheology solvers
 - `TRIPLE_FORCE_GAUGE_GUIDE.md` - Triple force gauge setup
 - `PRINCE_MODERN_GUI.md` - Prince Modern PySide6 UI guide
+- `SIMPLE_VARIABLE_SPEED.md` - Continuous Stefan schedule (Run Cont.) operator/dev guide
 - `PRINCE_UNIFIED_GUI.md` - Prince Unified dual projection mode guide
 
 **Technical Guides:**
@@ -163,9 +167,10 @@ python batch_processors\batch_process_universal.py "path\to\data"
 
 ### 1. Running a Print Job
 ```bash
-python Prince_Segmented.py
+.\.conda\python.exe Prince_Modern.py
 ```
-See: `documentation/QUICK_REFERENCE_CARD.md`
+Optional continuous schedule: System Actions → **Simple Variable Speed** (see `documentation/SIMPLE_VARIABLE_SPEED.md`).  
+Tk baseline remains `Prince_Segmented_Unified.py`. See: `documentation/QUICK_REFERENCE_CARD.md`
 
 ### 2. Processing Test Data (New)
 ```bash
@@ -197,7 +202,7 @@ python post-processing\process_single_v4_folder.py "folder_path"
 ## Finding What You Need
 
 ### "I want to print something"
-→ `Prince_Segmented.py` + `documentation/QUICK_REFERENCE_CARD.md`
+→ `Prince_Modern.py` + `documentation/QUICK_REFERENCE_CARD.md` (+ `SIMPLE_VARIABLE_SPEED.md` for Run Cont. schedules)
 
 ### "I have new test data to process"
 → `batch_processors/batch_process_universal.py` + `documentation/UNIVERSAL_PROCESSOR_GUIDE.md`

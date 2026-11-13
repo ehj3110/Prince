@@ -29,6 +29,10 @@ It validates folder-level CSV discovery, segmentation, metric calculation, sign 
 Central debug helper used to keep normal runs quiet while allowing verbose output when needed.
 It exposes shared enable/disable state and a gated print helper.
 
+### Simple Variable Speed diagnostics (`debug/plot_simple_variable_speed_*.py`, `capture_simple_variable_speed_dialog.py`)
+
+Optional figures and dialog screenshots for the continuous Stefan schedule feature. Outputs land under `documentation/analysis_summaries/simple_variable_speed_*`. Operator guide: `documentation/SIMPLE_VARIABLE_SPEED.md`. Not on the live print path.
+
 ### `Rush/debug_gen_txt.py`
 
 Legacy debug text generator that writes Rush layer instructions from a folder of image files.

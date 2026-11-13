@@ -382,11 +382,15 @@ Professor Cheng Sun - Northwestern University
 
 ## Documentation Map
 
-- **`README_COMPREHENSIVE.md`** (this file) - Project overview
+> **Canonical indexes (prefer these):** root [`DOCUMENTATION_INDEX.md`](../DOCUMENTATION_INDEX.md) and [`documentation/README.md`](README.md). This file is a longer historical overview and may lag feature-specific guides.
+
+- **`README_COMPREHENSIVE.md`** (this file) - Project overview (historical; architecture diagrams may still name `Prince_Segmented.py`)
+- **`DOCUMENTATION_INDEX.md`** / **`documentation/README.md`** - Current documentation indexes
+- **`documentation/PRINCE_MODERN_GUI.md`** - Current operator UI
+- **`documentation/SIMPLE_VARIABLE_SPEED.md`** - Continuous Stefan speed schedule (Run Cont.)
 - **`support_modules/README.md`** - Support modules documentation
 - **`post-processing/README.md`** - Post-processing pipeline guide
 - **`ui_components/README.md`** - UI components reference
-- **`documentation/README.md`** - Documentation index
 - **`documentation/PRE_PRINT_SETUP_GUIDE.md`** - Setup procedures
 - **`documentation/PRINTING_PROCESS_GUIDE.md`** - Print workflow and troubleshooting
 - **`documentation/DEPLOYMENT_GUIDE.md`** - System deployment
@@ -414,8 +418,8 @@ This software is developed for research purposes. If you use this system or meth
 
 **Current Version:** 2.0 (as of January 2026)  
 **Python Version:** 3.8+  
-**Last Major Update:** January 15, 2026  
-**Documentation Updated:** February 2, 2026
+**Last Major Update:** November 13, 2026 (Simple Variable Speed + docs sweep)  
+**Documentation Updated:** November 13, 2026
 
 ---
 

@@ -239,6 +239,8 @@ Creates a brand-new image stack (does not process existing layers) for an expand
 
 Builds a new instruction folder from an existing instruction file and image set by ramping exposure time between user-defined control layers.
 
+> **Related (different tool):** Prince Modern **Simple Variable Speed** rewrites Time/Intensity *in place* from EDT geometry for continuous prints. It does not create a new ramped folder. See [`SIMPLE_VARIABLE_SPEED.md`](SIMPLE_VARIABLE_SPEED.md).
+
 **Inputs:**
 - Source instruction file (`.txt`, standard 10-column tab-delimited format)
 - Ramp mode: **Linear** or **Exponential**

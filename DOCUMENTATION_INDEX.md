@@ -25,6 +25,7 @@ The Prince platform features multiple GUI interfaces for different operational w
 | Document | Application / Module | Description |
 | :--- | :--- | :--- |
 | **[`documentation/PRINCE_MODERN_GUI.md`](documentation/PRINCE_MODERN_GUI.md)** | `Prince_Modern.py`<br>`prince_modern/` | **Current Operator UI** — PySide6 shell with modern dark purple card styling (`#19202A`/`#8870A3`), Inter typography, live system log, asynchronous bridge to Unified print backend, and satellite launchers. |
+| **[`documentation/SIMPLE_VARIABLE_SPEED.md`](documentation/SIMPLE_VARIABLE_SPEED.md)** | `support_modules/simple_variable_speed.py`<br>`prince_modern/simple_variable_speed_dialog.py` | **Continuous Stefan speed schedule** — EDT \(d_{\max}\), \(\beta=4\) + correction \(C\), dose-coupled PWM, Time/Intensity rewrite for Run Cont. |
 | **[`documentation/PRINCE_UNIFIED_GUI.md`](documentation/PRINCE_UNIFIED_GUI.md)** | `Prince_Segmented_Unified.py` | **Tkinter Stable Baseline** — Dual projection mode switcher (60 Hz HDMI Video vs 30 Hz HDMI Video Pattern LUT), Rush-aligned clean UI, dynamic geometry, and thread-safe post-print survey. |
 | Legacy Applications | `Prince_Segmented.py`<br>`Prince_Segmented_VideoPattern.py` | Standalone Tkinter applications for legacy video mode and pattern LUT projection mode. |
 
@@ -125,6 +126,7 @@ Automated test suites ensuring regression-free hardware control and data integri
 | **Optical Vision** | **[`tests/test_camera_viewer_robustness.py`](tests/test_camera_viewer_robustness.py)** | Allied Vision zoom/pan coordinate math, gamma lookup tables, worker thread lifecycle, and frame streaming. |
 | **Thermal Radiometry** | **[`tests/test_seek_thermal_viewer.py`](tests/test_seek_thermal_viewer.py)** | Seek Thermal frame generation, colormap palettes, spot probe mapping, CSV/NPY export, and mock fallback. |
 | **Ramped Geometry** | **[`tests/test_ramped_cylinder.py`](tests/test_ramped_cylinder.py)** | Cone slicing, exposure/power ramping interpolation, and instruction file formatting. |
+| **Simple Variable Speed** | **[`tests/test_simple_variable_speed.py`](tests/test_simple_variable_speed.py)** | EDT \(d_{\max}\), selective hole fill, \(\beta=4\) speed law, dose-coupled PWM, instruction column preservation. |
 | **Session Management** | **[`tests/test_session_manager.py`](tests/test_session_manager.py)** | Session logger initialization, print numbering, state persistence, and directory path validation. |
 | **Adhesion Calculations** | **[`tests/test_adhesion_metrics.py`](tests/test_adhesion_metrics.py)** | Savitzky-Golay and median filtering, second-derivative propagation detection, and work integration. |
 

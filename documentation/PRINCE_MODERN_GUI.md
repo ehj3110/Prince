@@ -46,6 +46,7 @@ Tk is created withdrawn and pumped with a 50 ms `QTimer` so satellite Tk windows
 | Header PRINTING + Z chips | **New** |
 | Footer progress strip | **New** |
 | **Monitoring Suite** | **New vs Unified** (subprocess, `close_fds=True`) |
+| **Simple Variable Speed** | **New vs Unified** — EDT Stefan schedule for Run Cont.; see [`SIMPLE_VARIABLE_SPEED.md`](SIMPLE_VARIABLE_SPEED.md) |
 | Slice preview + stack | **Generate visualization** loads PNGs on demand (no auto-refresh) |
 | Power-mode warning | Shown when not in Video Pattern mode |
 

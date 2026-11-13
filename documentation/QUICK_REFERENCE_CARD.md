@@ -1,8 +1,16 @@
 # Quick Reference Card - Post-Cleanup Workflow
 
-**Date**: November 6, 2025  
+**Date**: November 6, 2025 (operator tip updated 2026-11-13)  
 **GitHub**: https://github.com/ehj3110/Prince  
 **Latest Commit**: ac2f6c9
+
+---
+
+## Prince Modern — continuous print tip
+
+1. Launch `.\.conda\python.exe Prince_Modern.py` and **Browse…** to the print folder.
+2. For geometry-aware Run Cont. schedules: **System Actions → Simple Variable Speed** → set control values → **Update** → **Apply to instruction file** (rewrites Time & Intensity only, then reloads).
+3. Full guide: [`SIMPLE_VARIABLE_SPEED.md`](SIMPLE_VARIABLE_SPEED.md). Prefer this over manual `.txt` edits for continuous prints.
 
 ---
 

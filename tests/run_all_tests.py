@@ -48,6 +48,7 @@ def run_all_tests(verbose=False, specific_test=None):
         'support_separator': 'test_support_separator',
         'exp_conditions': 'test_experimental_conditions_logging',
         'image_mod': 'test_image_modification',
+        'simple_variable_speed': 'test_simple_variable_speed',
     }
     
     # Determine which tests to run
@@ -172,9 +173,10 @@ def main():
     
     if args.list:
         print("Available test suites:")
-        print("  session    - SessionManager tests")
-        print("  adhesion   - AdhesionMetricsCalculator tests")
-        print("  peakforce  - PeakForceLogger tests")
+        print("  session                 - SessionManager tests")
+        print("  adhesion                - AdhesionMetricsCalculator tests")
+        print("  peakforce               - PeakForceLogger tests")
+        print("  simple_variable_speed   - Simple Variable Speed EDT / schedule tests")
         print()
         print("Run all tests: python run_all_tests.py")
         print("Run specific: python run_all_tests.py session")

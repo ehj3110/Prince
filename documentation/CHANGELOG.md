@@ -1,5 +1,16 @@
 # Changelog - Prince 3D Printer Control Software
 
+## [2026-11-13] - Simple Variable Speed (continuous prints) + Segmented GUI cleanup
+
+### Simple Variable Speed MVP (`support_modules/simple_variable_speed.py` + Qt dialog)
+- **Geometry-driven continuous schedule:** Per-layer \(d_{\max}\) from EDT on raw slice PNGs (pitch 4.005 µm); fixed \(\beta=4\) Stefan speed law with tunable correction factor \(C\); LED PWM coupled to hold unitless dose \(\text{Time}\times\text{LED Current}\).
+- **Prince Modern System Actions:** New **Simple Variable Speed** button (after Monitoring Suite) opens a themed Qt dialog with YZ cross-section + speed-vs-Z preview, Update / Apply / Browse, and auto-reload of the instruction file after Apply.
+- **Prince Segmented wiring:** **Simple Variable Speed** button placed under **Monitoring Suite**; launches the same Qt dialog via `.conda\python.exe -m prince_modern.simple_variable_speed_dialog` and reloads the instruction file on close. Top utility grid cleaned up (removed Viscosity Monitor; equal-width 3×3 / 2×2 grids; **Sensor Panel** / **Image Mod** labels; directory row shifted clear of buttons).
+- **Operator controls:** Use control layer → size; Parameter limits (LED Current & Speed Min/Max); Manual control (control speed, dose, correction factor); Fill holes (Size d_max, minimum hole size in µm, Enable).
+- **Instruction rewrite:** Overwrites only Time and Intensity columns in `<folder>/<folder.name>.txt`; Thickness and other columns preserved. Soft warn when PWM would fall below 5 (Apply still allowed). No dark-time padding or Z-smoothing.
+- **Performance:** OpenCV distance transform with bbox crop and parallel layer analysis; geometry cache so Update can refresh speeds without re-EDT when only speed/dose/\(C\)/size/limits change.
+- **Tests & docs:** `tests/test_simple_variable_speed.py` registered in `tests/run_all_tests.py`; operator guide `documentation/SIMPLE_VARIABLE_SPEED.md`; diagnostic plots under `documentation/analysis_summaries/simple_variable_speed_*`. Full suite **83** tests pass (1 skipped) as of this entry. Broader docs sweep: quick reference, undergrad guide, printing/master workflow, project organization, documentation indexes.
+
 ## [2026-11-03] - Graphite Slicing Support Separator & Image Modification Vectorization
 
 ### Graphite Slicing Pipeline: Supported Mesh Separator (graphite/slicing/support_separator.py)

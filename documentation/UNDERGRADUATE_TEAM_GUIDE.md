@@ -1,7 +1,7 @@
 # Adhesion Measurement System: Guide for Undergraduate Researchers
 
 **Author:** Evan Jones (Lead Researcher)  
-**Last Updated:** November 17, 2025  
+**Last Updated:** November 13, 2026  
 **Target Audience:** Undergraduate students with limited 3D printing and Python experience
 
 ---
@@ -66,12 +66,13 @@ Our custom 3D printer consists of:
 
 ### 2.2 Software Architecture
 
-Our system has three main software components:
+Our system has these main software components:
 
-**A. Real-Time Control (`Prince_Segmented.py`)**
-- Main graphical interface for operating the printer
-- Controls stage movements and light exposure
-- Collects force and position data during printing
+**A. Real-Time Control (prefer `Prince_Modern.py`)**
+- Current operator UI is **Prince Modern** (PySide6). Launch with `.\.conda\python.exe Prince_Modern.py`.
+- Older Tk apps (`Prince_Segmented.py`, Unified) still exist; use them only if a mentor asks.
+- Controls stage movements and light exposure; collects force and position data during printing.
+- For continuous (Run Cont.) prints, **System Actions → Simple Variable Speed** can rewrite Time/Intensity from slice geometry so peel load tracks a control condition. See [`SIMPLE_VARIABLE_SPEED.md`](SIMPLE_VARIABLE_SPEED.md).
 
 **B. Live Analysis (`PeakForceLogger.py` + `adhesion_metrics_calculator.py`)**
 - Runs in background during printing

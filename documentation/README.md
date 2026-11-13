@@ -127,6 +127,22 @@ This directory contains comprehensive guides, technical references, and process 
 - Cone Generator workflow and output naming
 - Instruction Ramping workflow (linear/exponential), control-layer behavior, and dosage-preserving power updates
 
+### `SIMPLE_VARIABLE_SPEED.md`
+**Operator and developer guide for continuous-print Stefan speed scheduling**
+
+**When to use:** Tuning Run Cont. Time/Intensity from raw slice geometry in Prince Modern before a continuous print
+
+**Key Sections:**
+- System Actions dialog layout (control layer, parameter limits, manual control, fill holes)
+- \(\beta=4\) speed law and correction factor \(C\)
+- Dose coupling, LED/speed clamps, selective hole fill, `.txt` rewrite contract
+- Tests and diagnostic plot scripts
+
+### `PRINCE_MODERN_GUI.md`
+**Prince Modern PySide6 shell architecture and feature checklist**
+
+**When to use:** Understanding what is wired in Modern vs Unified Tk, launching the operator UI
+
 ---
 
 ## Technical References

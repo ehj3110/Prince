@@ -95,6 +95,7 @@ image modification, calibration support, and analysis helpers.
 
 | Module | Role | Primary Consumers | Notes |
 |-------|------|-------------------|------|
+| simple_variable_speed.py | EDT \(d_{\max}\) + \(\beta=4\) continuous speed/PWM schedule; rewrites Time/Intensity | Prince Modern Simple Variable Speed dialog | See `documentation/SIMPLE_VARIABLE_SPEED.md` |
 | RawData_Processor.py | Raw analysis data handling | Post-processing tools | Bridges collected logs to analysis outputs |
 | PatternBatchController.py | Pattern batch control helper | Special workflows | Batch-oriented control path |
 | Parse/utility helpers in libs.py | File parsing, instruction generation, shared utilities | GUIs and print workflows | Legacy shared utility layer |

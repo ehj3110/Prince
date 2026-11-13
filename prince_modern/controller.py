@@ -59,6 +59,7 @@ class ModernController(QObject):
         window.open_sensor_logging.connect(self.on_sensor_logging)
         window.open_sensor_monitoring.connect(self.on_sensor_monitoring)
         window.open_monitoring_suite.connect(self.on_monitoring_suite)
+        window.open_simple_variable_speed.connect(self.on_simple_variable_speed)
         window.disconnect_dlp.connect(self.on_disconnect_dlp)
         window.reconnect_dlp.connect(self.on_reconnect_dlp)
         window.open_ramped_cylinder.connect(self.on_ramped_cylinder)
@@ -414,6 +415,59 @@ class ModernController(QObject):
         except Exception as exc:
             self.log_message.emit(f"Failed to open Monitoring Suite: {exc}")
             QMessageBox.critical(self.window, "Monitoring Suite", str(exc))
+
+    def on_simple_variable_speed(self) -> None:
+        """Open Simple Variable Speed dialog for the loaded print folder."""
+        folder_text = self.window.image_dir.text().strip()
+        if not folder_text:
+            QMessageBox.warning(
+                self.window,
+                "Simple Variable Speed",
+                "Load a print folder first (Browse…).",
+            )
+            return
+        folder = Path(folder_text)
+        if not folder.is_dir():
+            QMessageBox.warning(
+                self.window,
+                "Simple Variable Speed",
+                f"Folder does not exist:\n{folder}",
+            )
+            return
+        txt_path = folder / f"{folder.name}.txt"
+        if not txt_path.is_file():
+            QMessageBox.warning(
+                self.window,
+                "Simple Variable Speed",
+                f"Instruction file not found:\n{txt_path}",
+            )
+            return
+
+        from .simple_variable_speed_dialog import SimpleVariableSpeedDialog
+
+        def _reload() -> None:
+            if self.host is not None:
+                self.sync_qt_to_host()
+                try:
+                    self.host.input_directory()
+                    n = len(getattr(self.host, "image_list", []) or [])
+                    self.log_message.emit(
+                        f"Simple Variable Speed applied; reloaded {n} layers from instruction file."
+                    )
+                except Exception as exc:
+                    self.log_message.emit(f"Reload after Simple Variable Speed failed: {exc}")
+                    QMessageBox.warning(
+                        self.window,
+                        "Simple Variable Speed",
+                        f"Schedule written, but reload failed:\n{exc}",
+                    )
+
+        dlg = SimpleVariableSpeedDialog(
+            folder=folder,
+            parent=self.window,
+            on_applied=_reload,
+        )
+        dlg.exec()
 
     def _call_host(self, method_name: str) -> None:
         host = self.host
